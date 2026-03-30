@@ -856,7 +856,10 @@ def run_rl_train(
             rewards[k] = float(r)
 
             next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
-            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_kp1, next_u_dev)
+            # Keep the TD3 transition tied to the setpoint active when the
+            # action was chosen and rewarded. Using y_sp_kp1 here would mix
+            # two different tasks at a setpoint-change boundary.
+            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
 
             done = 0.0
             if not test:
@@ -1193,7 +1196,10 @@ def run_rl_train(
         rewards[k] = float(r)
 
         next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
-        next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_kp1, next_u_dev)
+        # Keep the TD3 transition tied to the setpoint active when the
+        # action was chosen and rewarded. Using y_sp_kp1 here would mix
+        # two different tasks at a setpoint-change boundary.
+        next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
 
         done = 0.0
         if not test:
