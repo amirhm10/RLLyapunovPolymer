@@ -11,7 +11,7 @@ This repository is a notebook-driven research codebase for polymer CSTR control.
 For Lyapunov work, the preferred implementation is now the consolidated `Lyapunov/` directory.
 
 ## Current State
-- This folder is not a Git repository.
+- This folder is a Git repository and is connected to a GitHub remote.
 - `README.md` is still minimal.
 - There is no pinned environment file such as `requirements.txt` or `environment.yml`.
 - The default `python` in this environment does not have the scientific stack installed, so runtime validation is limited unless dependencies are installed first.
@@ -126,6 +126,15 @@ Most control bugs here come from mixing those representations.
 - Avoid renaming the Lyapunov rollout return tuple unless notebook callers and exporters are updated too.
 - Do not rewrite files under `Data/` unless the user explicitly asks for regenerated assets.
 - Ignore `__pycache__/`.
+
+## Commit And Change-Report Workflow
+- For any major code, notebook, or controller update, create a Git commit at the end of the task unless the user explicitly says not to commit.
+- Use a descriptive commit message that matches the main technical change. Prefer messages like `Refine Step A selector tuning`, `Add RL paper-style debug export plots`, or `Fix safety-filter target backup logic`.
+- For every major committed change, create or update a matching Markdown report under `change-reports/`.
+- The relevant `change-reports/...md` file should be included in the same commit as the code change so the history stays paired.
+- If a task naturally splits into distinct major updates, use separate commits and separate change reports rather than bundling unrelated work together.
+- Before committing, run the low-cost validation that fits the change, typically `python -m py_compile` on touched modules.
+- In the final response, report the commit hash and the matching change-report path.
 
 ## Validation Strategy
 There is no formal test suite. Use low-cost validation:
