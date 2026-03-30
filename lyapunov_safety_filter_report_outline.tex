@@ -1,0 +1,143 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm, bm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[numbers,sort&compress]{natbib}
+
+\title{Technical Report Outline: General Lyapunov Safety Filter Around a Moving Offset-Free Equilibrium}
+\author{Prepared for implementation review}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents a general Lyapunov safety filter architecture that operates around a moving equilibrium computed from an offset-free target selector. The framework is controller-agnostic: a candidate action may be proposed by reinforcement learning, model predictive control, a residual policy, or another control law. A Lyapunov decrease test is applied to the candidate action and, when the condition is not satisfied, an optimization-based correction step computes a minimally invasive safe alternative. This document summarizes the modeling assumptions, mathematical formulation, implementation structure, and recommended diagnostics.
+\end{abstract}
+
+\section{Introduction and Motivation}
+
+\section{Relation to Offset-Free MPC}
+
+\section{Disturbance-Augmented Model and Observer}
+\begin{align}
+z_{k+1} &= A_{\mathrm{aug}} z_k + B_{\mathrm{aug}} u_k, \\
+y_k &= C_{\mathrm{aug}} z_k,
+\end{align}
+with
+\begin{align}
+z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+\end{align}
+and block structure
+\begin{align}
+A_{\mathrm{aug}} = \begin{bmatrix} A & B_d \\ 0 & I \end{bmatrix}, \quad
+B_{\mathrm{aug}} = \begin{bmatrix} B \\ 0 \end{bmatrix}, \quad
+C_{\mathrm{aug}} = \begin{bmatrix} C & D_d \end{bmatrix}.
+\end{align}
+
+\section{Steady-State Target Selector}
+\begin{align}
+(I - A)x_s - Bu_s - B_d \hat d_k &= 0, \\
+y_s &= Cx_s + D_d \hat d_k.
+\end{align}
+Discuss Stage A exact target solving and Stage B closest-admissible fallback.
+
+\section{Equilibrium-Centered Lyapunov Function}
+Define
+\begin{align}
+e_x(k) &= \hat x_k - x_s(k), \\
+V_k &= e_x(k)^\top P_x e_x(k).
+\end{align}
+
+\section{Candidate-Action Acceptance Rule}
+For a candidate action $u_{\mathrm{cand}}$,
+\begin{align}
+e_{x, k+1|k}(u_{\mathrm{cand}}) &= A e_x(k) + B\big(u_{\mathrm{cand}} - u_s(k)\big), \\
+V_{k+1|k}(u_{\mathrm{cand}}) &= e_{x, k+1|k}(u_{\mathrm{cand}})^\top P_x e_{x, k+1|k}(u_{\mathrm{cand}}).
+\end{align}
+Accept if
+\begin{align}
+V_{k+1|k}(u_{\mathrm{cand}}) \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
+\end{align}
+
+\section{Optimization-Based Correction Step}
+\begin{align}
+\min_{u, s_v, s_u} \quad & (u - u_{\mathrm{cand}})^\top W_u (u - u_{\mathrm{cand}}) + \lambda_v s_v^2 + \lambda_u s_u^2 \\
+\text{s.t.} \quad & u_{\min} \le u \le u_{\max}, \\
+& \Delta u_{\min} \le u - u_{k-1} \le \Delta u_{\max}, \\
+& V_{k+1|k}(u) \le \rho V_k + \varepsilon_{\mathrm{lyap}} + s_v, \\
+& |u - u_{\mathrm{cand}}| \le \delta_{\mathrm{trust}} + s_u, \\
+& s_v \ge 0, \quad s_u \ge 0.
+\end{align}
+
+\section{Connection to Predictive Safety Filters and CLF Filters}
+
+\section{Code Structure and Modified Files}
+
+\section{Logging and Diagnostics}
+
+\section{Limitations and Open Design Questions}
+
+\section{Recommended Next Experiments}
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem{rawlings_book}
+J.~B. Rawlings, D.~Q. Mayne, and M.~Diehl.
+\newblock \emph{Model Predictive Control: Theory, Computation, and Design}.
+\newblock 2nd edition.
+
+\bibitem{pannocchia_rawlings_2003}
+G.~Pannocchia and J.~B. Rawlings.
+\newblock Disturbance models for offset-free model-predictive control.
+\newblock \emph{AIChE Journal}, 49(2):426--437, 2003.
+
+\bibitem{pannocchia_bemporad_2007}
+G.~Pannocchia and A.~Bemporad.
+\newblock Combined design of disturbance model and observer for offset-free model predictive control.
+\newblock \emph{IEEE Transactions on Automatic Control}, 52(6):1048--1053, 2007.
+
+\bibitem{muske_badgwell_2002}
+K.~R. Muske and T.~A. Badgwell.
+\newblock Disturbance modeling for offset-free linear model predictive control.
+\newblock \emph{Journal of Process Control}, 12(5):617--632, 2002.
+
+\bibitem{maeder_morari_2010}
+U.~Maeder and M.~Morari.
+\newblock Offset-free reference tracking with model predictive control.
+\newblock \emph{Automatica}, 46(9):1469--1476, 2010.
+
+\bibitem{limon_2008}
+D.~Limon, I.~Alvarado, T.~Alamo, and E.~F. Camacho.
+\newblock MPC for tracking piecewise constant references for constrained linear systems.
+\newblock \emph{Automatica}, 44(9):2382--2387, 2008.
+
+\bibitem{wabersich_zeilinger_2021}
+K.~P. Wabersich and M.~N. Zeilinger.
+\newblock A predictive safety filter for learning-based control of constrained nonlinear dynamical systems.
+\newblock \emph{Automatica}, 129:109597, 2021.
+
+\bibitem{ames_cbf_2017}
+A.~D. Ames, X.~Xu, J.~W. Grizzle, and P.~Tabuada.
+\newblock Control barrier function based quadratic programs for safety critical systems.
+\newblock \emph{IEEE Transactions on Automatic Control}, 62(8):3861--3876, 2017.
+
+\bibitem{ames_clf_2014}
+A.~D. Ames, K.~Galloway, K.~Sreenath, and J.~W. Grizzle.
+\newblock Rapidly exponentially stabilizing control Lyapunov functions and hybrid zero dynamics.
+\newblock \emph{IEEE Transactions on Automatic Control}, 59(4):876--891, 2014.
+
+\bibitem{liu_2009}
+J.~Liu, D.~Munoz de la Pena, and P.~D. Christofides.
+\newblock Lyapunov-based model predictive control of nonlinear systems subject to data losses.
+\newblock \emph{Automatica}, 45(3):790--797, 2009.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,255 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{Two-Stage Offset-Free Target Selector Report}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+This note documents the implementation in
+\texttt{Lyapunov/target\_selector.py}, specifically the function
+\texttt{compute\_ss\_target\_refined\_rawlings(...)}.
+The selector computes a steady-state target for offset-free tracking MPC
+using a two-stage optimization:
+\begin{enumerate}
+    \item an exact offset-free target solve, and
+    \item a closest-feasible fallback solve if the exact target is not admissible.
+\end{enumerate}
+
+\section{Model and Assumptions}
+The code assumes the augmented linear model has the form
+\begin{align}
+    x_{k+1}^{\mathrm{aug}} &= A_{\mathrm{aug}} x_k^{\mathrm{aug}} + B_{\mathrm{aug}} u_k, \\
+    y_k &= C_{\mathrm{aug}} x_k^{\mathrm{aug}},
+\end{align}
+with augmented state ordered as
+\begin{align}
+    x^{\mathrm{aug}} = \begin{bmatrix} x \\ d \end{bmatrix},
+\end{align}
+where:
+\begin{align}
+    x &\in \mathbb{R}^{n_x} && \text{physical state}, \\
+    d &\in \mathbb{R}^{n_y} && \text{constant disturbance estimate}, \\
+    u &\in \mathbb{R}^{n_u} && \text{control input}, \\
+    y &\in \mathbb{R}^{n_y} && \text{controlled output.}
+\end{align}
+
+The matrices are partitioned in the implementation as
+\begin{align}
+    A &= A_{\mathrm{aug}}[1{:}n_x,1{:}n_x], \\
+    B_d &= A_{\mathrm{aug}}[1{:}n_x,n_x{+}1{:}n_x{+}n_y], \\
+    B &= B_{\mathrm{aug}}[1{:}n_x,:], \\
+    C &= C_{\mathrm{aug}}[:,1{:}n_x], \\
+    C_d &= C_{\mathrm{aug}}[:,n_x{+}1{:}n_x{+}n_y].
+\end{align}
+In mathematical notation this corresponds to
+\begin{align}
+    x_{k+1} &= A x_k + B u_k + B_d d_k, \\
+    d_{k+1} &= d_k, \\
+    y_k &= C x_k + C_d d_k.
+\end{align}
+
+The disturbance target is frozen at the current estimate:
+\begin{align}
+    d_s = \hat d.
+\end{align}
+
+\section{Steady-State Equations}
+At steady state, the target variables $(x_s,u_s)$ satisfy
+\begin{align}
+    (I - A)x_s - B u_s - B_d \hat d = 0.
+\end{align}
+The associated steady-state output is
+\begin{align}
+    y_s = C x_s + C_d \hat d.
+\end{align}
+
+If all outputs are targeted, the controlled-output expression is
+\begin{align}
+    y_c = y_s.
+\end{align}
+If only selected output combinations are targeted, the optional matrix
+$H \in \mathbb{R}^{n_c \times n_y}$ is used:
+\begin{align}
+    y_c = H y_s.
+\end{align}
+The requested steady-state target is denoted $y_{\mathrm{sp}}$.
+
+\section{Bounds and Tightening}
+The code uses tightened input bounds
+\begin{align}
+    u_{\ell} &= u_{\min} + u_{\mathrm{tight}}, \\
+    u_{h} &= u_{\max} - u_{\mathrm{tight}}.
+\end{align}
+If output bounds are provided, the tightened output limits are
+\begin{align}
+    y_{\ell} &= y_{\min} + y_{\mathrm{tight}}, \\
+    y_{h} &= y_{\max} - y_{\mathrm{tight}}.
+\end{align}
+
+\section{Stage 1: Exact Offset-Free Target Solve}
+The first stage solves for an exact admissible equilibrium target. The
+optimization problem is
+\begin{align}
+    \min_{x_s,u_s} \quad & (u_s-u_{\mathrm{nom}})^\top R_u (u_s-u_{\mathrm{nom}})
+    + x_s^\top Q_x x_s
+\end{align}
+subject to
+\begin{align}
+    (I-A)x_s - B u_s - B_d \hat d &= 0, \\
+    y_c &= y_{\mathrm{sp}}, \\
+    u_{\ell} \le u_s &\le u_h.
+\end{align}
+
+If hard output bounds are enabled, the additional constraints are
+\begin{align}
+    y_{\ell} \le y_s \le y_h.
+\end{align}
+
+If soft output bounds are enabled, only the output inequalities are softened:
+\begin{align}
+    y_s + s_{\ell} &\ge y_{\ell}, \\
+    y_s - s_{h} &\le y_h, \\
+    s_{\ell} &\ge 0, \\
+    s_{h} &\ge 0,
+\end{align}
+with extra penalties
+\begin{align}
+    s_{\ell}^\top W_{\ell} s_{\ell}
+    \quad \text{and} \quad
+    s_{h}^\top W_{h} s_{h}.
+\end{align}
+The exact equality constraint $y_c = y_{\mathrm{sp}}$ is never softened in Stage 1.
+
+\section{Stage 2: Closest-Feasible Fallback}
+If Stage 1 fails because the target is infeasible or numerically unacceptable,
+the code solves a fallback problem:
+\begin{align}
+    \min_{x_s,u_s} \quad
+    & (y_c-y_{\mathrm{sp}})^\top T_y (y_c-y_{\mathrm{sp}})
+    + (u_s-u_{\mathrm{nom}})^\top R_u (u_s-u_{\mathrm{nom}})
+    + x_s^\top Q_x x_s.
+\end{align}
+If previous target information is provided, the fallback stage also includes
+\begin{align}
+    (x_s-x_s^{\mathrm{prev}})^\top Q_{dx}(x_s-x_s^{\mathrm{prev}})
+    + (u_s-u_s^{\mathrm{prev}})^\top R_{du}(u_s-u_s^{\mathrm{prev}}).
+\end{align}
+
+The fallback constraints are
+\begin{align}
+    (I-A)x_s - B u_s - B_d \hat d &= 0, \\
+    u_{\ell} \le u_s &\le u_h,
+\end{align}
+plus the same hard or soft output-bound constraints, if provided. There is no
+hard equality $y_c = y_{\mathrm{sp}}$ in Stage 2.
+
+\section{Acceptance Checks}
+The implementation does not accept a solution only because the solver reports
+\texttt{optimal} or \texttt{optimal\_inaccurate}. It performs explicit
+post-solve checks.
+
+The dynamic residual is
+\begin{align}
+    r_{\mathrm{dyn}} = (I-A)x_s - B u_s - B_d \hat d.
+\end{align}
+Its infinity norm is
+\begin{align}
+    \|r_{\mathrm{dyn}}\|_{\infty}.
+\end{align}
+
+For Stage 1, the target equality residual is
+\begin{align}
+    r_{\mathrm{eq}} = y_c - y_{\mathrm{sp}},
+\end{align}
+with infinity norm $\|r_{\mathrm{eq}}\|_{\infty}$.
+
+The code uses the following acceptance tolerances:
+\begin{align}
+    \|r_{\mathrm{dyn}}\|_{\infty} &\le 10^{-6}
+    && \text{if status is \texttt{optimal}}, \\
+    \|r_{\mathrm{dyn}}\|_{\infty} &\le 10^{-5}
+    && \text{if status is \texttt{optimal\_inaccurate}}.
+\end{align}
+For Stage 1 the same tolerance rule is applied to $\|r_{\mathrm{eq}}\|_{\infty}$.
+
+If output bounds are hard, the code also checks the bound violation magnitude
+numerically and rejects the solution if the violation exceeds the corresponding
+tolerance.
+
+\section{Returned Quantities}
+On success, the selector returns
+\begin{align}
+    x_s, \qquad u_s, \qquad d_s = \hat d.
+\end{align}
+It also constructs the augmented steady-state target
+\begin{align}
+    x_s^{\mathrm{aug}} = \begin{bmatrix} x_s \\ \hat d \end{bmatrix}.
+\end{align}
+
+The debug dictionary includes:
+\begin{align}
+    \texttt{solve\_stage} &\in \{\texttt{"exact"},\texttt{"fallback"}\}, \\
+    \texttt{target\_error} &= y_c - y_{\mathrm{sp}}, \\
+    \texttt{target\_slack} &= \texttt{target\_error}, \\
+    \texttt{target\_eq\_residual\_inf} &= \|r_{\mathrm{eq}}\|_{\infty}, \\
+    \texttt{dyn\_residual\_inf} &= \|r_{\mathrm{dyn}}\|_{\infty}.
+\end{align}
+
+The alias
+\begin{align}
+    \texttt{target\_slack} = \texttt{target\_error}
+\end{align}
+is retained for backward compatibility with downstream diagnostics and exporters.
+
+\section{Interpretation}
+The two-stage structure matters because it separates two different objectives:
+\begin{enumerate}
+    \item finding a true equilibrium target that exactly matches the requested setpoint when feasible, and
+    \item finding the nearest admissible equilibrium when exact tracking is impossible.
+\end{enumerate}
+This is the right structure for Lyapunov tracking MPC, because the target center
+should be the true equilibrium whenever an exact equilibrium exists.
+
+\section{Python-to-Math Mapping}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Python name & Mathematical meaning \\
+\midrule
+\texttt{A\_aug, B\_aug, C\_aug} & augmented linear model \\
+\texttt{xhat\_aug} & current augmented estimate $[\hat x;\hat d]$ \\
+\texttt{d\_hat} & frozen disturbance estimate $\hat d$ \\
+\texttt{y\_sp} & requested steady-state target $y_{\mathrm{sp}}$ \\
+\texttt{u\_nom} & nominal input center $u_{\mathrm{nom}}$ \\
+\texttt{Ty\_diag} & diagonal of $T_y$ \\
+\texttt{Ru\_diag} & diagonal of $R_u$ \\
+\texttt{Qx\_diag} & diagonal of $Q_x$ \\
+\texttt{Qdx\_diag} & diagonal of $Q_{dx}$ \\
+\texttt{Rdu\_diag} & diagonal of $R_{du}$ \\
+\texttt{Wy\_low\_diag, Wy\_high\_diag} & diagonals of $W_{\ell}, W_h$ \\
+\texttt{H} & controlled-output selector matrix \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Recommended Use in a Written Report}
+If this material is going into a thesis note, project report, or paper draft, the
+best structure is:
+\begin{enumerate}
+    \item describe the augmented offset-free model,
+    \item state the steady-state equations,
+    \item present Stage 1 as the exact target selector,
+    \item present Stage 2 as the artificial-reference fallback,
+    \item explain the residual-based acceptance rule,
+    \item then connect the selected equilibrium target to the Lyapunov MPC layer.
+\end{enumerate}
+
+\end{document}

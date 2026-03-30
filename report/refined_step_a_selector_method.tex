@@ -1,0 +1,221 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+
+\title{Refined Step A Steady-State Target Selector}
+\author{Internal Technical Note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the current \emph{single} target-selector method used by the repository after removal of the multi-mode selector stage. The selector is designed for the safe-MPC / Lyapunov-filter path, where target quality in output space is necessary but not sufficient: the returned steady package must also serve as a meaningful center for projection and Lyapunov certification. The refined Step A selector keeps the offset-free disturbance target fixed at the current disturbance estimate, keeps a soft output-tracking objective, and adds explicit anchoring toward the actual operating region through the applied input and current state estimate.
+\end{abstract}
+
+\section{Problem Setting}
+The controller uses the augmented offset-free model
+\begin{align}
+z_{k+1} &= A_{\mathrm{aug}} z_k + B_{\mathrm{aug}} u_k, \\
+y_k &= C_{\mathrm{aug}} z_k,
+\end{align}
+with augmented state
+\begin{align}
+z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+\qquad
+x_k \in \mathbb{R}^{n_x},
+\quad
+d_k \in \mathbb{R}^{n_d},
+\quad
+u_k \in \mathbb{R}^{n_u},
+\quad
+y_k \in \mathbb{R}^{n_y}.
+\end{align}
+
+The current implementation assumes the disturbance-state dimension matches the output dimension and that the augmented state is ordered as
+\begin{align}
+z_k = [x_k; d_k].
+\end{align}
+The physical-state and disturbance matrices extracted from the augmented model are
+\begin{align}
+A &= A_{\mathrm{aug}}(1\!:\!n_x,1\!:\!n_x), \\
+B_d &= A_{\mathrm{aug}}(1\!:\!n_x,n_x\!+\!1\!:\!n_x\!+\!n_d), \\
+B &= B_{\mathrm{aug}}(1\!:\!n_x,:), \\
+C &= C_{\mathrm{aug}}(:,1\!:\!n_x), \\
+C_d &= C_{\mathrm{aug}}(:,n_x\!+\!1\!:\!n_x\!+\!n_d).
+\end{align}
+
+All quantities are expected to be expressed in the repository's scaled deviation coordinates.
+
+\section{Observed Failure of the Previous Selector}
+The previous selector family could produce acceptable output-side targets while still returning poor centers for the safety filter. Empirically, the main failure modes were:
+\begin{enumerate}
+\item $x_s$ collapsed toward zero in scaled deviation coordinates.
+\item $u_s$ stayed too close to nominal or too constant relative to the actual operating region.
+\item previous-target smoothing alone preserved continuity but did not create a directional pull away from an already bad center.
+\end{enumerate}
+
+This distinction matters because a target can be useful for output tracking while still being a poor center for the Lyapunov correction problem. The refined Step A selector is therefore built to answer the following narrower question:
+\begin{quote}
+Find a steady-state equilibrium target that remains close to the requested output while also staying near the actual closed-loop operating region and evolving smoothly in time.
+\end{quote}
+
+\section{Refined Step A Optimization Problem}
+At control step $k$, let
+\begin{align}
+\hat x_k &\in \mathbb{R}^{n_x}, &
+\hat d_k &\in \mathbb{R}^{n_d}, &
+u_{\mathrm{applied},k} &\in \mathbb{R}^{n_u}, \\
+x_s^{\mathrm{prev}} &\in \mathbb{R}^{n_x}, &
+u_s^{\mathrm{prev}} &\in \mathbb{R}^{n_u}, &
+y_{\mathrm{sp}} &\in \mathbb{R}^{n_r}.
+\end{align}
+
+The disturbance target is fixed:
+\begin{align}
+d_s = \hat d_k.
+\end{align}
+
+The selector solves for $(x_s,u_s)$ and defines
+\begin{align}
+y_s &= C x_s + C_d d_s, \\
+r_s &= H y_s,
+\end{align}
+with $H = I$ when no controlled-output selection matrix is used.
+
+The refined Step A problem is
+\begin{align}
+\min_{x_s,u_s}\quad
+& \|r_s - y_{\mathrm{sp}}\|_{Q_r}^2
++ \|u_s - u_{\mathrm{applied},k}\|_{R_{u,\mathrm{ref}}}^2 \nonumber\\
+&+ \|u_s - u_s^{\mathrm{prev}}\|_{R_{\Delta u,\mathrm{sel}}}^2
++ \|x_s - x_s^{\mathrm{prev}}\|_{Q_{\Delta x}}^2
++ \|x_s - \hat x_k\|_{Q_{x,\mathrm{ref}}}^2
+\label{eq:stepA_obj}
+\end{align}
+subject to
+\begin{align}
+x_s &= A x_s + B u_s + B_d d_s, \label{eq:stepA_dyn}\\
+u_{\min} &\le u_s \le u_{\max}, \label{eq:stepA_u_bounds}
+\end{align}
+and, when enabled,
+\begin{align}
+y_{\min} \le y_s \le y_{\max}. \label{eq:stepA_y_bounds}
+\end{align}
+
+If previous-target information is unavailable, the corresponding smoothing terms in \eqref{eq:stepA_obj} are disabled automatically.
+
+\section{Weight Construction}
+The implementation exposes scalar multipliers and constructs the matrices as follows.
+
+First, the output weight is supplied as $Q_r$.
+Next, the selector uses the MPC move-penalty structure $R_{\Delta u}^{\mathrm{mpc}}$ as the base input weighting:
+\begin{align}
+R_{u,\mathrm{ref}} &= \alpha_{u,\mathrm{ref}} R_{\Delta u}^{\mathrm{mpc}}, \\
+R_{\Delta u,\mathrm{sel}} &= \alpha_{du,\mathrm{sel}} R_{\Delta u}^{\mathrm{mpc}}.
+\end{align}
+
+The state-side base matrix is chosen in one of two ways:
+\begin{align}
+Q_x^{\mathrm{base}} =
+\begin{cases}
+C_r^\top Q_r C_r, & \text{if } x\_weight\_base = \texttt{CtQC},\\
+I, & \text{if } x\_weight\_base = \texttt{identity},
+\end{cases}
+\end{align}
+where $C_r = C$ when $H$ is absent and $C_r = HC$ when $H$ is used.
+
+Then
+\begin{align}
+Q_{\Delta x} &= \alpha_{dx,\mathrm{sel}} Q_x^{\mathrm{base}}, \\
+Q_{x,\mathrm{ref}} &= \alpha_{x,\mathrm{ref}} Q_x^{\mathrm{base}}.
+\end{align}
+
+The default hierarchy is
+\begin{align}
+Q_r \gg R_{u,\mathrm{ref}} \sim R_{\Delta u,\mathrm{sel}} > Q_{\Delta x} > Q_{x,\mathrm{ref}}.
+\end{align}
+This expresses the intended interpretation:
+\begin{enumerate}
+\item output-target quality remains dominant,
+\item input operating-region consistency and temporal smoothness come next,
+\item state smoothing is weaker,
+\item the direct pull toward the transient observer state is weakest.
+\end{enumerate}
+
+\section{Why the New Anchors Are Used}
+\subsection{Input anchor to the applied input}
+The term
+\begin{align}
+\|u_s - u_{\mathrm{applied},k}\|_{R_{u,\mathrm{ref}}}^2
+\end{align}
+is introduced because the previous selector could return a steady-state input target that stayed too close to nominal even while the closed loop operated elsewhere. The applied-input anchor keeps the target package near the actual operating region without forcing the selector to track a transient state directly.
+
+\subsection{Previous-target smoothing}
+The terms
+\begin{align}
+\|u_s - u_s^{\mathrm{prev}}\|_{R_{\Delta u,\mathrm{sel}}}^2,
+\qquad
+\|x_s - x_s^{\mathrm{prev}}\|_{Q_{\Delta x}}^2
+\end{align}
+provide continuity, but only continuity. They regularize temporal evolution and suppress chattering, yet they do not create directional correction if the previous target is already poor. This is why they remain in the formulation but are not the only centering mechanism.
+
+\subsection{Weak state anchor to the observer}
+The term
+\begin{align}
+\|x_s - \hat x_k\|_{Q_{x,\mathrm{ref}}}^2
+\end{align}
+is intentionally weak. The observer state is not a steady-state object; it contains transient content and estimation error. Still, a weak anchor is useful because it lets the selector move away from an already-collapsed state target after a setpoint change.
+
+\section{Diagnostics Returned by the Code}
+The implementation returns:
+\begin{align}
+\{\texttt{success}, x_s, u_s, d_s, y_s, r_s, \texttt{objective\_terms}, \texttt{selector\_debug}, \ldots\}.
+\end{align}
+The diagnostic dictionary includes:
+\begin{enumerate}
+\item solver status and solver name,
+\item objective value,
+\item term-by-term objective values,
+\item dynamic residual infinity norm,
+\item input/output bound violation infinity norms,
+\item whether previous-target smoothing terms were active,
+\item the diagonal weights actually used,
+\item $r_s - y_{\mathrm{sp}}$,
+\item $u_s - u_{\mathrm{applied},k}$,
+\item $u_s - u_s^{\mathrm{prev}}$ when available,
+\item $x_s - x_s^{\mathrm{prev}}$ when available,
+\item $x_s - \hat x_k$.
+\end{enumerate}
+
+\section{What This Selector Is Solving and What It Is Not}
+The refined Step A selector is trying to solve a \emph{single} problem:
+\begin{quote}
+Find a feasible steady-state target that stays close to the requested output and remains near the actual closed-loop operating region.
+\end{quote}
+
+It is \emph{not yet} trying to solve:
+\begin{enumerate}
+\item optimized disturbance targeting,
+\item free optimization of $d_s$,
+\item full separation of tracking target and projection center,
+\item explicit robust target design under uncertainty.
+\end{enumerate}
+
+Those extensions remain possible future directions, but they are out of scope for the current implementation.
+
+\section{Implementation Notes}
+The code keeps warm-start support by initializing the solver with the previous steady target when available. It also preserves last-valid-target reuse downstream in the safety filter. This means that the selector change improves the steady-state package itself while leaving the existing Lyapunov acceptance rule
+\begin{align}
+V(e_x^+) \le \rho V(e_x) + \varepsilon_{\mathrm{lyap}}
+\end{align}
+unchanged.
+
+\section{References}
+This selector is grounded in the steady-state target-calculation viewpoint used in offset-free MPC. The repository documentation should be read together with the standard references already used in the project, especially the offset-free MPC and target-calculation discussion in Rawlings, Mayne, and Diehl's MPC text and the previously cited disturbance-model / target-calculation references from the existing project notes.
+
+\end{document}

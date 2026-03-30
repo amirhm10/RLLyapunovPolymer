@@ -1,0 +1,392 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+
+\title{Current Target Selector Implementation, Failure Propagation, and Active Hyperparameters}
+\author{Internal Technical Note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the \emph{current} target-selector path used by the Lyapunov safety-filter implementation in the repository. The goal is not to describe the intended method in the abstract, but to state precisely what the code is solving now, what hyperparameters are active in the current notebooks, and how selector output is consumed by the safety filter. The current stack still requires an equilibrium package $(x_s,u_s,d_s,y_s)$ to evaluate the Lyapunov certificate, but it no longer discards the last valid target outright when the current selector solve fails. Instead, the safety layer can reuse the last valid target as an operational backup target under the \texttt{target\_backup\_policy = last\_valid} setting.
+\end{abstract}
+
+\section{Direct Answer to the Current Diagnosis}
+The short answer is \textbf{not always anymore}: frequent target-selector failure can still increase fallback-MPC use, but the current implementation first attempts to reuse the last valid target package before declaring the target unavailable.
+
+At each control step, the safety filter first requests a steady-state target package from the refined selector. The returned package is
+\begin{align}
+\mathcal{T}_k = \left(x_s(k),u_s(k),d_s(k),y_s(k)\right).
+\end{align}
+The Lyapunov check and the QCQP repair are both built around this package. If the selector returns
+\begin{align}
+\texttt{target\_info["success"]} = \texttt{False},
+\end{align}
+then the current-step Lyapunov certificate is unavailable. In the present code path, the safety filter therefore does \emph{not} solve the QCQP against a current-step target. It goes straight to the fallback branch, whose default is a fresh offset-free MPC action.
+
+So the causal chain is
+\begin{align}
+\text{target-selector failure}
+\;\Longrightarrow\;
+\text{no current equilibrium package}
+\;\Longrightarrow\;
+\text{no current Lyapunov certificate}
+\;\Longrightarrow\;
+\text{candidate test / QCQP on last valid target, else fallback MPC call}.
+\end{align}
+
+\section{Model and Coordinate Convention}
+The selector operates on the augmented offset-free linear model
+\begin{align}
+z_{k+1} &= A_{\mathrm{aug}} z_k + B_{\mathrm{aug}} u_k, \\
+y_k &= C_{\mathrm{aug}} z_k,
+\end{align}
+with
+\begin{align}
+z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+\qquad
+x_k \in \mathbb{R}^{n_x},
+\quad
+d_k \in \mathbb{R}^{n_y},
+\quad
+u_k \in \mathbb{R}^{n_u},
+\quad
+y_k \in \mathbb{R}^{n_y}.
+\end{align}
+
+The implementation assumes the augmented state is ordered as
+\begin{align}
+z_k = [x_k;d_k],
+\end{align}
+and also assumes
+\begin{align}
+\dim(d_k) = n_y.
+\end{align}
+This assumption is explicit in the code and is part of the selector debug metadata.
+
+The physical subsystem matrices used internally by the selector are extracted as
+\begin{align}
+A &= A_{\mathrm{aug}}(1\!:\!n_x,1\!:\!n_x), \\
+B_d &= A_{\mathrm{aug}}(1\!:\!n_x,n_x\!+\!1\!:\!n_x\!+\!n_y), \\
+B &= B_{\mathrm{aug}}(1\!:\!n_x,:), \\
+C &= C_{\mathrm{aug}}(:,1\!:\!n_x), \\
+C_d &= C_{\mathrm{aug}}(:,n_x\!+\!1\!:\!n_x\!+\!n_y).
+\end{align}
+The disturbance frozen into the current target problem is
+\begin{align}
+d_s(k) = \hat d_k.
+\end{align}
+
+All of these quantities are expected to be in the \emph{same controller coordinates}. In the active notebook paths, that means scaled deviation coordinates.
+
+\section{What the Selector Solves Right Now}
+\subsection{Steady-State Relations}
+At each sample, the target selector solves for an equilibrium satisfying
+\begin{align}
+(I-A)x_s - Bu_s - B_d \hat d_k = 0, \label{eq:ssdyn}
+\end{align}
+and
+\begin{align}
+y_s = Cx_s + C_d \hat d_k. \label{eq:ssout}
+\end{align}
+
+If an output-selection matrix $H$ is supplied, the controlled output is
+\begin{align}
+y_c = H y_s.
+\end{align}
+In the current notebook paths, $H$ is not supplied, so the implementation uses
+\begin{align}
+H = I, \qquad y_c = y_s.
+\end{align}
+
+\subsection{Stage 1: Exact Target Problem}
+The exact stage solves
+\begin{align}
+\min_{x_s,u_s}
+\;&
+(u_s-u_{\mathrm{nom}})^\top R_u (u_s-u_{\mathrm{nom}})
++
+x_s^\top Q_x x_s
++
+\Phi_y^{\mathrm{soft}}(y_s) \\
+\text{s.t. }\;&
+(I-A)x_s - Bu_s - B_d\hat d_k = 0, \\
+& u_{\ell} \le u_s \le u_u, \\
+& y_c = y_{\mathrm{sp}}, \\
+& y_{\ell} \le y_s \le y_u
+\quad \text{if output bounds are enabled.}
+\end{align}
+
+Here
+\begin{align}
+u_{\ell} &= u_{\min} + u_{\mathrm{tight}}, \\
+u_u &= u_{\max} - u_{\mathrm{tight}}.
+\end{align}
+If output tightening is used, the implementation similarly forms tightened output bounds. In the current notebook paths, no output bounds or tightening vectors are passed, so these terms are inactive.
+
+If soft output bounds are enabled and output bounds exist, the code introduces nonnegative slacks
+\begin{align}
+s_y^{\mathrm{low}} \ge 0,
+\qquad
+s_y^{\mathrm{high}} \ge 0,
+\end{align}
+and adds
+\begin{align}
+\Phi_y^{\mathrm{soft}}(y_s)
+=
+(s_y^{\mathrm{low}})^\top W_y^{\mathrm{low}} s_y^{\mathrm{low}}
++
+(s_y^{\mathrm{high}})^\top W_y^{\mathrm{high}} s_y^{\mathrm{high}}.
+\end{align}
+However, because the active notebook paths do not pass output bounds, this softening machinery is currently inactive even though the software flag is left on.
+
+\subsection{Stage 2: Closest-Admissible Fallback Problem}
+If the exact stage is not accepted, the selector solves the fallback stage
+\begin{align}
+\min_{x_s,u_s}
+\;&
+(y_c-y_{\mathrm{sp}})^\top T_y (y_c-y_{\mathrm{sp}})
++
+(u_s-u_{\mathrm{nom}})^\top R_u (u_s-u_{\mathrm{nom}})
++
+x_s^\top Q_x x_s \nonumber\\
+&+
+(x_s-x_s^{\mathrm{prev}})^\top Q_{\Delta x}(x_s-x_s^{\mathrm{prev}})
++
+(u_s-u_s^{\mathrm{prev}})^\top R_{\Delta u}(u_s-u_s^{\mathrm{prev}})
++
+\Phi_y^{\mathrm{soft}}(y_s) \\
+\text{s.t. }\;&
+(I-A)x_s - Bu_s - B_d\hat d_k = 0, \\
+& u_{\ell} \le u_s \le u_u, \\
+& y_{\ell} \le y_s \le y_u
+\quad \text{if enabled.}
+\end{align}
+
+This stage removes the hard equality $y_c = y_{\mathrm{sp}}$ and instead penalizes target error. In the active path:
+\begin{align}
+Q_{\Delta x} &= 0
+\quad \text{because } Q_{\Delta x} \text{ is not provided}, \\
+R_{\Delta u} &\neq 0
+\quad \text{because } R_{\Delta u} \text{ is supplied from } R_{\mathrm{move}}.
+\end{align}
+So right now the fallback stage smooths the target \emph{through the input target} but not through the state target.
+
+\section{Acceptance Logic}
+The selector accepts a stage only if the solver status and residual checks pass.
+
+\subsection{Accepted CVXPY Statuses}
+The implementation only accepts
+\begin{align}
+\{\texttt{optimal},\texttt{optimal\_inaccurate}\}.
+\end{align}
+All other statuses are rejected immediately.
+
+\subsection{Residual Tolerances}
+The dynamic residual and exact-stage target residual are checked against a status-dependent tolerance:
+\begin{align}
+\tau_{\mathrm{dyn}} =
+\begin{cases}
+10^{-6}, & \text{if status = optimal}, \\
+10^{-5}, & \text{if status = optimal\_inaccurate}.
+\end{cases}
+\end{align}
+
+The exact stage is rejected if any of the following exceed the active tolerance:
+\begin{align}
+\left\|(I-A)x_s - Bu_s - B_d\hat d_k\right\|_\infty, \\
+\left\|y_c - y_{\mathrm{sp}}\right\|_\infty, \\
+\text{input/output bound violation}.
+\end{align}
+
+The fallback stage is rejected if the dynamic residual or bound violation exceeds the tolerance. If the fallback stage is accepted, its solve stage is stored as
+\begin{align}
+\texttt{solve\_stage} = \texttt{"fallback"}.
+\end{align}
+
+\section{Returned Target Package}
+When successful, the filter-facing package is
+\begin{align}
+\texttt{target\_info} =
+\{
+&\texttt{success},\,
+\texttt{x\_s},\,
+\texttt{u\_s},\,
+\texttt{d\_s},\,
+\texttt{x\_s\_aug},\,
+\texttt{y\_s},\,
+\texttt{yc\_s}, \nonumber\\
+&\texttt{requested\_y\_sp},\,
+\texttt{solve\_stage},\,
+\texttt{target\_error},\,
+\texttt{target\_error\_inf},\,
+\texttt{target\_slack\_inf}, \nonumber\\
+&\texttt{dyn\_residual\_inf},\,
+\texttt{bound\_violation\_inf},\,
+\texttt{warm\_start},\,
+\texttt{selector\_debug}
+\}.
+\end{align}
+
+When unsuccessful, the same structure is returned with
+\begin{align}
+x_s = u_s = y_s = \varnothing,
+\end{align}
+while the debug section still stores solver status, reject reason, and residual information. That is exactly the failure mode that later causes the safety-filter branch to lose the current-step Lyapunov reference.
+
+\section{Why Selector Failure Triggers MPC Fallback}
+The Lyapunov safety filter uses the selected equilibrium to define
+\begin{align}
+e_x &= \hat x_k - x_s(k), \\
+e_u &= u - u_s(k), \\
+V(e_x) &= e_x^\top P_x e_x.
+\end{align}
+Without any valid $(x_s,u_s,d_s)$ package, the current-step certificate
+\begin{align}
+V(e_x^+) \le \rho V(e_x) + \varepsilon
+\end{align}
+cannot be formed consistently around the current target.
+
+In the present implementation, the control logic therefore behaves as
+\begin{align}
+\text{if } \texttt{target\_success} = \texttt{False and no last valid target exists}
+\quad \Longrightarrow \quad
+\text{skip QCQP and call fallback MPC}.
+\end{align}
+This is why a run with many selector failures can still show many fallback-MPC activations, but only after the safety layer has exhausted the operational backup-target policy.
+
+The current debug path also computes the post-action Lyapunov value against the effective target actually used by the safety logic, so the Lyapunov plots remain aligned with the runtime controller path.
+
+\section{Current Active Hyperparameters}
+\subsection{Current Selector Hyperparameters in Both Safety-Filter Notebooks}
+The active notebook settings are the same for the RL-upstream and MPC-upstream experiments for the target selector itself. Table~\ref{tab:selector-active} lists the actual current settings.
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.18\textwidth} >{\raggedright\arraybackslash}p{0.42\textwidth}}
+\caption{Current active target-selector settings in the two safety-filter notebooks.}
+\label{tab:selector-active}\\
+\toprule
+Parameter & Value & Meaning in the current implementation \\
+\midrule
+\endfirsthead
+\toprule
+Parameter & Value & Meaning in the current implementation \\
+\midrule
+\endhead
+\texttt{Ty\_diag} & $10^8 Q_{\mathrm{out}}$ & Very large penalty on fallback-stage output target error. \\
+\texttt{Ru\_diag} & $\mathbf{1}$ & Penalizes target input magnitude relative to $u_{\mathrm{nom}}$. \\
+\texttt{u\_nom} & $0$ & Because \texttt{u\_nom\_tgt=None}, the selector uses the zero vector in scaled deviation coordinates. \\
+\texttt{Qx\_diag} & None & No explicit diagonal passed. The code therefore uses $Q_x = w_x I$. \\
+\texttt{w\_x} & $10^{-6}$ & Very small state regularization in both exact and fallback stages. \\
+\texttt{Qdx\_diag} & None & No target-state move penalty is active. \\
+\texttt{Rdu\_diag} & $R_{\mathrm{move}}$ & Input target move penalty; defaults to \texttt{MPC\_obj.R\_in}. \\
+\texttt{H} & None & All outputs are controlled; effectively $H=I$. \\
+\texttt{solver\_pref} & None & Uses \texttt{DEFAULT\_CVXPY\_SOLVERS = (OSQP, CLARABEL, SCS)}. \\
+\texttt{prev\_target} & previous successful target & Warm-start target package only if the previous solve succeeded. \\
+\texttt{u\_tight} & None & No input tightening. \\
+\texttt{y\_tight} & None & No output tightening. \\
+\texttt{y\_min}, \texttt{y\_max} & None & No explicit output bounds passed. \\
+\texttt{soft\_output\_bounds} & True & Present in code, but inactive because no output bounds are passed. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Current Safety-Filter Hyperparameters Used Around That Selector}
+The current notebook settings for the safety filter are shown in Table~\ref{tab:filter-active}. These are the values used \emph{after} the selector returns a target package.
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.18\textwidth} >{\raggedright\arraybackslash}p{0.42\textwidth}}
+\caption{Current active safety-filter settings in the two safety-filter notebooks.}
+\label{tab:filter-active}\\
+\toprule
+Parameter & Value & Meaning in the current implementation \\
+\midrule
+\endfirsthead
+\toprule
+Parameter & Value & Meaning in the current implementation \\
+\midrule
+\endhead
+\texttt{rho\_lyap} & $0.98$ & One-step contraction factor. \\
+\texttt{lyap\_eps} & $10^{-9}$ & Additive numerical tolerance in the bound $V_{k+1} \le \rho V_k + \varepsilon_\ell$. \\
+\texttt{lyap\_tol} & $10^{-10}$ & Post-check tolerance for acceptance tests. \\
+\texttt{w\_track} & $1.0$ & Weight on one-step output tracking in the QCQP. \\
+\texttt{w\_move} & $0.2$ & Weight on moving away from the previous input. \\
+\texttt{w\_ss} & $0.1$ & Weight on staying near $u_s$. \\
+\texttt{w\_mpc} / \texttt{w\_rl} & $1.0$ & Weight on staying close to the upstream candidate. \\
+\texttt{allow\_lyap\_slack} & Notebook-specific & Enables Lyapunov slack as a solver aid, but hard-only acceptance is still the default. \\
+\texttt{trust\_region\_delta} & Notebook-specific & Optional trust region around the candidate action. \\
+\texttt{allow\_trust\_region\_slack} & False & Trust region stays hard unless explicitly softened. \\
+\texttt{tracking\_target\_policy} & \texttt{raw\_setpoint} & Upstream MPC, fallback MPC, and QCQP output term use one normalized tracking target policy. \\
+\texttt{target\_backup\_policy} & \texttt{last\_valid} & Reuse the last valid target package when the current selector solve fails. \\
+\texttt{selector\_warm\_start} & True & Reuse the previous target as a CVXPY warm start when available. \\
+\texttt{Qdx\_tgt\_diag} & $10^{-6}\mathbf{1}$ & Small state-target smoothing term on the fallback selector stage. \\
+\texttt{lyap\_acceptance\_mode} & \texttt{hard\_only} & Only hard-feasible corrected actions are accepted as verified control. \\
+\texttt{reuse\_mpc\_solution\_as\_ic} & False & MPC solve starts from the fixed provided \texttt{IC\_opt} every step. \\
+\texttt{reset\_system\_on\_entry} & True & The runner restores the plant object to its entry snapshot on each run. \\
+\bottomrule
+\end{longtable}
+
+\section{Implications of the Current Settings}
+The active selector weights imply the following behavior.
+\begin{enumerate}
+\item The fallback stage strongly prefers output-setpoint matching because $T_y = 10^8 Q_{\mathrm{out}}$ is very large.
+\item The target state is only weakly regularized because $w_x = 10^{-6}$ is very small.
+\item There is now a small explicit state-target smoothing term because $Q_{\Delta x}$ is active with a default diagonal of $10^{-6}$.
+\item There \emph{is} input-target smoothing because $R_{\Delta u}$ is inherited from the move-weight vector.
+\item The selector now uses a genuine solver warm start when a previous target is available.
+\item Because there are no active output bounds in the current notebook path, the soft-output-bound machinery does not currently explain the failures.
+\end{enumerate}
+
+So if the selector is failing often, the most relevant active ingredients to inspect are:
+\begin{align}
+T_y,\quad R_u,\quad R_{\Delta u},\quad \hat d_k,\quad y_{\mathrm{sp}},\quad \text{and solver status}.
+\end{align}
+
+\section{New Debug Data Added for This Issue}
+The debug exporter now stores selector-status trajectory data for the entire run:
+\begin{align}
+\texttt{target\_success\_flags},\qquad
+\texttt{target\_failure\_flags},\qquad
+\texttt{target\_stage\_code}.
+\end{align}
+The stage coding is
+\begin{align}
+0 &= \text{failed},\\
+1 &= \text{fallback stage accepted},\\
+2 &= \text{exact stage accepted}.
+\end{align}
+
+The exporter also now generates a full-trajectory plot
+\begin{align}
+\texttt{target\_selector\_status.png},
+\end{align}
+whose top subplot shows selector success/failure over the entire trajectory and whose bottom subplot shows the stage code over the entire trajectory.
+
+\section{Practical Interpretation}
+If a saved run shows:
+\begin{enumerate}
+\item many \texttt{target\_failure\_flags = 1},
+\item many \texttt{correction\_mode = fallback\_mpc\_unverified} or \texttt{fallback\_mpc\_verified},
+\item few QCQP corrections,
+\end{enumerate}
+then the main bottleneck is not the QCQP. The main bottleneck is target availability. In that situation, the correct debugging priority is:
+\begin{enumerate}
+\item diagnose why the selector fails,
+\item only then retune the QCQP.
+\end{enumerate}
+
+\section{Next Concrete Checks}
+The next debugging pass should inspect, step by step:
+\begin{enumerate}
+\item \texttt{target\_selector\_status.png},
+\item \texttt{target\_error\_inf}, \texttt{target\_slack\_inf}, and \texttt{target\_mismatch\_inf},
+\item selector solver status and reject reasons inside \texttt{selector\_debug},
+\item disturbance-estimate evolution $\hat d_k$ around the first failure burst,
+\item whether the requested setpoint is locally incompatible with the current disturbance estimate.
+\end{enumerate}
+Only after that should the QCQP weights be treated as the main suspect.
+
+\end{document}

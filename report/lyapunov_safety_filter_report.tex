@@ -1,0 +1,453 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,bm,mathtools}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{array}
+
+\title{A Controller-Agnostic Lyapunov Safety Filter with Moving Offset-Free Targets, MPC Fallback, and Full Debug Instrumentation}
+\author{Internal Technical Note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the current Lyapunov safety-filter architecture implemented for the polymer CSTR repository. The method wraps a generic candidate controller, recomputes an admissible offset-free equilibrium at each sample using a refined target selector, tests the candidate action against hard bounds and a one-step Lyapunov decrease condition, and solves a minimally invasive correction problem only when needed. If the correction problem fails, the default backup is a fresh offset-free MPC action computed from the same observer state, setpoint, warm start, and constraints used by the baseline MPC path. The implementation now supports two canonical upstream controllers: a TD3 policy and a baseline offset-free MPC controller. In parallel, a Python debug/export layer records full simulation traces, target-selector metrics, Lyapunov margins, fallback behavior, solver statuses, and reproducible plots. The note develops the mathematics behind the method, maps the equations to the repository modules, and closes with concrete next actions for experimental validation.
+\end{abstract}
+
+\section{Motivation and Scope}
+The repository already contains three ingredients that naturally belong together:
+\begin{enumerate}[leftmargin=*]
+\item an offset-free disturbance-augmented prediction model and observer,
+\item a baseline offset-free MPC controller,
+\item a TD3-based reinforcement-learning controller.
+\end{enumerate}
+What was missing was a single \emph{verification-and-repair} layer that could sit downstream of either controller and enforce a local stability certificate without rewriting the upstream controller itself. That is the role of the Lyapunov safety filter.
+
+The implemented design is intentionally different from a standard ``terminal-cost MPC proof'' perspective. The online object is not a full-horizon MPC law with a terminal set. Instead, the online object is a \emph{controller-agnostic safety filter} of the form
+\begin{align}
+\text{candidate controller} \;\longrightarrow\; \text{target selector} \;\longrightarrow\; \text{Lyapunov filter} \;\longrightarrow\; \text{plant}.
+\end{align}
+This places the main design burden on three questions:
+\begin{enumerate}[leftmargin=*]
+\item how to define the correct moving equilibrium around which local stability should be checked,
+\item how to verify a candidate action analytically before it is applied,
+\item how to compute the smallest acceptable correction when the candidate fails.
+\end{enumerate}
+The current implementation answers these questions with:
+\begin{enumerate}[leftmargin=*]
+\item a refined Rawlings-style target selector, following the offset-free MPC literature \cite{pannocchia2003,pannocchia2007,limon2008,maeder2010},
+\item a physical-state quadratic Lyapunov function around the moving equilibrium,
+\item a one-step convex correction problem inspired by safety-filter and CLF/CBF formulations \cite{ames2014,ames2017,wabersich2021},
+\item a baseline offset-free MPC fallback for numerical failure or infeasibility of the repair solve.
+\end{enumerate}
+
+\section{Disturbance-Augmented Model and Observer}
+The repository uses a discrete-time disturbance-augmented linear model,
+\begin{align}
+z_{k+1} &= A_{\mathrm{aug}} z_k + B_{\mathrm{aug}} u_k, \label{eq:aug_dyn}\\
+y_k &= C_{\mathrm{aug}} z_k, \label{eq:aug_out}
+\end{align}
+with augmented state
+\begin{align}
+z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+\end{align}
+where $x_k \in \mathbb{R}^{n_x}$ is the physical state, $d_k \in \mathbb{R}^{n_y}$ is the disturbance model state, $u_k \in \mathbb{R}^{n_u}$ is the manipulated input, and $y_k \in \mathbb{R}^{n_y}$ is the measured output. In the codebase, the augmented matrices are formed as
+\begin{align}
+A_{\mathrm{aug}} &= \begin{bmatrix} A & B_d \\ 0 & I \end{bmatrix},
+&
+B_{\mathrm{aug}} &= \begin{bmatrix} B \\ 0 \end{bmatrix},
+&
+C_{\mathrm{aug}} &= \begin{bmatrix} C & C_d \end{bmatrix},
+\end{align}
+with $C_d = I$ for the standard offset-free augmentation used in the repository \cite{pannocchia2003,pannocchia2007}.
+
+The observer propagates an estimate
+\begin{align}
+\hat z_k = \begin{bmatrix} \hat x_k \\ \hat d_k \end{bmatrix},
+\end{align}
+and the notebooks store this as \texttt{xhatdhat}. The observer update used in the rollouts is
+\begin{align}
+\hat z_{k+1}
+= A_{\mathrm{aug}} \hat z_k + B_{\mathrm{aug}} u_k + L \big(y_k - \hat y_k\big),
+\qquad
+\hat y_k = C_{\mathrm{aug}} \hat z_k,
+\end{align}
+where the gain $L$ is designed by pole placement on the augmented model.
+
+Two remarks are essential for the rest of the note.
+\begin{enumerate}[leftmargin=*]
+\item All controller logic is expressed in the repository's scaled deviation coordinates, not raw plant units.
+\item The disturbance estimate $\hat d_k$ is not treated as a terminal nuisance parameter. It directly shapes the steady-state target used by the filter at every sample.
+\end{enumerate}
+
+\section{Moving Offset-Free Equilibrium}
+\subsection{Target-Selector Problem}
+At each sample, the filter asks the refined target selector for an admissible equilibrium package
+\begin{align}
+(x_s(k),u_s(k),d_s(k),y_s(k)),
+\qquad
+d_s(k)=\hat d_k.
+\end{align}
+The steady-state relation for the physical subsystem is
+\begin{align}
+(I-A)x_s(k) - Bu_s(k) - B_d \hat d_k = 0, \label{eq:ss_phys}
+\end{align}
+and the corresponding steady-state output is
+\begin{align}
+y_s(k) = Cx_s(k) + C_d \hat d_k. \label{eq:ss_output}
+\end{align}
+
+The selector uses a two-stage design consistent with offset-free MPC target-selection practice \cite{pannocchia2003,pannocchia2007,limon2008}:
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Stage 1: exact target solve.} If possible, find a steady state that satisfies \eqref{eq:ss_phys} and exactly matches the requested controlled output.
+\item \textbf{Stage 2: closest-admissible target solve.} If the exact target is infeasible, solve a convex fallback problem that minimizes weighted target error while preserving steady-state feasibility and actuator bounds.
+\end{enumerate}
+This separation is important conceptually. The target selector is the correct place to absorb steady-state infeasibility. The safety filter receives the selected target package as a frozen local reference and does not redefine the equilibrium internally.
+
+\subsection{Filter-Ready Target Package}
+The canonical output of the selector now includes:
+\begin{enumerate}[leftmargin=*]
+\item $x_s$, $u_s$, $d_s$, and $y_s$,
+\item success/failure status,
+\item solve stage (\texttt{exact} or \texttt{fallback}),
+\item target error and slack metrics,
+\item residuals for the steady-state equations,
+\item warm-start data for the next target solve.
+\end{enumerate}
+The warm start is advisory only. The target is always recomputed from the current disturbance estimate; no cached target is ever treated as authoritative across changing disturbances.
+
+\section{Equilibrium-Centered Error Coordinates}
+The first implemented Lyapunov backend uses the physical-state error rather than the full augmented error:
+\begin{align}
+e_x(k) &= \hat x_k - x_s(k), \label{eq:ex_def}\\
+e_u(k) &= u_k - u_s(k), \label{eq:eu_def}\\
+e_y(k) &= y_k - y_s(k). \label{eq:ey_def}
+\end{align}
+This choice is deliberate. It keeps the Lyapunov function tied directly to the physical subsystem regulated by the controller and avoids conflating physical stabilization with integrator/disturbance-estimator motion.
+
+For a candidate input $u$, the one-step predicted physical error with frozen disturbance estimate is
+\begin{align}
+e_x^+(u)
+= A e_x(k) + B\big(u-u_s(k)\big). \label{eq:ex_next}
+\end{align}
+The corresponding one-step predicted output is
+\begin{align}
+y_{k+1|k}(u)
+= C\big(x_s(k) + e_x^+(u)\big) + C_d d_s(k). \label{eq:y_next_pred}
+\end{align}
+Equation \eqref{eq:ex_next} is exactly the local model used by the candidate verifier and correction problem.
+
+\section{Lyapunov Function Design}
+\subsection{Quadratic Lyapunov Candidate}
+The online filter uses the quadratic Lyapunov candidate
+\begin{align}
+V_k = V(e_x(k)) = e_x(k)^\top P_x e_x(k), \label{eq:V_def}
+\end{align}
+where $P_x \succ 0$ is constructed from the physical subsystem $(A,B)$ by solving a discrete algebraic Riccati equation. The code forms
+\begin{align}
+Q_x &= C^\top Q_y C + \varepsilon_x I, \label{eq:Qx_def}\\
+R_\ell &= \operatorname{diag}(r_1,\dots,r_{n_u}), \label{eq:Rl_def}
+\end{align}
+with $Q_y \succeq 0$ inherited from output tracking weights and $R_\ell \succ 0$ either supplied explicitly or synthesized from input headroom. Then $P_x$ solves
+\begin{align}
+P_x
+= A^\top P_x A
+- A^\top P_x B \big(R_\ell + B^\top P_x B\big)^{-1} B^\top P_x A
++ Q_x. \label{eq:dare}
+\end{align}
+The associated local LQR feedback is
+\begin{align}
+K_x = -\big(R_\ell + B^\top P_x B\big)^{-1} B^\top P_x A. \label{eq:lqr_gain}
+\end{align}
+
+\subsection{Interpretation}
+This design follows standard MPC/LQR local-stability reasoning \cite{mayne2000,rawlings2017}, but its online role is narrower. We do not claim that the one-step filter itself replaces a full receding-horizon optimal-control proof. Instead, the Riccati solution is used to build a local quadratic certificate that is computationally cheap, physically interpretable, and available at every sample.
+
+\section{Candidate Acceptance Test}
+Let $u_{\mathrm{cand}}$ denote the action proposed by the upstream controller, either RL or MPC. The filter first computes
+\begin{align}
+V_{k+1|k}(u_{\mathrm{cand}})
+= e_x^+(u_{\mathrm{cand}})^\top P_x e_x^+(u_{\mathrm{cand}}). \label{eq:V_next_cand}
+\end{align}
+The hard acceptance condition implemented in the repository is
+\begin{align}
+V_{k+1|k}(u_{\mathrm{cand}}) - V_k
+\le
+-e_x(k)^\top Q_V e_x(k) - e_u(k)^\top R_V e_u(k), \label{eq:hard_clf}
+\end{align}
+which is equivalently evaluated through the bound
+\begin{align}
+V_{k+1|k}(u_{\mathrm{cand}}) \le \rho V_k + \varepsilon_{\ell}, \qquad 0 < \rho < 1, \quad \varepsilon_{\ell}\ge 0, \label{eq:rho_bound}
+\end{align}
+depending on the configured parameterization of the decrease test. The implemented default uses the latter bound form because it cleanly absorbs small equilibrium motion between samples through $\varepsilon_{\ell}$.
+
+The Lyapunov condition is enforced together with hard actuator and move constraints,
+\begin{align}
+u_{\min} \le u_{\mathrm{cand}} \le u_{\max}, \label{eq:hard_input_bounds}\\
+\Delta u_{\min} \le u_{\mathrm{cand}} - u_{k-1} \le \Delta u_{\max}. \label{eq:hard_move_bounds}
+\end{align}
+Hence a candidate is accepted unchanged if and only if:
+\begin{enumerate}[leftmargin=*]
+\item it satisfies the actuator bounds \eqref{eq:hard_input_bounds},
+\item it satisfies the move bounds \eqref{eq:hard_move_bounds},
+\item it satisfies the Lyapunov decrease condition \eqref{eq:hard_clf} or \eqref{eq:rho_bound}.
+\end{enumerate}
+This is the source of the filter's minimally invasive behavior: the candidate passes through untouched whenever it is already acceptable.
+
+\section{Optimization-Based Correction}
+\subsection{One-Step Repair QCQP}
+If the candidate is rejected, the filter solves a one-step convex repair problem of the form
+\begin{align}
+\min_{u,\,s_t,\,s_v}\quad
+& (u-u_{\mathrm{cand}})^\top W_c (u-u_{\mathrm{cand}})
++ (u-u_{k-1})^\top W_m (u-u_{k-1}) \notag\\
+& + (u-u_s(k))^\top W_s (u-u_s(k))
++ \big(y_{k+1|k}(u)-y_{\mathrm{track}}(k)\big)^\top W_y \big(y_{k+1|k}(u)-y_{\mathrm{track}}(k)\big) \notag\\
+& + \lambda_t s_t^2 + \lambda_v s_v^2, \label{eq:qcqp_obj}
+\end{align}
+subject to
+\begin{align}
+u_{\min} &\le u \le u_{\max}, \label{eq:qcqp_ubounds}\\
+\Delta u_{\min} &\le u-u_{k-1} \le \Delta u_{\max}, \label{eq:qcqp_dubounds}\\
+V_{k+1|k}(u) &\le \rho V_k + \varepsilon_{\ell} + s_v, \label{eq:qcqp_lyap}\\
+\lVert u-u_{\mathrm{cand}}\rVert_{\infty} &\le \delta_{\mathrm{tr}} + s_t, \label{eq:qcqp_trust}\\
+s_t &\ge 0,\qquad s_v \ge 0. \label{eq:qcqp_slacks}
+\end{align}
+The terms play distinct roles:
+\begin{enumerate}[leftmargin=*]
+\item $W_c$ penalizes deviation from the upstream candidate,
+\item $W_m$ suppresses aggressive step-to-step actuator motion,
+\item $W_s$ pulls the solution toward the selected equilibrium input $u_s$,
+\item $W_y$ optionally biases the one-step prediction toward the selected tracking output $y_{\mathrm{track}}$,
+\item $s_t$ provides trust-region flexibility only when trust-region slack is explicitly enabled,
+\item $s_v$ is a Lyapunov slack that is disabled by default in the main closed-loop path.
+\end{enumerate}
+
+\subsection{Hard-Default Philosophy}
+The implemented online default is intentionally strict:
+\begin{align}
+s_v \equiv 0, \qquad s_t \equiv 0
+\end{align}
+in the nominal execution path. That is, the correction problem is allowed to move the input, but not to violate the Lyapunov condition merely to obtain feasibility. Lyapunov slack remains available only for controlled debugging or continuation studies.
+
+\subsection{Solver Policy}
+Because the repair problem contains a quadratic Lyapunov constraint, the canonical solver order is:
+\begin{align}
+\texttt{CLARABEL} \;\rightarrow\; \texttt{SCS}. 
+\end{align}
+An \texttt{OSQP} path is reserved only for debug modes in which the quadratic Lyapunov constraint is dropped or replaced by a linearized surrogate.
+
+\section{Offset-Free MPC Fallback}
+\subsection{Why the Fallback Changed}
+The earlier fallback order based on ``previous safe input'' or ``clipped steady-state input'' was deterministic, but it was not aligned with the baseline control logic already trusted in the repository. The current implementation therefore changes the \emph{primary} failure policy:
+\begin{quote}
+If the repair QCQP fails, compute a fresh offset-free MPC action using the same observer state, setpoint, warm start, bounds, and constraints as the baseline MPC path.
+\end{quote}
+This produces a backup action that is operationally meaningful, rather than simply conservative.
+
+\subsection{Fallback Solve}
+Let $\hat z_k$ be the current observer state and $u_{k-1}$ the previous applied input in deviation coordinates. The baseline MPC candidate is obtained from
+\begin{align}
+\min_{U}
+\quad
+\sum_{j=0}^{N_P-1}
+\left\|
+y_{k+j+1|k}(U) - y_k^{\mathrm{sp}}
+\right\|_{Q_y}^2
++
+\sum_{j=0}^{N_C-1}
+\left\|
+\Delta u_{k+j|k}(U)
+\right\|_{R_u}^2, \label{eq:mpc_obj}
+\end{align}
+with the same horizon lengths, bounds, and initial guess used by the baseline offset-free MPC notebook and rollout code. The helper introduced in the Lyapunov path computes precisely one action:
+\begin{align}
+u_{\mathrm{mpc,fb}} = \Pi_1(U^\star), \label{eq:first_move}
+\end{align}
+where $\Pi_1$ extracts the first control move from the optimized input sequence.
+
+\subsection{Verified and Unverified MPC Fallback Modes}
+After the fallback MPC candidate is generated, the filter subjects it to the same post-check as any other candidate:
+\begin{align}
+\text{bounds check} + \text{move check} + \text{Lyapunov check}.
+\end{align}
+The resulting modes are:
+\begin{enumerate}[leftmargin=*]
+\item \texttt{fallback\_mpc\_verified}: the MPC fallback satisfies the same hard checks and is applied as a verified safe action,
+\item \texttt{fallback\_mpc\_unverified}: continuity requires applying the MPC fallback even though the Lyapunov certificate was not recovered.
+\end{enumerate}
+Previous-safe and steady-state fallbacks are still retained as secondary emergency modes, but they are no longer the main runtime policy.
+
+\section{Dual Upstream-Controller Architecture}
+\subsection{RL-Upstream Path}
+In the RL-facing rollout, the TD3 policy receives the RL state encoding already used elsewhere in the repository and proposes
+\begin{align}
+a_k \in [-1,1]^{n_u}.
+\end{align}
+This is mapped to the admissible deviation-input box,
+\begin{align}
+u_{\mathrm{cand}} = \operatorname{map\_to\_bounds}(a_k,u_{\min},u_{\max}), \label{eq:rl_map}
+\end{align}
+and then passed to the target selector and safety filter. The filter may:
+\begin{enumerate}[leftmargin=*]
+\item accept the RL action directly,
+\item return an optimized correction,
+\item fall back to a verified MPC action,
+\item in continuity mode, return an unverified MPC fallback.
+\end{enumerate}
+
+\subsection{MPC-Upstream Path}
+In the MPC-facing rollout, the upstream candidate is itself the baseline offset-free MPC action,
+\begin{align}
+u_{\mathrm{cand}} = u_{\mathrm{mpc}}.
+\end{align}
+This may seem redundant, but it serves two purposes:
+\begin{enumerate}[leftmargin=*]
+\item it enforces a common Lyapunov-verification layer across all candidate controllers,
+\item it provides a clean comparison between ``baseline MPC'' and ``MPC filtered through the same safety certificate used for RL''.
+\end{enumerate}
+The same safety filter, the same target selector, the same debug payload, and the same MPC fallback logic are used for both upstream modes.
+
+\section{Debug and Export Schema}
+The new Python debug layer records every control step as a structured dictionary and then exports three artifact levels:
+\begin{enumerate}[leftmargin=*]
+\item a full replay bundle (\texttt{bundle.pkl} and \texttt{arrays.npz}),
+\item a flat per-step table (\texttt{step\_table.csv}, and \texttt{step\_table.pkl} when pandas is available),
+\item a compact summary (\texttt{summary.json} and \texttt{summary.csv}).
+\end{enumerate}
+
+\subsection{Stored Per-Step Fields}
+For each step, the exported structure includes:
+\begin{enumerate}[leftmargin=*]
+\item upstream source (\texttt{rl} or \texttt{mpc}),
+\item candidate, corrected, applied, and MPC fallback inputs,
+\item target package and target-selector diagnostics,
+\item $V_k$, $V_{k+1|k}(u_{\mathrm{cand}})$, $V_{\mathrm{bound}}$, and the Lyapunov margin,
+\item solver statuses and objective values,
+\item slack values, trust-region usage, and correction mode,
+\item verified/unverified flags and fallback reason,
+\item measured outputs, observer states, disturbances, and rewards.
+\end{enumerate}
+
+\subsection{Derived Arrays and Plots}
+The debug module also derives and stores arrays for:
+\begin{align}
+\text{target\_error\_inf}(k),\quad
+\text{target\_slack\_inf}(k),\quad
+V_{\mathrm{bound}}(k)-V_{k+1|k}(u_{\mathrm{cand}}), \quad
+\mathbb{I}\{\text{verified}\}(k),
+\end{align}
+and generates reproducible plots for:
+\begin{enumerate}[leftmargin=*]
+\item outputs versus setpoints,
+\item applied inputs,
+\item candidate versus applied deviation inputs,
+\item Lyapunov values and margins,
+\item target-selector metrics,
+\item reward traces,
+\item correction-mode counts,
+\item solver-status counts.
+\end{enumerate}
+This makes post-run analysis independent of notebook-only helper cells.
+
+\section{Repository Mapping}
+The current code path is split across the following modules:
+\begin{center}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.64\textwidth}}
+\toprule
+Module & Responsibility \\
+\midrule
+\texttt{Lyapunov/target\_selector.py} & Refined moving-equilibrium computation, two-stage Rawlings-style solve, filter-ready target package, selector diagnostics, warm-start packaging. \\
+\texttt{Lyapunov/lyapunov\_core.py} & Physical-model extraction, Riccati-based Lyapunov design, error-coordinate construction, one-step prediction, analytic candidate checks, PSD helper routines. \\
+\texttt{Lyapunov/safety\_filter.py} & Hard candidate verification, QCQP correction, verified/unverified fallback handling, shared public filter API. \\
+\texttt{Lyapunov/upstream\_controllers.py} & Single-step offset-free MPC candidate helper used by both the MPC-upstream rollout and the fallback path. \\
+\texttt{Simulation/run\_rl\_lyapunov.py} & RL-upstream closed-loop rollout, notebook-facing entrypoint with stable return tuple. \\
+\texttt{Simulation/run\_mpc\_lyapunov.py} & MPC-upstream closed-loop rollout using the same target selector and safety filter. \\
+\texttt{Lyapunov/safety\_debug.py} & Full run-bundle construction, flat step-table export, summary export, and plot generation. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Design Choices and Limitations}
+Several design choices are deliberate and should not be mistaken for oversights.
+
+\subsection{Physical-State Lyapunov Backend}
+The current online certificate is built on $e_x$, not the full augmented error. This improves interpretability and reduces numerical coupling between physical stabilization and disturbance-integrator motion. The main limitation is that the certificate does not yet reason directly about the augmented observer state.
+
+\subsection{One-Step Repair, Not Backup MPC}
+The correction problem is one-step and local. It is not intended to replace the baseline MPC optimizer. This makes the filter fast and controller-agnostic, but it can be conservative in situations where multi-step recovery is needed.
+
+\subsection{Hard Decrease by Default}
+The default path keeps the Lyapunov inequality hard. This is scientifically cleaner for the first implementation, but may reduce repair feasibility near aggressive setpoint changes or under poor local models.
+
+\subsection{Environment Constraints}
+The repository still lacks a pinned environment file and the default Python installation in the workspace does not yet provide the full scientific stack. This restricts runtime validation until the dependencies are installed.
+
+\section{Next Actions}
+The immediate next actions are as follows.
+\begin{enumerate}[leftmargin=*]
+\item Install the missing runtime dependencies and execute end-to-end smoke tests for both the RL-upstream and MPC-upstream notebooks.
+\item Compare closed-loop trajectories for four regimes: RL only, RL plus filter, MPC only, and MPC plus filter.
+\item Quantify how often each mode is used: direct acceptance, optimized correction, verified MPC fallback, and unverified MPC fallback.
+\item Add predictive backup-filter experiments that use a short-horizon safe backup solve when the one-step QCQP is too conservative.
+\item Implement and compare an augmented-state Lyapunov backend against the current physical-state design.
+\item Add regression scripts that automatically rebuild the debug bundle and summary metrics for a standard scenario.
+\end{enumerate}
+
+\section{Conclusion}
+The Lyapunov path in the repository is now organized as a canonical safety-filter architecture rather than an RL-specific notebook trick or a standard-tracking-MPC variant. The implemented method recomputes a moving admissible equilibrium each step, verifies the candidate action analytically, repairs it only when necessary, and falls back to a fresh offset-free MPC action when the repair optimizer fails. Just as importantly, the new debug/export module makes the full behavior inspectable after the fact. This combination gives the repository a clearer scientific story and a more reproducible experimental workflow.
+
+\begin{thebibliography}{99}
+
+\bibitem{pannocchia2003}
+G.~Pannocchia and J.~B.~Rawlings.
+\newblock Disturbance models for offset-free model-predictive control.
+\newblock \emph{AIChE Journal}, 49(2):426--437, 2003.
+
+\bibitem{pannocchia2007}
+G.~Pannocchia and A.~Bemporad.
+\newblock Combined design of disturbance model and observer for offset-free model predictive control.
+\newblock \emph{IEEE Transactions on Automatic Control}, 52(6):1048--1053, 2007.
+
+\bibitem{limon2008}
+D.~Limon, I.~Alvarado, T.~Alamo, and E.~F.~Camacho.
+\newblock MPC for tracking piecewise constant references for constrained linear systems.
+\newblock \emph{Automatica}, 44(9):2382--2387, 2008.
+
+\bibitem{maeder2010}
+U.~Maeder and M.~Morari.
+\newblock Offset-free reference tracking with model predictive control.
+\newblock \emph{Automatica}, 2010.
+
+\bibitem{ames2014}
+A.~D.~Ames, K.~Galloway, K.~Sreenath, and J.~W.~Grizzle.
+\newblock Rapidly exponentially stabilizing control Lyapunov functions and hybrid zero dynamics.
+\newblock \emph{IEEE Transactions on Automatic Control}, 59(4):876--891, 2014.
+
+\bibitem{ames2017}
+A.~D.~Ames, X.~Xu, J.~W.~Grizzle, and P.~Tabuada.
+\newblock Control barrier function based quadratic programs for safety critical systems.
+\newblock \emph{IEEE Transactions on Automatic Control}, 62(8):3861--3876, 2017.
+
+\bibitem{wabersich2021}
+K.~P.~Wabersich and M.~N.~Zeilinger.
+\newblock A predictive safety filter for learning-based control of constrained nonlinear dynamical systems.
+\newblock \emph{Automatica}, 129:109597, 2021.
+
+\bibitem{mayne2000}
+D.~Q.~Mayne, J.~B.~Rawlings, C.~V.~Rao, and P.~O.~M.~Scokaert.
+\newblock Constrained model predictive control: Stability and optimality.
+\newblock \emph{Automatica}, 36(6):789--814, 2000.
+
+\bibitem{rawlings2017}
+J.~B.~Rawlings, D.~Q.~Mayne, and M.~Diehl.
+\newblock \emph{Model Predictive Control: Theory, Computation, and Design}.
+\newblock Nob Hill Publishing, 2nd edition, 2017.
+
+\end{thebibliography}
+
+\end{document}
