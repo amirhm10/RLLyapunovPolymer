@@ -6,14 +6,13 @@
 - `refined_step_a_selector_parameters.md`
   Practical tuning guide for the current selector weights and options.
 
-## Legacy / Historical Reports
-These files are still present for reference, but they are no longer the primary documentation for the active selector path:
-- `current_target_selector_implementation.tex`
-- `target_selector_report.tex`
-- `target_selector_four_modes_report.tex`
-- `lyapunov_safety_filter_report.tex`
+## Historical Context
+Older selector and safety-filter writeups were removed from the active `report/` directory once the refined Step A selector became the canonical path.
 
-Their PDFs are also legacy artifacts unless you explicitly want to keep them as current deliverables.
+If historical context is needed, use:
+- `change-reports/`
+- `change-reports/snapshots/`
+- the Git commit history
 
 ## Build Notes
 The main selector report can be built with:
