@@ -129,8 +129,13 @@ def make_safety_filter_step_records(lyap_info_storage):
             "slack_u": info.get("slack_u"),
             "trust_region_violation": info.get("trust_region_violation"),
             "V_k": info.get("V_k"),
+            "V_next_first": info.get("V_next_first"),
             "V_next_cand": info.get("V_next_cand"),
             "V_bound": info.get("V_bound"),
+            "contraction_margin": info.get("contraction_margin"),
+            "first_step_contraction_satisfied": info.get("first_step_contraction_satisfied"),
+            "contraction_constraint_violation": info.get("contraction_constraint_violation"),
+            "first_step_contraction_on": info.get("first_step_contraction_on"),
             "final_lyap_value": info.get("final_lyap_value"),
             "final_lyap_bound": info.get("final_lyap_bound"),
             "final_lyap_margin": info.get("final_lyap_margin"),
@@ -411,8 +416,14 @@ def build_safety_filter_run_bundle(
             dtype=float,
         ),
         "V_k": np.array([info.get("V_k", np.nan) for info in lyap_info_storage], dtype=float),
+        "V_next_first": np.array([info.get("V_next_first", np.nan) for info in lyap_info_storage], dtype=float),
         "V_next_cand": np.array([info.get("V_next_cand", np.nan) for info in lyap_info_storage], dtype=float),
         "V_bound": np.array([info.get("V_bound", np.nan) for info in lyap_info_storage], dtype=float),
+        "contraction_margin": np.array([info.get("contraction_margin", np.nan) for info in lyap_info_storage], dtype=float),
+        "first_step_contraction_satisfied_flags": np.array(
+            [1.0 if bool(info.get("first_step_contraction_satisfied", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
         "final_lyap_value": np.array([info.get("final_lyap_value", np.nan) for info in lyap_info_storage], dtype=float),
         "final_lyap_bound": np.array([info.get("final_lyap_bound", np.nan) for info in lyap_info_storage], dtype=float),
         "final_lyap_margin": np.array([info.get("final_lyap_margin", np.nan) for info in lyap_info_storage], dtype=float),
@@ -565,8 +576,11 @@ def _save_npz(path, bundle):
         selector_x_s_minus_xhat_inf=bundle["selector_x_s_minus_xhat_inf"],
         selector_x_s_minus_xprev_inf=bundle["selector_x_s_minus_xprev_inf"],
         V_k=bundle["V_k"],
+        V_next_first=bundle["V_next_first"],
         V_next_cand=bundle["V_next_cand"],
         V_bound=bundle["V_bound"],
+        contraction_margin=bundle["contraction_margin"],
+        first_step_contraction_satisfied_flags=bundle["first_step_contraction_satisfied_flags"],
         final_lyap_value=bundle["final_lyap_value"],
         final_lyap_bound=bundle["final_lyap_bound"],
         final_lyap_margin=bundle["final_lyap_margin"],
@@ -603,8 +617,11 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     u_applied_phys = bundle["u_applied_phys"]
     y_sp = np.asarray(bundle["y_sp"], float)
     V_k = bundle["V_k"]
+    V_next_first = bundle["V_next_first"]
     V_next_cand = bundle["V_next_cand"]
     V_bound = bundle["V_bound"]
+    contraction_margin = bundle["contraction_margin"]
+    first_step_contraction_satisfied_flags = np.asarray(bundle["first_step_contraction_satisfied_flags"], float)
     final_lyap_value = bundle["final_lyap_value"]
     final_lyap_bound = bundle["final_lyap_bound"]
     final_lyap_margin = bundle["final_lyap_margin"]
@@ -934,6 +951,36 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "lyapunov_values.png"), dpi=300, bbox_inches="tight")
     plt.close()
+
+    if np.any(np.isfinite(V_next_first)) or np.any(np.isfinite(contraction_margin)):
+        fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+        axes[0].plot(time_u, V_k, linewidth=2, label="V_k")
+        axes[0].plot(time_u, V_next_first, linewidth=2, label="V_next_first")
+        axes[0].plot(time_u, V_bound, linewidth=2, linestyle="--", label="V_bound")
+        axes[0].grid(True, linestyle="--", alpha=0.35)
+        axes[0].legend()
+
+        axes[1].plot(time_u, contraction_margin, linewidth=2, color="tab:red", label="contraction_margin")
+        axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1.0)
+        axes[1].grid(True, linestyle="--", alpha=0.35)
+        axes[1].legend()
+
+        axes[2].step(
+            time_u,
+            first_step_contraction_satisfied_flags,
+            where="post",
+            linewidth=2,
+            color="tab:green",
+            label="first_step_contraction_satisfied",
+        )
+        axes[2].set_ylim(-0.05, 1.05)
+        axes[2].set_yticks([0.0, 1.0])
+        axes[2].grid(True, linestyle="--", alpha=0.35)
+        axes[2].legend()
+        axes[2].set_xlabel("step")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "first_step_contraction_diagnostics.png"), dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
     last_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
     if last_len <= 0:

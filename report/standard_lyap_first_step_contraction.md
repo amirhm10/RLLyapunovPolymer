@@ -1,18 +1,28 @@
-# Standard Lyapunov MPC With First-Step Contraction
+# MPC Upstream With First-Step Lyapunov Contraction
 
 ## Purpose
-This note describes the new standard Lyapunov MPC variant implemented in the maintained `Lyapunov/` path. The design goal is:
 
-- keep the **existing standard tracking MPC objective unchanged**,
-- keep the **current refined target selector**,
-- add **one hard Lyapunov contraction constraint only on the first predicted step**,
-- avoid the safety-filter architecture entirely.
+This note describes the maintained first-step-contraction controller after the architecture correction.
 
-This controller is therefore different from the safety-filter path. The contraction property is enforced **inside the MPC solve**, not by post-processing a candidate input afterward.
+The controller is **not** the older standard-Lyapunov MPC stack. It now follows the same high-level path as the MPC safety-filter notebook:
 
-## 1. Model Split and Coordinates
+1. compute the refined Step A target selector at every step,
+2. build the same effective target using current target or last valid target,
+3. solve the same upstream offset-free MPC problem,
+4. add only one extra hard Lyapunov inequality on the **first predicted physical-state step**,
+5. do **not** run any QCQP projection,
+6. if the constrained MPC solve fails, fall back to ordinary offset-free MPC.
 
-The maintained controller uses the augmented linear model
+So the change is:
+
+- same selector and target-handling logic as the safety path,
+- same MPC objective as baseline MPC,
+- no post-projection safety correction,
+- one hard first-step Lyapunov gate inside the upstream MPC solve.
+
+## 1. Augmented MPC Model
+
+The controller uses the same augmented offset-free linear model as the MPC safety notebook:
 
 \[
 z_{k+1} = A_{\mathrm{aug}} z_k + B_{\mathrm{aug}} u_k,
@@ -23,15 +33,19 @@ y_k = C_{\mathrm{aug}} z_k,
 with augmented state
 
 \[
-z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+z_k =
+\begin{bmatrix}
+x_k \\
+d_k
+\end{bmatrix},
 \]
 
 where:
 
 - \(x_k \in \mathbb{R}^{n_x}\) is the physical-state estimate,
-- \(d_k \in \mathbb{R}^{n_y}\) is the disturbance/output-offset estimate.
+- \(d_k \in \mathbb{R}^{n_d}\) is the disturbance / output-offset estimate.
 
-The maintained code splits the augmented matrices as
+The matrix split is
 
 \[
 A_{\mathrm{aug}} =
@@ -42,7 +56,8 @@ A & B_d \\
 \qquad
 B_{\mathrm{aug}} =
 \begin{bmatrix}
-B \\ 0
+B \\
+0
 \end{bmatrix},
 \qquad
 C_{\mathrm{aug}} =
@@ -51,19 +66,17 @@ C & C_d
 \end{bmatrix}.
 \]
 
-In the implementation, the Lyapunov contraction is defined on the **physical-state error only**, not on the full augmented state.
+All control computations are done in scaled deviation coordinates, exactly as in the baseline MPC and safety-MPC paths.
 
-## 2. Target Selector Step
+## 2. Refined Step A Target Selector
 
-At each control step \(k\), the refined target selector computes a steady package
+At time step \(k\), the same refined selector as the safety notebook computes a steady package
 
 \[
-(x_s, u_s, d_s, y_s, r_s),
+(x_s, u_s, d_s, y_s, r_s).
 \]
 
-using the current observer estimate \(z_k = [x_k; d_k]\), the current setpoint request, and the previous target for smoothing.
-
-The selector solves a steady-state optimization subject to:
+It solves the steady-state equations
 
 \[
 x_s = A x_s + B u_s + B_d d_s,
@@ -72,12 +85,10 @@ x_s = A x_s + B u_s + B_d d_s,
 y_s = C x_s + C_d d_s,
 \]
 
-plus input and optional output bounds/tightening.
-
-The objective remains the refined Step A objective already implemented in the selector:
+with the same tightened input / optional output bounds and the same refined objective:
 
 \[
-\|r_s - y_{sp}\|_{Q_r}^2
+\|r_s - y_{sp,k}\|_{Q_r}^2
 +
 \|u_s - u_{\mathrm{applied},k}\|_{R_{u,\mathrm{ref}}}^2
 +
@@ -85,29 +96,65 @@ The objective remains the refined Step A objective already implemented in the se
 +
 \|x_s - x_{s,\mathrm{prev}}\|_{Q_{\Delta x}}^2
 +
-\|x_s - \hat x_k\|_{Q_{x,\mathrm{ref}}}^2.
+\|x_s - \hat{x}_k\|_{Q_{x,\mathrm{ref}}}^2.
 \]
 
-This controller does **not** change the selector. It reuses it exactly as the center generator.
+The selector itself is unchanged.
 
-## 3. Existing Standard Tracking MPC Objective
+### Effective target reuse
 
-After the target selector returns \((x_s,u_s,d_s)\), the standard tracking MPC solves over the future input sequence
+The controller uses the same effective-target logic as the safety path:
+
+- if the current selector solve succeeds, use the current target;
+- otherwise, if `target_backup_policy="last_valid"` and a previous successful target exists, reuse that last valid target;
+- otherwise, there is no effective Lyapunov center available.
+
+So the controller center is
 
 \[
-U = \{u_{0|k}, u_{1|k}, \dots, u_{N_C-1|k}\}.
+(x_s^{\mathrm{eff}}, u_s^{\mathrm{eff}}, d_s^{\mathrm{eff}}, y_s^{\mathrm{eff}}, r_s^{\mathrm{eff}}),
 \]
 
-The augmented prediction model is
+coming from either the current selector result or the last valid selector result.
+
+## 3. Tracking target for the MPC objective
+
+The upstream MPC still uses the same tracking-target policy surface as the safety notebook:
+
+- `raw_setpoint`
+- `selector_reference`
+- `admissible_if_available`
+- `admissible_on_fallback`
+
+So the stage target supplied to the ordinary MPC objective is
+
+\[
+y_{\mathrm{track},k},
+\]
+
+selected by the same policy used in the safety notebook.
+
+By default, the notebook keeps
+
+\[
+y_{\mathrm{track},k} = y_{sp,k}.
+\]
+
+## 4. Baseline MPC Objective Remains Unchanged
+
+The decision variable is the future move sequence
+
+\[
+U =
+\{u_{0|k}, u_{1|k}, \dots, u_{N_C-1|k}\}.
+\]
+
+Predictions use the same offset-free model:
 
 \[
 z_{j+1|k} = A_{\mathrm{aug}} z_{j|k} + B_{\mathrm{aug}} u_{c(j)|k},
-\]
-
-where
-
-\[
-c(j) = \min(j, N_C-1).
+\qquad
+c(j)=\min(j,N_C-1).
 \]
 
 The predicted output is
@@ -116,81 +163,90 @@ The predicted output is
 y_{j|k} = C_{\mathrm{aug}} z_{j|k}.
 \]
 
-The maintained standard objective is **kept exactly unchanged**:
+The objective is exactly the baseline offset-free MPC objective already used by `MpcSolver.mpc_opt_fun(...)`:
 
 \[
-J(U) =
-\sum_{j=1}^{N_P} \| y_{j|k} - y_{\mathrm{target}} \|_{Q_y}^2
+J(U)
+=
+\sum_{j=1}^{N_P} \|y_{j|k} - y_{\mathrm{track},k}\|_{Q_y}^2
 +
-\sum_{j=0}^{N_C-1} \| u_{j|k} - u_s \|_{S_u}^2
-+
-\sum_{j=0}^{N_C-1} \| \Delta u_{j|k} \|_{R_{\Delta u}}^2
-+
-\| x_{N_P|k} - x_s \|_{P_x}^2 \cdot \gamma_{\mathrm{terminal}}.
+\sum_{j=0}^{N_C-1} \|\Delta u_{j|k}\|_{R_{\Delta u}}^2.
 \]
 
-Here:
+Nothing is added to this objective:
 
-- \(y_{\mathrm{target}}\) is whatever the standard rollout already uses for tracking,
-- \(u_s\) is the steady target input,
-- \(P_x\) is the existing terminal/Lyapunov matrix,
-- \(\gamma_{\mathrm{terminal}}\) is the existing terminal cost scale.
+- no \(u_s\)-centering term,
+- no terminal quadratic term,
+- no terminal set term,
+- no QCQP correction cost.
 
-So this new controller is **not** a new objective design. It is the old standard objective plus one extra constraint.
+The only change is one extra hard constraint.
 
-## 4. Physical-State Lyapunov Function
+## 5. Lyapunov Function and First-Step Contraction Bound
 
-Define the physical-state tracking error relative to the current selected steady target:
+Using the same physical-state Lyapunov matrix \(P_x\) as the safety path, define the physical-state error relative to the effective selector center:
 
 \[
-e_{x,k} = x_k - x_s.
+e_{x,k} = x_k - x_s^{\mathrm{eff}}.
 \]
 
 The Lyapunov function is
 
 \[
-V(e_x) = e_x^\top P_x e_x,
+V(e_x) = e_x^\top P_x e_x.
 \]
 
-where \(P_x \succ 0\) is the same matrix already used by the standard Lyapunov MPC terminal ingredients.
-
-At the current time step, the current Lyapunov value is
+So the current Lyapunov value is
 
 \[
-V_k = V(e_{x,k}) = (x_k - x_s)^\top P_x (x_k - x_s).
+V_k = (x_k - x_s^{\mathrm{eff}})^\top P_x (x_k - x_s^{\mathrm{eff}}).
 \]
 
-The contraction bound is
+The bound is
 
 \[
-V_{\mathrm{bound}} = \rho \, V_k + \varepsilon_{\mathrm{lyap}},
-\qquad 0 < \rho < 1,\quad \varepsilon_{\mathrm{lyap}} \ge 0.
+V_{\mathrm{bound},k} = \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}},
 \]
 
-In the maintained codebase, \(\varepsilon_{\mathrm{lyap}}\) is treated as a numerical tolerance term, not as a negative contraction margin.
-
-## 5. New First-Step Contraction Constraint
-
-Only the **first predicted physical-state step** is constrained.
-
-Let the first predicted physical state be
+with
 
 \[
-x_{1|k}.
+0 < \rho_{\mathrm{lyap}} < 1,
+\qquad
+\varepsilon_{\mathrm{lyap}} \ge 0.
 \]
 
-Then the first predicted physical-state error relative to the selected steady target is
+In this codebase, \(\varepsilon_{\mathrm{lyap}}\) is a numerical tolerance term, so the implemented inequality is
 
 \[
-e_{x,k+1|k} = x_{1|k} - x_s.
+V_{\mathrm{next}} \le \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}}.
 \]
 
-The new hard constraint is
+## 6. The Only New Constraint
+
+Let the first predicted augmented state be
 
 \[
-e_{x,k+1|k}^\top P_x e_{x,k+1|k}
+z_{1|k} =
+\begin{bmatrix}
+x_{1|k} \\
+d_{1|k}
+\end{bmatrix}.
+\]
+
+Only the physical part is used in the Lyapunov gate:
+
+\[
+e_{x,k+1|k} = x_{1|k} - x_s^{\mathrm{eff}}.
+\]
+
+The single additional hard inequality is
+
+\[
+(x_{1|k} - x_s^{\mathrm{eff}})^\top P_x (x_{1|k} - x_s^{\mathrm{eff}})
 \le
-\rho \, e_{x,k}^\top P_x e_{x,k}
+\rho_{\mathrm{lyap}}
+(x_k - x_s^{\mathrm{eff}})^\top P_x (x_k - x_s^{\mathrm{eff}})
 +
 \varepsilon_{\mathrm{lyap}}.
 \]
@@ -198,156 +254,139 @@ e_{x,k+1|k}^\top P_x e_{x,k+1|k}
 Equivalently,
 
 \[
-V(e_{x,k+1|k}) \le \rho V(e_{x,k}) + \varepsilon_{\mathrm{lyap}}.
+V(e_{x,k+1|k}) \le \rho_{\mathrm{lyap}} V(e_{x,k}) + \varepsilon_{\mathrm{lyap}}.
 \]
 
-This is enforced **once only**, using the first predicted state.
+This constraint is enforced **only for the first predicted step**.
 
 There are no analogous constraints on:
 
 - \(x_{2|k}\),
 - \(x_{3|k}\),
-- \(\dots\),
-- \(x_{N_P|k}\).
+- terminal state \(x_{N_P|k}\).
 
-So this controller is not a full horizon-contraction MPC. It is a standard tracking MPC with one one-step Lyapunov contraction gate built into the solve.
+So this controller is:
 
-## 6. Full Optimization Problem
+- not a QCQP safety filter,
+- not a full-horizon Lyapunov-constrained MPC,
+- not the older terminal-set standard Lyapunov MPC.
 
-At each control step, after the target selector succeeds, the controller solves
+It is simply baseline MPC with one first-step Lyapunov contraction inequality.
 
-\[
-\min_{U,\;Z}
-J(U)
-\]
+## 7. Full constrained upstream-MPC problem
 
-subject to:
+When an effective target exists and `first_step_contraction_on=True`, the controller solves
 
 \[
-z_{0|k} = z_k,
+\min_{U} J(U)
 \]
 
+subject to
+
+\[
+z_{0|k} = \hat z_k,
+\]
 \[
 z_{j+1|k} = A_{\mathrm{aug}} z_{j|k} + B_{\mathrm{aug}} u_{c(j)|k},
-\qquad j = 0,\dots,N_P-1,
+\qquad j=0,\dots,N_P-1,
 \]
-
 \[
 u_{\min} \le u_{j|k} \le u_{\max},
-\qquad j = 0,\dots,N_C-1,
+\qquad j=0,\dots,N_C-1,
 \]
-
-plus the existing terminal set constraint **if the standard configuration already turns it on**, and in addition:
+plus any ordinary MPC constraints already present in `cons`, and the additional first-step Lyapunov inequality
 
 \[
-(x_{1|k} - x_s)^\top P_x (x_{1|k} - x_s)
+(x_{1|k} - x_s^{\mathrm{eff}})^\top P_x (x_{1|k} - x_s^{\mathrm{eff}})
 \le
-\rho (x_k - x_s)^\top P_x (x_k - x_s)
+\rho_{\mathrm{lyap}}
+(x_k - x_s^{\mathrm{eff}})^\top P_x (x_k - x_s^{\mathrm{eff}})
 +
 \varepsilon_{\mathrm{lyap}}.
 \]
 
-Nothing else about the objective is changed.
+The numerical optimization is still an ordinary `scipy.optimize.minimize(...)` solve on the same MPC decision vector, but with the above nonlinear inequality appended.
 
-## 7. Why Only the First Step?
+## 8. No projection / no QCQP
 
-This design is intentionally different from both:
+This path intentionally removes the post-candidate correction stage:
 
-- a safety filter, and
-- a full horizon Lyapunov-constrained MPC.
+- no QCQP correction,
+- no trust region,
+- no Lyapunov slack variable,
+- no projection-active step.
 
-Why only the first step:
+The accepted action is either:
 
-1. It forces the **applied move** to respect a Lyapunov decrease condition.
-2. It keeps the optimization problem close to the existing standard controller.
-3. It avoids over-constraining the whole horizon.
-4. It is the most direct MPC-side analogue of a one-step Lyapunov filter, but enforced inside the solve.
+1. the constrained upstream MPC candidate, or
+2. an ordinary fallback MPC input.
 
-So the philosophy is:
+## 9. Fallback behavior
 
-- the target selector defines the local center,
-- the MPC objective still handles performance,
-- the first applied move is forced to be contractive.
+If the constrained MPC solve cannot be used:
 
-## 8. Difference From Other Controllers
+- because there is no effective target,
+- or because the constrained optimization is infeasible / unsuccessful,
 
-### Baseline MPC
-- no target selector steady package used as a Lyapunov center,
-- no Lyapunov constraint,
-- pure performance objective.
+the controller falls back to ordinary offset-free MPC with the same tracking target
 
-### Current standard Lyapunov MPC
-- uses the target selector,
-- uses standard tracking objective and terminal ingredients,
-- may use terminal cost and optional terminal set,
-- does **not** require first-step contraction.
+\[
+y_{\mathrm{track},k}.
+\]
 
-### Safety-filter MPC
-- computes a candidate controller action first,
-- then applies a separate Lyapunov acceptance/correction/fallback layer after the candidate is proposed.
+That fallback MPC is **not** re-solved with another Lyapunov constraint.
 
-### This new controller
-- uses the target selector,
-- keeps the standard tracking objective,
-- adds one hard first-step contraction constraint **inside** the MPC solve,
-- does not use the safety filter.
+It is then evaluated for diagnostics:
 
-## 9. Implementation Mapping
+- if it happens to satisfy the Lyapunov test, it is labeled as verified fallback;
+- otherwise it is labeled as unverified fallback.
 
-The implementation is split into three layers.
+So fallback is ordinary MPC behavior, not a second constrained optimization and not a QCQP projection.
 
-### Solver layer
-`Lyapunov/lyapunov_core.py`
+## 10. Relationship to the safety MPC notebook
 
-- existing standard solver stays untouched,
-- new sibling solver adds:
-  - `rho_lyap`
-  - `eps_lyap`
-  - `first_step_contraction_on`
-- the first-step quadratic constraint is formed using the first predicted physical-state block.
+This controller shares with the safety MPC notebook:
 
-### Rollout layer
-`Lyapunov/run_lyap_mpc.py`
+- the same refined selector,
+- the same selector config surface,
+- the same effective-target reuse logic,
+- the same tracking-target policy logic,
+- the same warm-start handling,
+- the same debug/export bundle structure.
 
-- existing standard rollout stays untouched,
-- new sibling rollout:
-  - calls the same refined target selector each step,
-  - calls the new solver,
-  - logs contraction quantities per step.
+It differs from the safety MPC notebook in exactly one architectural point:
 
-### Notebook layer
-`StandardLyapMPCFirstStepContraction.ipynb`
+- the safety notebook solves ordinary MPC first and then may correct it with QCQP projection,
+- this notebook solves constrained MPC directly and never runs QCQP projection.
 
-- import-driven experiment entrypoint,
-- uses the maintained `Lyapunov/` modules,
-- exposes the contraction parameters and the current standard MPC settings.
+## 11. What the debug/export means in this path
 
-## 10. Step Diagnostics
+Because the same safety debug/export pipeline is reused:
 
-The new path should record:
+- target-selector plots mean the same thing as in the safety notebook,
+- output/input/fallback plots mean the same thing as in the safety notebook,
+- QCQP/projection plots should remain inactive,
+- the dedicated contraction diagnostics plot is the key new figure.
+
+The important first-step contraction diagnostics are:
 
 - \(V_k\)
-- \(V_{k+1|k}\) for the first predicted step
+- \(V_{1|k}\) stored as `V_next_first`
 - \(V_{\mathrm{bound}}\)
-- contraction margin
-  \[
-  V_{k+1|k} - V_{\mathrm{bound}}
-  \]
-- whether the first-step contraction was satisfied
-- solver status and rejection reason
+- `contraction_margin = V_next_first - V_bound`
+- `first_step_contraction_satisfied`
 
-These are the right quantities to inspect when the new constraint makes the problem infeasible or degrades performance.
+## 12. Implementation mapping
 
-## 11. Expected Failure Mode
+The maintained implementation is split as:
 
-The new controller can become infeasible even when the old standard controller was feasible, because:
+- constrained upstream MPC solve helper:
+  `Lyapunov/upstream_controllers.py`
+- MPC-upstream rollout with refined selector and fallback logic:
+  `Simulation/run_mpc_first_step_contraction.py`
+- notebook entrypoint:
+  `StandardLyapMPCFirstStepContraction.ipynb`
+- debug/export:
+  `Lyapunov/safety_debug.py`
 
-- the old controller only optimized performance and terminal structure,
-- the new controller also demands an immediate one-step contraction.
-
-So the key tradeoff is:
-
-- better local Lyapunov discipline on the applied move,
-- at the cost of potentially more infeasible steps or more conservative inputs.
-
-That tradeoff is the central experimental question for this controller.
+This is now the intended first-step-contraction implementation path.
