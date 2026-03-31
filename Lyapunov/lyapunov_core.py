@@ -323,6 +323,41 @@ def lyapunov_bound(V_k, rho, eps_lyap):
     return rho * float(V_k) + eps_lyap
 
 
+def first_step_contraction_metrics(x0_aug, x_pred, x_s, P_x, rho, eps_lyap, tol=1e-9):
+    x0_aug = np.asarray(x0_aug, float).reshape(-1)
+    x_pred = np.asarray(x_pred, float)
+    x_s = np.asarray(x_s, float).reshape(-1)
+    P_x = np.asarray(P_x, float)
+    n_x = x_s.size
+
+    if x0_aug.size < n_x:
+        raise ValueError("x0_aug is shorter than x_s.")
+    if x_pred.ndim != 2 or x_pred.shape[0] < n_x or x_pred.shape[1] < 2:
+        raise ValueError("x_pred must contain at least the initial and first predicted states.")
+
+    e_x = x0_aug[:n_x] - x_s
+    e_x_next_first = x_pred[:n_x, 1] - x_s
+    V_k = lyapunov_value(e_x, P_x)
+    V_next_first = lyapunov_value(e_x_next_first, P_x)
+    V_bound = lyapunov_bound(V_k, rho=rho, eps_lyap=eps_lyap)
+    contraction_margin = float(V_next_first - V_bound)
+    first_step_contraction_satisfied = bool(contraction_margin <= float(tol))
+    contraction_constraint_violation = max(contraction_margin, 0.0)
+
+    return {
+        "e_x": e_x.copy(),
+        "e_x_next_first": e_x_next_first.copy(),
+        "V_k": float(V_k),
+        "V_next_first": float(V_next_first),
+        "V_bound": float(V_bound),
+        "contraction_margin": float(contraction_margin),
+        "first_step_contraction_satisfied": bool(first_step_contraction_satisfied),
+        "contraction_constraint_violation": float(contraction_constraint_violation),
+        "rho_lyap": float(rho),
+        "eps_lyap": float(eps_lyap),
+    }
+
+
 def _bound_ok(value, lower=None, upper=None, tol=1e-9):
     violation = _bound_violation_inf(value, lower=lower, upper=upper)
     return bool(violation <= float(tol)), float(violation)
@@ -804,4 +839,311 @@ class StandardTrackingLyapunovMpcRawlingsTargetSolver:
             terminal_constraint_violation=None
             if last_eval is None
             else last_eval["terminal_constraint_violation"],
+        )
+
+
+class FirstStepContractionTrackingLyapunovMpcSolver(StandardTrackingLyapunovMpcRawlingsTargetSolver):
+    def _evaluate_tracking_solution_with_contraction(
+        self,
+        u_sequence,
+        x_pred,
+        x0_aug,
+        x_s,
+        lower,
+        upper,
+        alpha_terminal,
+        terminal_constraint_active,
+        first_step_contraction_on,
+        rho_lyap,
+        eps_lyap,
+        status,
+    ):
+        result = super()._evaluate_tracking_solution(
+            u_sequence=u_sequence,
+            x_pred=x_pred,
+            x0_aug=x0_aug,
+            x_s=x_s,
+            lower=lower,
+            upper=upper,
+            alpha_terminal=alpha_terminal,
+            terminal_constraint_active=terminal_constraint_active,
+            status=status,
+        )
+        result.update({
+            "V_k": None,
+            "V_next_first": None,
+            "V_bound": None,
+            "contraction_margin": None,
+            "first_step_contraction_satisfied": None,
+            "contraction_constraint_violation": None,
+            "rho_lyap": None if rho_lyap is None else float(rho_lyap),
+            "eps_lyap": None if eps_lyap is None else float(eps_lyap),
+        })
+
+        if not first_step_contraction_on:
+            return result
+
+        contraction = first_step_contraction_metrics(
+            x0_aug=x0_aug,
+            x_pred=x_pred,
+            x_s=x_s,
+            P_x=self.P_x,
+            rho=rho_lyap,
+            eps_lyap=eps_lyap,
+            tol=_TRACKING_TOL_BY_STATUS.get(status, 1e-5),
+        )
+        result.update(contraction)
+        if result["accepted"] and not contraction["first_step_contraction_satisfied"]:
+            result["accepted"] = False
+            result["reject_reason"] = "first_step_contraction"
+        return result
+
+    def standard_tracking_report(
+        self,
+        x_opt,
+        x0_aug,
+        x_s,
+        u_s,
+        y_target,
+        u_prev_dev,
+        alpha_terminal,
+        rho_lyap=None,
+        eps_lyap=None,
+        first_step_contraction_on=False,
+    ):
+        report = super().standard_tracking_report(
+            x_opt=x_opt,
+            x0_aug=x0_aug,
+            x_s=x_s,
+            u_s=u_s,
+            y_target=y_target,
+            u_prev_dev=u_prev_dev,
+            alpha_terminal=alpha_terminal,
+        )
+        report.update({
+            "V_k": None,
+            "V_next_first": None,
+            "V_bound": None,
+            "contraction_margin": None,
+            "first_step_contraction_satisfied": None,
+            "contraction_constraint_violation": None,
+            "rho_lyap": None if rho_lyap is None else float(rho_lyap),
+            "eps_lyap": None if eps_lyap is None else float(eps_lyap),
+        })
+
+        if first_step_contraction_on:
+            contraction = first_step_contraction_metrics(
+                x0_aug=x0_aug,
+                x_pred=report["x_pred_path"],
+                x_s=x_s,
+                P_x=self.P_x,
+                rho=rho_lyap,
+                eps_lyap=eps_lyap,
+            )
+            report.update(contraction)
+        return report
+
+    def solve_tracking_mpc_step(
+        self,
+        IC_opt,
+        bnds,
+        y_target,
+        u_prev_dev,
+        x0_aug,
+        x_s,
+        u_s,
+        alpha_terminal,
+        rho_lyap=0.99,
+        eps_lyap=1e-9,
+        first_step_contraction_on=True,
+        options=None,
+    ):
+        if not HAS_CVXPY:
+            raise ImportError("CVXPY is required for the standard Lyapunov tracking MPC solver.")
+
+        options = {} if options is None else dict(options)
+        solver_pref_override = options.pop("solver_pref", None)
+        warm_start = bool(options.pop("warm_start", True))
+        verbose = bool(options.pop("verbose", False))
+        solve_kwargs = dict(options.pop("solve_kwargs", {}))
+
+        x0_aug = np.asarray(x0_aug, float).reshape(-1)
+        x_s = np.asarray(x_s, float).reshape(self.n_x)
+        u_s = np.asarray(u_s, float).reshape(self.n_u)
+        y_target = np.asarray(y_target, float).reshape(self.n_y)
+        u_prev_dev = np.asarray(u_prev_dev, float).reshape(self.n_u)
+        lower, upper = _bounds_to_horizon_matrices(bnds, self.n_u, self.NC)
+
+        active_terminal_constraint = (
+            self.terminal_set_on
+            and alpha_terminal is not None
+            and np.isfinite(float(alpha_terminal))
+        )
+        active_first_step_contraction = bool(first_step_contraction_on)
+
+        u_var = cp.Variable((self.NC, self.n_u))
+        x_var = cp.Variable((self.n_aug, self.NP + 1))
+
+        constraints = [x_var[:, 0] == x0_aug]
+        if lower is not None:
+            lower_rows, lower_cols = np.where(np.isfinite(lower))
+            for row_idx, col_idx in zip(lower_rows, lower_cols):
+                constraints.append(u_var[row_idx, col_idx] >= float(lower[row_idx, col_idx]))
+        if upper is not None:
+            upper_rows, upper_cols = np.where(np.isfinite(upper))
+            for row_idx, col_idx in zip(upper_rows, upper_cols):
+                constraints.append(u_var[row_idx, col_idx] <= float(upper[row_idx, col_idx]))
+
+        objective = 0.0
+        for step_idx in range(self.NP):
+            ctrl_idx = step_idx if step_idx < self.NC else self.NC - 1
+            constraints.append(
+                x_var[:, step_idx + 1] == self.A @ x_var[:, step_idx] + self.B @ u_var[ctrl_idx, :]
+            )
+
+            y_expr = self.C @ x_var[:, step_idx + 1]
+            if self.D is not None:
+                y_expr = y_expr + self.D @ u_var[ctrl_idx, :]
+            objective += cp.quad_form(y_expr - y_target, self.Qy_mat)
+
+        for ctrl_idx in range(self.NC):
+            objective += cp.quad_form(u_var[ctrl_idx, :] - u_s, self.Su_mat)
+
+        if self.Rdu_mat is not None:
+            objective += cp.quad_form(u_var[0, :] - u_prev_dev, self.Rdu_mat)
+            for ctrl_idx in range(1, self.NC):
+                objective += cp.quad_form(u_var[ctrl_idx, :] - u_var[ctrl_idx - 1, :], self.Rdu_mat)
+
+        terminal_error = x_var[:self.n_x, self.NP] - x_s
+        terminal_value_expr = cp.quad_form(terminal_error, self.P_x)
+        objective += self.terminal_cost_scale * terminal_value_expr
+        if active_terminal_constraint:
+            constraints.append(terminal_value_expr <= float(alpha_terminal))
+
+        if active_first_step_contraction:
+            V_k = lyapunov_value(x0_aug[:self.n_x] - x_s, self.P_x)
+            V_bound = float(lyapunov_bound(V_k, rho=rho_lyap, eps_lyap=eps_lyap))
+            first_step_error = x_var[:self.n_x, 1] - x_s
+            first_step_value_expr = cp.quad_form(first_step_error, self.P_x)
+            constraints.append(first_step_value_expr <= V_bound)
+
+        problem = cp.Problem(cp.Minimize(objective), constraints)
+
+        ic_flat = np.asarray(IC_opt, float).reshape(-1)
+        if ic_flat.size == self.n_u * self.NC:
+            try:
+                u_guess = reshape_u_sequence(ic_flat, self.n_u, self.NC)
+                u_var.value = u_guess
+                x_guess, _ = self._predict_from_sequence(u_guess, x0_aug)
+                x_var.value = x_guess
+            except Exception:
+                pass
+
+        if solver_pref_override is None:
+            needs_conic = bool(active_terminal_constraint or active_first_step_contraction)
+            solver_pref = self.solver_pref_conic if needs_conic else self.solver_pref_qp
+        else:
+            solver_pref = solver_pref_override
+        solver_sequence = tracking_solver_sequence(
+            bool(active_terminal_constraint or active_first_step_contraction),
+            solver_pref=solver_pref,
+        )
+
+        last_status = None
+        last_solver = None
+        last_error = None
+        last_objective = None
+        last_nit = None
+        last_eval = None
+
+        for solver_name in solver_sequence:
+            try:
+                problem.solve(
+                    solver=solver_name,
+                    warm_start=warm_start,
+                    verbose=verbose,
+                    **solve_kwargs,
+                )
+                last_status = problem.status
+                last_solver = solver_name
+                last_nit = _extract_num_iters(problem)
+                if problem.value is not None:
+                    last_objective = float(problem.value)
+
+                if u_var.value is None or x_var.value is None:
+                    continue
+
+                u_value = np.asarray(u_var.value, float)
+                x_value = np.asarray(x_var.value, float)
+                last_eval = self._evaluate_tracking_solution_with_contraction(
+                    u_sequence=u_value,
+                    x_pred=x_value,
+                    x0_aug=x0_aug,
+                    x_s=x_s,
+                    lower=lower,
+                    upper=upper,
+                    alpha_terminal=alpha_terminal,
+                    terminal_constraint_active=active_terminal_constraint,
+                    first_step_contraction_on=active_first_step_contraction,
+                    rho_lyap=rho_lyap,
+                    eps_lyap=eps_lyap,
+                    status=problem.status,
+                )
+                if problem.status in _OPTIMAL_STATUSES and last_eval["accepted"]:
+                    return SimpleNamespace(
+                        success=True,
+                        x=u_value.reshape(-1),
+                        status=problem.status,
+                        message="optimal",
+                        fun=last_objective,
+                        nit=last_nit,
+                        solver=solver_name,
+                        error=None,
+                        objective_value=last_objective,
+                        dyn_residual_inf=last_eval["dyn_residual_inf"],
+                        bound_violation_inf=last_eval["bound_violation_inf"],
+                        terminal_value=last_eval["terminal_value"],
+                        terminal_constraint_violation=last_eval["terminal_constraint_violation"],
+                        V_k=last_eval["V_k"],
+                        V_next_first=last_eval["V_next_first"],
+                        V_bound=last_eval["V_bound"],
+                        contraction_margin=last_eval["contraction_margin"],
+                        first_step_contraction_satisfied=last_eval["first_step_contraction_satisfied"],
+                        contraction_constraint_violation=last_eval["contraction_constraint_violation"],
+                    )
+            except Exception as exc:
+                last_error = repr(exc)
+
+        reject_reason = None if last_eval is None else last_eval.get("reject_reason")
+        if reject_reason is None and last_error is not None:
+            reject_reason = "solver_error"
+        if reject_reason is None:
+            reject_reason = "solver_status"
+
+        return SimpleNamespace(
+            success=False,
+            x=None,
+            status=last_status,
+            message=reject_reason,
+            fun=last_objective,
+            nit=last_nit,
+            solver=last_solver,
+            error=last_error,
+            objective_value=last_objective,
+            dyn_residual_inf=None if last_eval is None else last_eval["dyn_residual_inf"],
+            bound_violation_inf=None if last_eval is None else last_eval["bound_violation_inf"],
+            terminal_value=None if last_eval is None else last_eval["terminal_value"],
+            terminal_constraint_violation=None
+            if last_eval is None
+            else last_eval["terminal_constraint_violation"],
+            V_k=None if last_eval is None else last_eval["V_k"],
+            V_next_first=None if last_eval is None else last_eval["V_next_first"],
+            V_bound=None if last_eval is None else last_eval["V_bound"],
+            contraction_margin=None if last_eval is None else last_eval["contraction_margin"],
+            first_step_contraction_satisfied=None
+            if last_eval is None
+            else last_eval["first_step_contraction_satisfied"],
+            contraction_constraint_violation=None
+            if last_eval is None
+            else last_eval["contraction_constraint_violation"],
         )
