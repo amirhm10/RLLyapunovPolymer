@@ -209,3 +209,188 @@ def solve_offset_free_mpc_candidate_with_first_step_contraction(
     if return_debug:
         return u_candidate, info
     return u_candidate
+
+
+def apply_first_step_contraction_replacement(
+    u_candidate,
+    MPC_obj,
+    y_sp,
+    u_prev_dev,
+    x0_model,
+    effective_target_info,
+    ingredients,
+    rho_lyap,
+    eps_lyap,
+    lyap_tol=1e-9,
+    IC_opt=None,
+    bnds=None,
+    cons=None,
+    first_step_contraction_on=True,
+    return_debug=False,
+):
+    from Lyapunov.lyapunov_core import evaluate_candidate_action
+
+    u_candidate = np.asarray(u_candidate, float).reshape(-1)
+    u_prev_dev = np.asarray(u_prev_dev, float).reshape(-1)
+    x0_model = np.asarray(x0_model, float).reshape(-1)
+    target_available = bool(
+        isinstance(effective_target_info, dict) and effective_target_info.get("success", False)
+    )
+
+    if target_available:
+        candidate_eval = evaluate_candidate_action(
+            u_cand=u_candidate,
+            xhat_aug=x0_model,
+            target_info=effective_target_info,
+            ingredients=ingredients,
+            rho=rho_lyap,
+            eps_lyap=eps_lyap,
+            u_min=None,
+            u_max=None,
+            u_prev=u_prev_dev,
+            du_min=None,
+            du_max=None,
+            tol=lyap_tol,
+        )
+    else:
+        candidate_eval = {
+            "accepted": False,
+            "accept_reason": None,
+            "reject_reason": "target_unavailable",
+            "candidate_bounds_ok": True,
+            "candidate_move_ok": True,
+            "candidate_lyap_ok": None,
+            "u_cand": u_candidate.copy(),
+            "V_k": None,
+            "V_next_cand": None,
+            "V_bound": None,
+            "lyap_margin": None,
+            "y_next_pred": None,
+        }
+
+    lyap_violation = bool(
+        target_available
+        and candidate_eval.get("candidate_bounds_ok", False)
+        and candidate_eval.get("candidate_move_ok", False)
+        and (not bool(candidate_eval.get("candidate_lyap_ok", False)))
+    )
+
+    constrained_attempted = bool(first_step_contraction_on and lyap_violation)
+    constrained_candidate = None
+    constrained_info = {
+        "success": False,
+        "status": None,
+        "message": None,
+        "objective_value": None,
+        "candidate_available": False,
+        "u_candidate": None,
+        "IC_opt_next": None,
+        "V_k": candidate_eval.get("V_k"),
+        "V_bound": candidate_eval.get("V_bound"),
+        "V_next_first": None,
+        "contraction_margin": None,
+        "first_step_contraction_satisfied": None,
+        "solver_name": None,
+    }
+    if constrained_attempted:
+        constrained_candidate, constrained_info = solve_offset_free_mpc_candidate_with_first_step_contraction(
+            MPC_obj=MPC_obj,
+            y_sp=y_sp,
+            u_prev_dev=u_prev_dev,
+            x0_model=x0_model,
+            x_s=np.asarray(effective_target_info["x_s"], float).reshape(-1),
+            P_x=np.asarray(ingredients["P_x"], float),
+            rho_lyap=rho_lyap,
+            eps_lyap=eps_lyap,
+            lyap_tol=lyap_tol,
+            IC_opt=IC_opt,
+            bnds=bnds,
+            cons=cons,
+            return_debug=True,
+        )
+
+    constrained_solved = bool(
+        constrained_attempted
+        and constrained_info.get("success", False)
+        and constrained_candidate is not None
+    )
+
+    if constrained_solved:
+        u_applied = np.asarray(constrained_candidate, float).reshape(-1)
+        correction_mode = "constrained_mpc_applied"
+        accept_reason = "constrained_mpc_applied"
+        reject_reason = None
+    else:
+        u_applied = u_candidate.copy()
+        if not target_available:
+            correction_mode = "target_unavailable_applied_candidate"
+            accept_reason = None
+            reject_reason = "target_unavailable"
+        elif constrained_attempted:
+            correction_mode = "constrained_mpc_failed_applied_candidate"
+            accept_reason = None
+            reject_reason = "lyapunov"
+        elif bool(candidate_eval.get("accepted", False)):
+            correction_mode = "accepted_candidate"
+            accept_reason = "candidate_ok"
+            reject_reason = None
+        else:
+            correction_mode = "candidate_rejected_applied_candidate"
+            accept_reason = None
+            reject_reason = candidate_eval.get("reject_reason")
+
+    if target_available:
+        applied_eval = evaluate_candidate_action(
+            u_cand=u_applied,
+            xhat_aug=x0_model,
+            target_info=effective_target_info,
+            ingredients=ingredients,
+            rho=rho_lyap,
+            eps_lyap=eps_lyap,
+            u_min=None,
+            u_max=None,
+            u_prev=u_prev_dev,
+            du_min=None,
+            du_max=None,
+            tol=lyap_tol,
+        )
+    else:
+        applied_eval = None
+
+    info = {
+        "target_available": bool(target_available),
+        "u_candidate": u_candidate.copy(),
+        "u_applied": u_applied.copy(),
+        "candidate_eval": candidate_eval,
+        "applied_eval": applied_eval,
+        "candidate_first_step_lyap_ok": candidate_eval.get("candidate_lyap_ok"),
+        "first_step_contraction_triggered": bool(constrained_attempted),
+        "constrained_mpc_attempted": bool(constrained_attempted),
+        "constrained_mpc_solved": bool(constrained_solved),
+        "constrained_mpc_applied": bool(constrained_solved),
+        "constrained_mpc_failed_applied_candidate": bool(
+            constrained_attempted and not constrained_solved
+        ),
+        "constrained_candidate": None
+        if constrained_candidate is None
+        else np.asarray(constrained_candidate, float).reshape(-1).copy(),
+        "constrained_info": constrained_info,
+        "correction_mode": correction_mode,
+        "accept_reason": accept_reason,
+        "reject_reason": reject_reason,
+        "accepted": bool(applied_eval.get("accepted", False)) if applied_eval is not None else False,
+        "verified": bool(applied_eval.get("accepted", False)) if applied_eval is not None else False,
+        "V_k": candidate_eval.get("V_k"),
+        "V_bound": candidate_eval.get("V_bound"),
+        "V_next_first_candidate": candidate_eval.get("V_next_cand"),
+        "V_next_first_applied": None if applied_eval is None else applied_eval.get("V_next_cand"),
+        "contraction_margin_candidate": candidate_eval.get("lyap_margin"),
+        "contraction_margin_applied": None if applied_eval is None else applied_eval.get("lyap_margin"),
+        "first_step_contraction_satisfied_applied": None
+        if applied_eval is None
+        else applied_eval.get("candidate_lyap_ok"),
+    }
+
+    if return_debug:
+        return u_applied, info
+    return u_applied

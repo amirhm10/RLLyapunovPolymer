@@ -1,12 +1,12 @@
 import numpy as np
 
-from Lyapunov.lyapunov_core import design_lyapunov_filter_ingredients, evaluate_candidate_action
+from Lyapunov.lyapunov_core import design_lyapunov_filter_ingredients
 from Lyapunov.target_selector import build_target_selector_config, prepare_filter_target
 from Lyapunov.upstream_controllers import (
+    apply_first_step_contraction_replacement,
     build_repeated_input_bounds,
     default_mpc_initial_guess,
     solve_offset_free_mpc_candidate,
-    solve_offset_free_mpc_candidate_with_first_step_contraction,
 )
 from Simulation.run_mpc_lyapunov import (
     _as_selector_config_dict,
@@ -116,8 +116,6 @@ def run_mpc_first_step_contraction(
 ):
     if reset_system_on_entry:
         _reset_system_on_entry(system)
-    if str(fallback_policy) != "offset_free_mpc":
-        raise ValueError("fallback_policy must be 'offset_free_mpc' for the first-step-contraction MPC path.")
 
     (
         y_sp,
@@ -297,94 +295,102 @@ def run_mpc_first_step_contraction(
             )
         cx_s, cd_d_s = _selector_decomposition(MPC_obj.C, n_x, effective_target_info, xhat_aug_store[n_x:, k])
 
-        constrained_info = None
-        if first_step_contraction_on and effective_target_info is not None and effective_target_info.get("success", False):
-            u_mpc_cand, constrained_info = solve_offset_free_mpc_candidate_with_first_step_contraction(
-                MPC_obj=MPC_obj,
-                y_sp=mpc_tracking_target,
-                u_prev_dev=u_prev_dev,
-                x0_model=xhat_aug_store[:, k],
-                x_s=np.asarray(effective_target_info["x_s"], float).reshape(-1),
-                P_x=lyap_model["P_x"],
-                rho_lyap=rho_lyap,
-                eps_lyap=lyap_eps,
-                lyap_tol=lyap_tol,
-                IC_opt=mpc_ic,
-                bnds=mpc_bnds,
-                cons=mpc_cons,
-                return_debug=True,
-            )
-        else:
-            u_mpc_cand, constrained_info = solve_offset_free_mpc_candidate(
-                MPC_obj=MPC_obj,
-                y_sp=mpc_tracking_target,
-                u_prev_dev=u_prev_dev,
-                x0_model=xhat_aug_store[:, k],
-                IC_opt=mpc_ic,
-                bnds=mpc_bnds,
-                cons=mpc_cons,
-                return_debug=True,
-            )
+        u_mpc_cand, upstream_info = solve_offset_free_mpc_candidate(
+            MPC_obj=MPC_obj,
+            y_sp=mpc_tracking_target,
+            u_prev_dev=u_prev_dev,
+            x0_model=xhat_aug_store[:, k],
+            IC_opt=mpc_ic,
+            bnds=mpc_bnds,
+            cons=mpc_cons,
+            return_debug=True,
+        )
+        if reuse_mpc_solution_as_ic and upstream_info.get("IC_opt_next") is not None:
+            mpc_ic = np.asarray(upstream_info["IC_opt_next"], float).reshape(-1).copy()
 
-        if reuse_mpc_solution_as_ic and constrained_info.get("IC_opt_next") is not None:
+        u_cand = np.clip(u_prev_dev, u_min, u_max) if u_mpc_cand is None else np.clip(np.asarray(u_mpc_cand, float).reshape(-1), u_min, u_max)
+        u_dev_apply, replacement_info = apply_first_step_contraction_replacement(
+            u_candidate=u_cand,
+            MPC_obj=MPC_obj,
+            y_sp=mpc_tracking_target,
+            u_prev_dev=u_prev_dev,
+            x0_model=xhat_aug_store[:, k],
+            effective_target_info=effective_target_info,
+            ingredients=lyap_model,
+            rho_lyap=rho_lyap,
+            eps_lyap=lyap_eps,
+            lyap_tol=lyap_tol,
+            IC_opt=upstream_info.get("IC_opt_next"),
+            bnds=mpc_bnds,
+            cons=mpc_cons,
+            first_step_contraction_on=first_step_contraction_on,
+            return_debug=True,
+        )
+        constrained_info = replacement_info["constrained_info"]
+        if (
+            reuse_mpc_solution_as_ic
+            and replacement_info.get("constrained_mpc_applied", False)
+            and constrained_info.get("IC_opt_next") is not None
+        ):
             mpc_ic = np.asarray(constrained_info["IC_opt_next"], float).reshape(-1).copy()
 
-        u_cand = None if u_mpc_cand is None else np.clip(np.asarray(u_mpc_cand, float).reshape(-1), u_min, u_max)
-        candidate_eval = evaluate_candidate_action(
-            u_cand=u_cand if u_cand is not None else np.clip(u_prev_dev, u_min, u_max),
-            xhat_aug=xhat_aug_store[:, k],
-            target_info=effective_target_info,
-            ingredients=lyap_model,
-            rho=rho_lyap,
-            eps_lyap=lyap_eps,
-            u_min=u_min,
-            u_max=u_max,
-            u_prev=u_prev_dev,
-            du_min=None,
-            du_max=None,
-            tol=lyap_tol,
-        )
+        candidate_eval = replacement_info["candidate_eval"]
+        applied_eval = replacement_info["applied_eval"]
 
         target_warm = target_info.get("warm_start", {})
         selector_dbg = target_info.get("selector_debug", {})
         info = {
             "source": "mpc_first_step_contraction",
-            "accepted": False,
-            "accept_reason": None,
-            "reject_reason": None,
+            "accepted": bool(replacement_info.get("accepted", False)),
+            "accept_reason": replacement_info.get("accept_reason"),
+            "reject_reason": replacement_info.get("reject_reason"),
             "candidate_bounds_ok": candidate_eval.get("candidate_bounds_ok"),
             "candidate_move_ok": candidate_eval.get("candidate_move_ok"),
             "candidate_lyap_ok": candidate_eval.get("candidate_lyap_ok"),
-            "u_cand": None if u_cand is None else u_cand.copy(),
+            "candidate_first_step_lyap_ok": replacement_info.get("candidate_first_step_lyap_ok"),
+            "first_step_contraction_triggered": bool(replacement_info.get("first_step_contraction_triggered", False)),
+            "constrained_mpc_attempted": bool(replacement_info.get("constrained_mpc_attempted", False)),
+            "constrained_mpc_solved": bool(replacement_info.get("constrained_mpc_solved", False)),
+            "constrained_mpc_applied": bool(replacement_info.get("constrained_mpc_applied", False)),
+            "constrained_mpc_failed_applied_candidate": bool(
+                replacement_info.get("constrained_mpc_failed_applied_candidate", False)
+            ),
+            "u_cand": u_cand.copy(),
+            "u_constrained_mpc": None if replacement_info.get("constrained_candidate") is None else np.asarray(replacement_info["constrained_candidate"], float).reshape(-1).copy(),
             "u_prev": u_prev_dev.copy(),
-            "u_safe": None,
+            "u_safe": np.asarray(u_dev_apply, float).reshape(-1).copy(),
             "u_s": None if effective_target_info is None or effective_target_info.get("u_s") is None else np.asarray(effective_target_info["u_s"], float).reshape(-1).copy(),
             "x_s": None if effective_target_info is None or effective_target_info.get("x_s") is None else np.asarray(effective_target_info["x_s"], float).reshape(-1).copy(),
             "d_s": None if effective_target_info is None or effective_target_info.get("d_s") is None else np.asarray(effective_target_info["d_s"], float).reshape(-1).copy(),
             "y_s": None if effective_target_info is None or effective_target_info.get("y_s") is None else np.asarray(effective_target_info["y_s"], float).reshape(-1).copy(),
             "r_s": None if effective_target_info is None or effective_target_info.get("r_s") is None else np.asarray(effective_target_info["r_s"], float).reshape(-1).copy(),
             "e_x": None if candidate_eval.get("e_x") is None else np.asarray(candidate_eval["e_x"], float).reshape(-1).copy(),
-            "V_k": constrained_info.get("V_k") if constrained_info.get("V_k") is not None else candidate_eval.get("V_k"),
-            "V_next_first": constrained_info.get("V_next_first"),
-            "V_next_cand": constrained_info.get("V_next_first") if constrained_info.get("V_next_first") is not None else candidate_eval.get("V_next_cand"),
-            "V_bound": constrained_info.get("V_bound") if constrained_info.get("V_bound") is not None else candidate_eval.get("V_bound"),
-            "contraction_margin": constrained_info.get("contraction_margin"),
-            "first_step_contraction_satisfied": constrained_info.get("first_step_contraction_satisfied"),
-            "contraction_constraint_violation": None if constrained_info.get("contraction_margin") is None else float(max(constrained_info["contraction_margin"], 0.0)),
+            "V_k": replacement_info.get("V_k"),
+            "V_next_first": replacement_info.get("V_next_first_applied"),
+            "V_next_first_candidate": replacement_info.get("V_next_first_candidate"),
+            "V_next_first_applied": replacement_info.get("V_next_first_applied"),
+            "V_next_cand": replacement_info.get("V_next_first_candidate"),
+            "V_bound": replacement_info.get("V_bound"),
+            "contraction_margin": replacement_info.get("contraction_margin_applied"),
+            "contraction_margin_candidate": replacement_info.get("contraction_margin_candidate"),
+            "contraction_margin_applied": replacement_info.get("contraction_margin_applied"),
+            "first_step_contraction_satisfied": replacement_info.get("first_step_contraction_satisfied_applied"),
+            "first_step_contraction_satisfied_applied": replacement_info.get("first_step_contraction_satisfied_applied"),
+            "contraction_constraint_violation": None if replacement_info.get("contraction_margin_applied") is None else float(max(replacement_info["contraction_margin_applied"], 0.0)),
             "rho": float(rho_lyap),
             "eps_lyap": float(lyap_eps),
-            "solver_status": constrained_info.get("status"),
+            "solver_status": constrained_info.get("status") if replacement_info.get("constrained_mpc_attempted", False) else upstream_info.get("status"),
             "solver_name": constrained_info.get("solver_name"),
             "solver_residuals": {},
             "slack_v": 0.0,
             "slack_u": 0.0,
             "trust_region_violation": None,
-            "correction_mode": None,
+            "correction_mode": replacement_info.get("correction_mode"),
             "qcqp_attempted": False,
             "qcqp_solved": False,
             "qcqp_hard_accepted": False,
             "qcqp_status": "not_attempted",
-            "verified": False,
+            "verified": bool(replacement_info.get("verified", False)),
             "target_success": bool(target_info.get("success", False)),
             "current_target_success": bool(target_info.get("success", False)),
             "current_target_stage": target_info.get("solve_stage"),
@@ -437,110 +443,22 @@ def run_mpc_first_step_contraction(
             "cx_s": None if cx_s is None else cx_s.copy(),
             "cd_d_s": None if cd_d_s is None else cd_d_s.copy(),
             "upstream_candidate_info": {
-                **constrained_info,
+                **upstream_info,
                 "mpc_tracking_target": mpc_tracking_target.copy(),
                 "mpc_tracking_target_source": mpc_tracking_target_source,
                 "target_mismatch_inf": target_mismatch_inf,
                 "first_step_contraction_on": bool(first_step_contraction_on),
             },
             "allow_trust_region_slack": False,
-            "final_lyap_value": None,
-            "final_lyap_margin": None,
-            "final_lyap_ok": None,
-            "final_lyap_bound": None,
-            "final_y_next_pred": None,
+            "final_lyap_value": replacement_info.get("V_next_first_applied"),
+            "final_lyap_margin": None if replacement_info.get("contraction_margin_applied") is None else float(-replacement_info["contraction_margin_applied"]),
+            "final_lyap_ok": replacement_info.get("first_step_contraction_satisfied_applied"),
+            "final_lyap_bound": replacement_info.get("V_bound"),
+            "final_y_next_pred": None if applied_eval is None or applied_eval.get("y_next_pred") is None else np.asarray(applied_eval["y_next_pred"], float).reshape(-1).copy(),
             "final_lyap_target_source": effective_target_source,
             "setpoint_changed": bool(setpoint_changed),
             "first_step_contraction_on": bool(first_step_contraction_on),
         }
-
-        constrained_success = bool(constrained_info.get("success", False))
-        if not first_step_contraction_on:
-            constrained_success = True
-            info.update({
-                "accepted": True,
-                "accept_reason": "candidate_ok",
-                "reject_reason": None if u_cand is not None else "solver_status",
-                "u_safe": np.clip(u_prev_dev, u_min, u_max) if u_cand is None else u_cand.copy(),
-                "correction_mode": "accepted_candidate",
-                "verified": bool(candidate_eval.get("accepted", False)),
-                "final_lyap_value": candidate_eval.get("V_next_cand"),
-                "final_lyap_bound": candidate_eval.get("V_bound"),
-                "final_lyap_margin": None if candidate_eval.get("V_next_cand") is None or candidate_eval.get("V_bound") is None else float(candidate_eval.get("V_bound")) - float(candidate_eval.get("V_next_cand")),
-                "final_lyap_ok": candidate_eval.get("candidate_lyap_ok"),
-                "final_y_next_pred": None if candidate_eval.get("y_next_pred") is None else np.asarray(candidate_eval["y_next_pred"], float).reshape(-1).copy(),
-                "first_step_contraction_satisfied": constrained_info.get("first_step_contraction_satisfied", candidate_eval.get("candidate_lyap_ok")),
-                "contraction_margin": constrained_info.get("contraction_margin", candidate_eval.get("lyap_margin")),
-            })
-        elif constrained_success and u_cand is not None:
-            info.update({
-                "accepted": True,
-                "accept_reason": "candidate_ok",
-                "reject_reason": None,
-                "u_safe": u_cand.copy(),
-                "correction_mode": "accepted_candidate",
-                "verified": True,
-                "final_lyap_value": constrained_info.get("V_next_first", candidate_eval.get("V_next_cand")),
-                "final_lyap_bound": constrained_info.get("V_bound", candidate_eval.get("V_bound")),
-                "final_lyap_margin": None if constrained_info.get("contraction_margin") is None else float(-constrained_info["contraction_margin"]),
-                "final_lyap_ok": constrained_info.get("first_step_contraction_satisfied"),
-                "final_y_next_pred": None if candidate_eval.get("y_next_pred") is None else np.asarray(candidate_eval["y_next_pred"], float).reshape(-1).copy(),
-            })
-        else:
-            u_fallback, fallback_info = solve_offset_free_mpc_candidate(
-                MPC_obj=MPC_obj,
-                y_sp=mpc_tracking_target,
-                u_prev_dev=u_prev_dev,
-                x0_model=xhat_aug_store[:, k],
-                IC_opt=mpc_ic,
-                bnds=mpc_bnds,
-                cons=mpc_cons,
-                return_debug=True,
-            )
-            if reuse_mpc_solution_as_ic and fallback_info.get("IC_opt_next") is not None:
-                mpc_ic = np.asarray(fallback_info["IC_opt_next"], float).reshape(-1).copy()
-            u_fallback = np.clip(u_prev_dev, u_min, u_max) if u_fallback is None else np.clip(np.asarray(u_fallback, float).reshape(-1), u_min, u_max)
-            fallback_eval = evaluate_candidate_action(
-                u_cand=u_fallback,
-                xhat_aug=xhat_aug_store[:, k],
-                target_info=effective_target_info,
-                ingredients=lyap_model,
-                rho=rho_lyap,
-                eps_lyap=lyap_eps,
-                u_min=u_min,
-                u_max=u_max,
-                u_prev=u_prev_dev,
-                du_min=None,
-                du_max=None,
-                tol=lyap_tol,
-            )
-            fallback_verified = bool(fallback_eval.get("accepted", False))
-            info.update({
-                "accepted": fallback_verified,
-                "accept_reason": "fallback_mpc_verified" if fallback_verified else None,
-                "reject_reason": None if fallback_verified else ("target_unavailable" if effective_target_info is None else "lyapunov"),
-                "u_safe": u_fallback.copy(),
-                "correction_mode": "fallback_mpc_verified" if fallback_verified else "fallback_mpc_unverified",
-                "verified": fallback_verified,
-                "u_fallback_mpc": u_fallback.copy(),
-                "fallback_mode": fallback_policy,
-                "fallback_verified": fallback_verified,
-                "fallback_solver_status": fallback_info.get("status"),
-                "fallback_solver_message": fallback_info.get("message"),
-                "fallback_objective_value": fallback_info.get("objective_value"),
-                "fallback_bounds_ok": fallback_eval.get("candidate_bounds_ok"),
-                "fallback_move_ok": fallback_eval.get("candidate_move_ok"),
-                "fallback_lyap_ok": fallback_eval.get("candidate_lyap_ok"),
-                "fallback_ic_next": None if fallback_info.get("IC_opt_next") is None else np.asarray(fallback_info["IC_opt_next"], float).reshape(-1).copy(),
-                "fallback_upstream_info": fallback_info,
-                "fallback_tracking_target_source": mpc_tracking_target_source,
-                "fallback_target_mismatch_inf": target_mismatch_inf,
-                "final_lyap_value": fallback_eval.get("V_next_cand"),
-                "final_lyap_bound": fallback_eval.get("V_bound"),
-                "final_lyap_margin": None if fallback_eval.get("V_next_cand") is None or fallback_eval.get("V_bound") is None else float(fallback_eval.get("V_bound")) - float(fallback_eval.get("V_next_cand")),
-                "final_lyap_ok": fallback_eval.get("candidate_lyap_ok"),
-                "final_y_next_pred": None if fallback_eval.get("y_next_pred") is None else np.asarray(fallback_eval["y_next_pred"], float).reshape(-1).copy(),
-            })
 
         u_dev_apply = np.asarray(info["u_safe"], float).reshape(-1)
         lyap_info_storage.append(info)
@@ -587,7 +505,8 @@ def run_mpc_first_step_contraction(
                 "| verified:", last.get("verified"),
                 "| first-step ok:", last.get("first_step_contraction_satisfied"),
                 "| contraction margin:", last.get("contraction_margin"),
-                "| fallback status:", last.get("fallback_solver_status"),
+                "| constrained triggered:", last.get("first_step_contraction_triggered"),
+                "| constrained status:", last.get("solver_status"),
                 "| target stage:", last.get("target_stage"),
             )
 

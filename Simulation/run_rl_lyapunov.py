@@ -13,6 +13,7 @@ from Lyapunov.target_selector import (
     prepare_filter_target,
 )
 from Lyapunov.upstream_controllers import (
+    apply_first_step_contraction_replacement,
     build_repeated_input_bounds,
     default_mpc_initial_guess,
 )
@@ -145,9 +146,14 @@ def _normalize_rl_projection_backend(projection_backend):
         "safety_filter": "safety_filter",
         "current": "safety_filter",
         "refined": "safety_filter",
+        "first_step_contraction_mpc": "first_step_contraction_mpc",
+        "first_step_contraction": "first_step_contraction_mpc",
+        "first_step": "first_step_contraction_mpc",
     }
     if backend not in aliases:
-        raise ValueError("projection_backend must be 'legacy_augstate' or 'safety_filter'.")
+        raise ValueError(
+            "projection_backend must be 'legacy_augstate', 'safety_filter', or 'first_step_contraction_mpc'."
+        )
     return aliases[backend]
 
 
@@ -444,6 +450,7 @@ def run_rl_train(
     reuse_mpc_solution_as_ic=False,
     reset_system_on_entry=True,
     projection_backend="legacy_augstate",
+    first_step_contraction_on=True,
 ):
     # warm_start only controls when online TD3 parameter updates begin through
     # the generated train/test schedule. It is not an MPC takeover or control
@@ -529,7 +536,7 @@ def run_rl_train(
     lyap_model = None
     legacy_P_lyap = None
     legacy_S_lyap = None
-    if projection_backend == "safety_filter":
+    if projection_backend in {"safety_filter", "first_step_contraction_mpc"}:
         selector_cfg = build_target_selector_config(
             user_overrides=_target_selector_overrides(
                 target_selector_config=target_selector_config,
@@ -948,7 +955,7 @@ def run_rl_train(
         else:
             y_sp_kp1 = y_sp_k.copy()
 
-        if use_lyap:
+        if use_lyap and projection_backend == "safety_filter":
             safe_filter_prev = last_verified_safe_dev if last_verified_safe_dev is not None else u_prev_dev
             u_dev_safe, info = apply_lyapunov_safety_filter(
                 u_cand=u_rl_dev,
@@ -1058,6 +1065,153 @@ def run_rl_train(
             info["qcqp_tracking_target_source"] = mpc_tracking_target_source
             if info.get("verified", False):
                 last_verified_safe_dev = u_dev_safe.copy()
+        elif use_lyap and projection_backend == "first_step_contraction_mpc":
+            u_dev_safe, replacement_info = apply_first_step_contraction_replacement(
+                u_candidate=u_rl_dev,
+                MPC_obj=MPC_obj,
+                y_sp=mpc_tracking_target,
+                u_prev_dev=u_prev_dev,
+                x0_model=xhat_aug_store[:, k],
+                effective_target_info=effective_target_info,
+                ingredients=lyap_model,
+                rho_lyap=rho_lyap,
+                eps_lyap=lyap_eps,
+                lyap_tol=lyap_tol,
+                IC_opt=fallback_ic,
+                bnds=mpc_bnds,
+                cons=mpc_cons,
+                first_step_contraction_on=first_step_contraction_on,
+                return_debug=True,
+            )
+            constrained_info = replacement_info["constrained_info"]
+            if (
+                reuse_mpc_solution_as_ic
+                and replacement_info.get("constrained_mpc_applied", False)
+                and constrained_info.get("IC_opt_next") is not None
+            ):
+                fallback_ic = np.asarray(constrained_info["IC_opt_next"], float).reshape(-1).copy()
+
+            candidate_eval = replacement_info["candidate_eval"]
+            applied_eval = replacement_info["applied_eval"]
+            selector_warm = target_info.get("warm_start", {})
+            selector_dbg = target_info.get("selector_debug", {})
+            info = {
+                "source": "rl_first_step_contraction",
+                "accepted": bool(replacement_info.get("accepted", False)),
+                "verified": bool(replacement_info.get("verified", False)),
+                "accept_reason": replacement_info.get("accept_reason"),
+                "reject_reason": replacement_info.get("reject_reason"),
+                "candidate_bounds_ok": candidate_eval.get("candidate_bounds_ok"),
+                "candidate_move_ok": candidate_eval.get("candidate_move_ok"),
+                "candidate_lyap_ok": candidate_eval.get("candidate_lyap_ok"),
+                "candidate_first_step_lyap_ok": replacement_info.get("candidate_first_step_lyap_ok"),
+                "first_step_contraction_triggered": bool(replacement_info.get("first_step_contraction_triggered", False)),
+                "constrained_mpc_attempted": bool(replacement_info.get("constrained_mpc_attempted", False)),
+                "constrained_mpc_solved": bool(replacement_info.get("constrained_mpc_solved", False)),
+                "constrained_mpc_applied": bool(replacement_info.get("constrained_mpc_applied", False)),
+                "constrained_mpc_failed_applied_candidate": bool(
+                    replacement_info.get("constrained_mpc_failed_applied_candidate", False)
+                ),
+                "u_cand": u_rl_dev.copy(),
+                "u_safe": np.asarray(u_dev_safe, float).reshape(-1).copy(),
+                "u_constrained_mpc": None if replacement_info.get("constrained_candidate") is None else np.asarray(replacement_info["constrained_candidate"], float).reshape(-1).copy(),
+                "u_prev": u_prev_dev.copy(),
+                "u_s": None if effective_target_info is None or effective_target_info.get("u_s") is None else np.asarray(effective_target_info["u_s"], float).reshape(-1).copy(),
+                "x_s": None if effective_target_info is None or effective_target_info.get("x_s") is None else np.asarray(effective_target_info["x_s"], float).reshape(-1).copy(),
+                "d_s": None if effective_target_info is None or effective_target_info.get("d_s") is None else np.asarray(effective_target_info["d_s"], float).reshape(-1).copy(),
+                "y_s": None if effective_target_info is None or effective_target_info.get("y_s") is None else np.asarray(effective_target_info["y_s"], float).reshape(-1).copy(),
+                "r_s": None if effective_target_info is None or effective_target_info.get("r_s") is None else np.asarray(effective_target_info["r_s"], float).reshape(-1).copy(),
+                "V_k": replacement_info.get("V_k"),
+                "V_next_first": replacement_info.get("V_next_first_applied"),
+                "V_next_first_candidate": replacement_info.get("V_next_first_candidate"),
+                "V_next_first_applied": replacement_info.get("V_next_first_applied"),
+                "V_next_cand": replacement_info.get("V_next_first_candidate"),
+                "V_bound": replacement_info.get("V_bound"),
+                "contraction_margin": replacement_info.get("contraction_margin_applied"),
+                "contraction_margin_candidate": replacement_info.get("contraction_margin_candidate"),
+                "contraction_margin_applied": replacement_info.get("contraction_margin_applied"),
+                "first_step_contraction_satisfied": replacement_info.get("first_step_contraction_satisfied_applied"),
+                "first_step_contraction_satisfied_applied": replacement_info.get("first_step_contraction_satisfied_applied"),
+                "contraction_constraint_violation": None if replacement_info.get("contraction_margin_applied") is None else float(max(replacement_info["contraction_margin_applied"], 0.0)),
+                "rho": rho_lyap,
+                "eps_lyap": lyap_eps,
+                "solver_status": constrained_info.get("status") if replacement_info.get("constrained_mpc_attempted", False) else None,
+                "solver_name": constrained_info.get("solver_name"),
+                "solver_residuals": {},
+                "trust_region_violation": None,
+                "slack_v": 0.0,
+                "slack_u": 0.0,
+                "correction_mode": replacement_info.get("correction_mode"),
+                "qcqp_attempted": False,
+                "qcqp_solved": False,
+                "qcqp_hard_accepted": False,
+                "qcqp_status": "not_attempted",
+                "target_success": bool(target_info.get("success", False)),
+                "current_target_success": bool(target_info.get("success", False)),
+                "current_target_stage": target_info.get("solve_stage"),
+                "effective_target_success": bool(effective_target_info is not None and effective_target_info.get("success", False)),
+                "effective_target_stage": None if effective_target_info is None else effective_target_info.get("solve_stage"),
+                "effective_target_source": effective_target_source,
+                "effective_target_reused": bool(effective_target_source == "last_valid_target"),
+                "selector_mode": target_info.get("selector_mode"),
+                "effective_selector_mode": None if effective_target_info is None else effective_target_info.get("selector_mode"),
+                "selector_name": target_info.get("selector_name"),
+                "selector_objective_terms": target_info.get("objective_terms"),
+                "selector_objective_value": target_info.get("objective_value"),
+                "d_s_minus_dhat_inf": None if effective_target_info is None else effective_target_info.get("d_s_minus_dhat_inf"),
+                "d_s_frozen": None if effective_target_info is None else effective_target_info.get("d_s_frozen"),
+                "d_s_optimized": None if effective_target_info is None else effective_target_info.get("d_s_optimized"),
+                "target_info": target_info,
+                "effective_target_info": effective_target_info,
+                "setpoint_changed": bool(setpoint_changed),
+                "target_source": "recomputed",
+                "target_stage": target_info.get("solve_stage"),
+                "selector_warm_start_enabled": bool(selector_warm.get("enabled", selector_warm_start)),
+                "selector_warm_start_available": bool(selector_warm.get("available", False)),
+                "selector_warm_start_used": bool(selector_warm.get("used", False)),
+                "selector_prev_input_term_active": bool(selector_dbg.get("prev_input_term_active", False)),
+                "selector_prev_state_term_active": bool(selector_dbg.get("prev_state_term_active", False)),
+                "selector_Qr_diag_used": selector_dbg.get("Qr_diag_used"),
+                "selector_R_u_ref_diag_used": selector_dbg.get("R_u_ref_diag_used"),
+                "selector_R_delta_u_sel_diag_used": selector_dbg.get("R_delta_u_sel_diag_used"),
+                "selector_Q_delta_x_diag_used": selector_dbg.get("Q_delta_x_diag_used"),
+                "selector_Q_x_ref_diag_used": selector_dbg.get("Q_x_ref_diag_used"),
+                "selector_Qx_base_diag_used": selector_dbg.get("Qx_base_diag_used"),
+                "selector_Rdu_diag_used": selector_dbg.get("Rdu_diag_used"),
+                "fallback_mode": None,
+                "fallback_verified": False,
+                "fallback_solver_status": None,
+                "fallback_objective_value": None,
+                "fallback_bounds_ok": None,
+                "fallback_lyap_ok": None,
+                "upstream_candidate_info": {
+                    "source": "rl_policy",
+                    "action_raw": action.copy(),
+                    "mpc_tracking_target": mpc_tracking_target.copy(),
+                    "mpc_tracking_target_source": mpc_tracking_target_source,
+                    "target_mismatch_inf": target_mismatch_inf,
+                    "constrained_info": constrained_info,
+                },
+                "mpc_tracking_target": mpc_tracking_target.copy(),
+                "mpc_tracking_target_source": mpc_tracking_target_source,
+                "target_mismatch_inf": target_mismatch_inf,
+                "qcqp_tracking_target": mpc_tracking_target.copy(),
+                "qcqp_tracking_target_source": mpc_tracking_target_source,
+                "cx_s": None if cx_s is None else cx_s.copy(),
+                "cd_d_s": None if cd_d_s is None else cd_d_s.copy(),
+                "allow_trust_region_slack": False,
+                "backup_target_available": bool(prev_target_info is not None and prev_target_info.get("success", False)),
+                "final_lyap_value": replacement_info.get("V_next_first_applied"),
+                "final_lyap_bound": replacement_info.get("V_bound"),
+                "final_lyap_margin": None if replacement_info.get("contraction_margin_applied") is None else float(-replacement_info["contraction_margin_applied"]),
+                "final_lyap_ok": replacement_info.get("first_step_contraction_satisfied_applied"),
+                "final_y_next_pred": None if applied_eval is None or applied_eval.get("y_next_pred") is None else np.asarray(applied_eval["y_next_pred"], float).reshape(-1).copy(),
+                "final_lyap_target_source": effective_target_source,
+                "lyap_acceptance_mode": "hard_only",
+                "first_step_contraction_on": bool(first_step_contraction_on),
+            }
+            if info.get("verified", False):
+                last_verified_safe_dev = u_dev_safe.copy()
         else:
             u_dev_safe = np.clip(u_rl_dev, u_min, u_max)
             info = {
@@ -1152,10 +1306,10 @@ def run_rl_train(
         if use_lyap:
             total_checked += 1
             checked_in_block += 1
-            if info.get("correction_mode") == "optimized_correction":
+            if info.get("correction_mode") == "optimized_correction" or info.get("constrained_mpc_applied", False):
                 total_filtered += 1
                 filtered_in_block += 1
-            if str(info.get("correction_mode", "")).startswith("fallback_mpc"):
+            if str(info.get("correction_mode", "")).startswith("fallback_mpc") or info.get("constrained_mpc_failed_applied_candidate", False):
                 total_fallback_mpc += 1
                 fallback_in_block += 1
 
@@ -1215,17 +1369,30 @@ def run_rl_train(
             block_ratio = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
             total_ratio = total_filtered / total_checked if total_checked > 0 else 0.0
             fallback_ratio = fallback_in_block / checked_in_block if checked_in_block > 0 else 0.0
-            print(
-                "Lyap corrected in block:",
-                filtered_in_block, "/", checked_in_block,
-                "(ratio:", block_ratio, ")",
-                "| fallback MPC in block:",
-                fallback_in_block, "/", checked_in_block,
-                "(ratio:", fallback_ratio, ")",
-                "| total corrected:",
-                total_filtered, "/", total_checked,
-                "(ratio:", total_ratio, ")",
-            )
+            if projection_backend == "first_step_contraction_mpc":
+                print(
+                    "Constrained MPC applied in block:",
+                    filtered_in_block, "/", checked_in_block,
+                    "(ratio:", block_ratio, ")",
+                    "| constrained MPC failed, candidate applied:",
+                    fallback_in_block, "/", checked_in_block,
+                    "(ratio:", fallback_ratio, ")",
+                    "| total constrained replacements:",
+                    total_filtered, "/", total_checked,
+                    "(ratio:", total_ratio, ")",
+                )
+            else:
+                print(
+                    "Lyap corrected in block:",
+                    filtered_in_block, "/", checked_in_block,
+                    "(ratio:", block_ratio, ")",
+                    "| fallback MPC in block:",
+                    fallback_in_block, "/", checked_in_block,
+                    "(ratio:", fallback_ratio, ")",
+                    "| total corrected:",
+                    total_filtered, "/", total_checked,
+                    "(ratio:", total_ratio, ")",
+                )
 
             last = lyap_info_storage[-1]
             last_target = last.get("target_info", {})
@@ -1235,8 +1402,8 @@ def run_rl_train(
                 "| verified:", last.get("verified"),
                 "| V_next:", last.get("V_next_cand"),
                 "| V_bound:", last.get("V_bound"),
-                "| fallback_status:", last.get("fallback_solver_status"),
-                "| fallback_verified:", last.get("fallback_verified"),
+                "| constrained_status:", last.get("solver_status"),
+                "| constrained_applied:", last.get("constrained_mpc_applied"),
                 "| target_stage:", last_target.get("solve_stage") if last_target else None,
                 "| target_slack_inf:", last_target.get("target_slack_inf") if last_target else None,
                 "| selector_status:", last_selector.get("status"),

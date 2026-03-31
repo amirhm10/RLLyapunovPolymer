@@ -110,6 +110,14 @@ def make_safety_filter_step_records(lyap_info_storage):
             "candidate_bounds_ok": info.get("candidate_bounds_ok"),
             "candidate_move_ok": info.get("candidate_move_ok"),
             "candidate_lyap_ok": info.get("candidate_lyap_ok"),
+            "candidate_first_step_lyap_ok": info.get("candidate_first_step_lyap_ok"),
+            "first_step_contraction_triggered": bool(info.get("first_step_contraction_triggered", False)),
+            "constrained_mpc_attempted": bool(info.get("constrained_mpc_attempted", False)),
+            "constrained_mpc_solved": bool(info.get("constrained_mpc_solved", False)),
+            "constrained_mpc_applied": bool(info.get("constrained_mpc_applied", False)),
+            "constrained_mpc_failed_applied_candidate": bool(
+                info.get("constrained_mpc_failed_applied_candidate", False)
+            ),
             "qcqp_attempted": bool(info.get("qcqp_attempted", False)),
             "qcqp_solved": bool(info.get("qcqp_solved", False)),
             "qcqp_hard_accepted": bool(info.get("qcqp_hard_accepted", False)),
@@ -130,10 +138,15 @@ def make_safety_filter_step_records(lyap_info_storage):
             "trust_region_violation": info.get("trust_region_violation"),
             "V_k": info.get("V_k"),
             "V_next_first": info.get("V_next_first"),
+            "V_next_first_candidate": info.get("V_next_first_candidate"),
+            "V_next_first_applied": info.get("V_next_first_applied"),
             "V_next_cand": info.get("V_next_cand"),
             "V_bound": info.get("V_bound"),
             "contraction_margin": info.get("contraction_margin"),
+            "contraction_margin_candidate": info.get("contraction_margin_candidate"),
+            "contraction_margin_applied": info.get("contraction_margin_applied"),
             "first_step_contraction_satisfied": info.get("first_step_contraction_satisfied"),
+            "first_step_contraction_satisfied_applied": info.get("first_step_contraction_satisfied_applied"),
             "contraction_constraint_violation": info.get("contraction_constraint_violation"),
             "first_step_contraction_on": info.get("first_step_contraction_on"),
             "final_lyap_value": info.get("final_lyap_value"),
@@ -195,6 +208,7 @@ def make_safety_filter_step_records(lyap_info_storage):
             "allow_trust_region_slack": info.get("allow_trust_region_slack"),
             "setpoint_changed": info.get("setpoint_changed"),
             "u_cand": json.dumps(_jsonable(info.get("u_cand"))),
+            "u_constrained_mpc": json.dumps(_jsonable(info.get("u_constrained_mpc"))),
             "u_safe": json.dumps(_jsonable(info.get("u_safe"))),
             "u_prev": json.dumps(_jsonable(info.get("u_prev"))),
             "u_s": json.dumps(_jsonable(info.get("u_s"))),
@@ -266,6 +280,11 @@ def summarize_safety_filter_bundle(bundle):
         "n_qcqp_attempted": int(sum(bool(info.get("qcqp_attempted", False)) for info in lyap_info_storage)),
         "n_qcqp_solved": int(sum(bool(info.get("qcqp_solved", False)) for info in lyap_info_storage)),
         "n_qcqp_hard_accepted": int(sum(bool(info.get("qcqp_hard_accepted", False)) for info in lyap_info_storage)),
+        "n_first_step_contraction_triggered": int(sum(bool(info.get("first_step_contraction_triggered", False)) for info in lyap_info_storage)),
+        "n_constrained_mpc_attempted": int(sum(bool(info.get("constrained_mpc_attempted", False)) for info in lyap_info_storage)),
+        "n_constrained_mpc_solved": int(sum(bool(info.get("constrained_mpc_solved", False)) for info in lyap_info_storage)),
+        "n_constrained_mpc_applied": int(sum(bool(info.get("constrained_mpc_applied", False)) for info in lyap_info_storage)),
+        "n_constrained_mpc_failed_applied_candidate": int(sum(bool(info.get("constrained_mpc_failed_applied_candidate", False)) for info in lyap_info_storage)),
         "reward_mean": float(np.mean(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_min": float(np.min(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_max": float(np.max(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
@@ -417,11 +436,19 @@ def build_safety_filter_run_bundle(
         ),
         "V_k": np.array([info.get("V_k", np.nan) for info in lyap_info_storage], dtype=float),
         "V_next_first": np.array([info.get("V_next_first", np.nan) for info in lyap_info_storage], dtype=float),
+        "V_next_first_candidate": np.array([info.get("V_next_first_candidate", np.nan) for info in lyap_info_storage], dtype=float),
+        "V_next_first_applied": np.array([info.get("V_next_first_applied", np.nan) for info in lyap_info_storage], dtype=float),
         "V_next_cand": np.array([info.get("V_next_cand", np.nan) for info in lyap_info_storage], dtype=float),
         "V_bound": np.array([info.get("V_bound", np.nan) for info in lyap_info_storage], dtype=float),
         "contraction_margin": np.array([info.get("contraction_margin", np.nan) for info in lyap_info_storage], dtype=float),
+        "contraction_margin_candidate": np.array([info.get("contraction_margin_candidate", np.nan) for info in lyap_info_storage], dtype=float),
+        "contraction_margin_applied": np.array([info.get("contraction_margin_applied", np.nan) for info in lyap_info_storage], dtype=float),
         "first_step_contraction_satisfied_flags": np.array(
             [1.0 if bool(info.get("first_step_contraction_satisfied", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "first_step_contraction_satisfied_applied_flags": np.array(
+            [1.0 if bool(info.get("first_step_contraction_satisfied_applied", False)) else 0.0 for info in lyap_info_storage],
             dtype=float,
         ),
         "final_lyap_value": np.array([info.get("final_lyap_value", np.nan) for info in lyap_info_storage], dtype=float),
@@ -497,6 +524,30 @@ def build_safety_filter_run_bundle(
         ),
         "qcqp_hard_accepted_flags": np.array(
             [1.0 if bool(info.get("qcqp_hard_accepted", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "candidate_first_step_lyap_ok_flags": np.array(
+            [np.nan if info.get("candidate_first_step_lyap_ok") is None else (1.0 if bool(info.get("candidate_first_step_lyap_ok")) else 0.0) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "first_step_contraction_triggered_flags": np.array(
+            [1.0 if bool(info.get("first_step_contraction_triggered", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "constrained_mpc_attempted_flags": np.array(
+            [1.0 if bool(info.get("constrained_mpc_attempted", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "constrained_mpc_solved_flags": np.array(
+            [1.0 if bool(info.get("constrained_mpc_solved", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "constrained_mpc_applied_flags": np.array(
+            [1.0 if bool(info.get("constrained_mpc_applied", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "constrained_mpc_failed_applied_candidate_flags": np.array(
+            [1.0 if bool(info.get("constrained_mpc_failed_applied_candidate", False)) else 0.0 for info in lyap_info_storage],
             dtype=float,
         ),
         "verified_flags": np.array(
@@ -577,10 +628,15 @@ def _save_npz(path, bundle):
         selector_x_s_minus_xprev_inf=bundle["selector_x_s_minus_xprev_inf"],
         V_k=bundle["V_k"],
         V_next_first=bundle["V_next_first"],
+        V_next_first_candidate=bundle["V_next_first_candidate"],
+        V_next_first_applied=bundle["V_next_first_applied"],
         V_next_cand=bundle["V_next_cand"],
         V_bound=bundle["V_bound"],
         contraction_margin=bundle["contraction_margin"],
+        contraction_margin_candidate=bundle["contraction_margin_candidate"],
+        contraction_margin_applied=bundle["contraction_margin_applied"],
         first_step_contraction_satisfied_flags=bundle["first_step_contraction_satisfied_flags"],
+        first_step_contraction_satisfied_applied_flags=bundle["first_step_contraction_satisfied_applied_flags"],
         final_lyap_value=bundle["final_lyap_value"],
         final_lyap_bound=bundle["final_lyap_bound"],
         final_lyap_margin=bundle["final_lyap_margin"],
@@ -599,6 +655,12 @@ def _save_npz(path, bundle):
         qcqp_attempted_flags=bundle["qcqp_attempted_flags"],
         qcqp_solved_flags=bundle["qcqp_solved_flags"],
         qcqp_hard_accepted_flags=bundle["qcqp_hard_accepted_flags"],
+        candidate_first_step_lyap_ok_flags=bundle["candidate_first_step_lyap_ok_flags"],
+        first_step_contraction_triggered_flags=bundle["first_step_contraction_triggered_flags"],
+        constrained_mpc_attempted_flags=bundle["constrained_mpc_attempted_flags"],
+        constrained_mpc_solved_flags=bundle["constrained_mpc_solved_flags"],
+        constrained_mpc_applied_flags=bundle["constrained_mpc_applied_flags"],
+        constrained_mpc_failed_applied_candidate_flags=bundle["constrained_mpc_failed_applied_candidate_flags"],
         verified_flags=bundle["verified_flags"],
         accepted_flags=bundle["accepted_flags"],
         fallback_verified_flags=bundle["fallback_verified_flags"],
@@ -618,10 +680,15 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     y_sp = np.asarray(bundle["y_sp"], float)
     V_k = bundle["V_k"]
     V_next_first = bundle["V_next_first"]
+    V_next_first_candidate = bundle["V_next_first_candidate"]
+    V_next_first_applied = bundle["V_next_first_applied"]
     V_next_cand = bundle["V_next_cand"]
     V_bound = bundle["V_bound"]
     contraction_margin = bundle["contraction_margin"]
+    contraction_margin_candidate = bundle["contraction_margin_candidate"]
+    contraction_margin_applied = bundle["contraction_margin_applied"]
     first_step_contraction_satisfied_flags = np.asarray(bundle["first_step_contraction_satisfied_flags"], float)
+    first_step_contraction_satisfied_applied_flags = np.asarray(bundle["first_step_contraction_satisfied_applied_flags"], float)
     final_lyap_value = bundle["final_lyap_value"]
     final_lyap_bound = bundle["final_lyap_bound"]
     final_lyap_margin = bundle["final_lyap_margin"]
@@ -638,6 +705,12 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     qcqp_attempted_flags = np.asarray(bundle["qcqp_attempted_flags"], float)
     qcqp_solved_flags = np.asarray(bundle["qcqp_solved_flags"], float)
     qcqp_hard_accepted_flags = np.asarray(bundle["qcqp_hard_accepted_flags"], float)
+    candidate_first_step_lyap_ok_flags = np.asarray(bundle["candidate_first_step_lyap_ok_flags"], float)
+    first_step_contraction_triggered_flags = np.asarray(bundle["first_step_contraction_triggered_flags"], float)
+    constrained_mpc_attempted_flags = np.asarray(bundle["constrained_mpc_attempted_flags"], float)
+    constrained_mpc_solved_flags = np.asarray(bundle["constrained_mpc_solved_flags"], float)
+    constrained_mpc_applied_flags = np.asarray(bundle["constrained_mpc_applied_flags"], float)
+    constrained_mpc_failed_applied_candidate_flags = np.asarray(bundle["constrained_mpc_failed_applied_candidate_flags"], float)
     u_cand_dev = bundle["u_cand_dev_store"]
     u_safe_dev = bundle["u_safe_dev_store"]
     rewards = bundle["rewards"]
@@ -681,6 +754,14 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     n_y = y_system.shape[1]
     n_aug = xhatdhat.shape[0]
     n_x = max(n_aug - n_y, 0)
+    first_step_replacement_mode = bool(
+        "first_step" in str(bundle.get("source", "")).lower()
+        and (
+            np.any(constrained_mpc_attempted_flags > 0.5)
+            or np.any(np.isfinite(candidate_first_step_lyap_ok_flags))
+            or np.any(first_step_contraction_triggered_flags > 0.5)
+        )
+    )
 
     def _plot_augmented_states(data, filename, dhat_only=False):
         data = np.asarray(data, float)
@@ -901,9 +982,23 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend()
     ax = axes[-1]
-    ax.step(time_u, qcqp_attempted_flags, where="post", linewidth=2, color="tab:orange", label="qcqp_attempted")
-    ax.step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, color="tab:green", label="qcqp_hard_accepted")
-    ax.step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", color="tab:red", label="optimized_correction")
+    if first_step_replacement_mode:
+        ax.step(time_u, candidate_first_step_lyap_ok_flags, where="post", linewidth=2, color="tab:blue", label="candidate_first_step_ok")
+        ax.step(time_u, first_step_contraction_triggered_flags, where="post", linewidth=2, color="tab:orange", label="replacement_triggered")
+        ax.step(time_u, constrained_mpc_applied_flags, where="post", linewidth=2, color="tab:green", label="constrained_mpc_applied")
+        ax.step(
+            time_u,
+            constrained_mpc_failed_applied_candidate_flags,
+            where="post",
+            linewidth=1.5,
+            linestyle="--",
+            color="tab:red",
+            label="constrained_failed_candidate_applied",
+        )
+    else:
+        ax.step(time_u, qcqp_attempted_flags, where="post", linewidth=2, color="tab:orange", label="qcqp_attempted")
+        ax.step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, color="tab:green", label="qcqp_hard_accepted")
+        ax.step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", color="tab:red", label="optimized_correction")
     ax.set_ylim(-0.05, 1.05)
     ax.set_yticks([0.0, 1.0])
     ax.grid(True, linestyle="--", alpha=0.35)
@@ -955,24 +1050,59 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     if np.any(np.isfinite(V_next_first)) or np.any(np.isfinite(contraction_margin)):
         fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
         axes[0].plot(time_u, V_k, linewidth=2, label="V_k")
-        axes[0].plot(time_u, V_next_first, linewidth=2, label="V_next_first")
+        if first_step_replacement_mode:
+            axes[0].plot(time_u, V_next_first_candidate, linewidth=2, color="tab:orange", label="V_next_first_candidate")
+            axes[0].plot(time_u, V_next_first_applied, linewidth=2, color="tab:green", label="V_next_first_applied")
+        else:
+            axes[0].plot(time_u, V_next_first, linewidth=2, label="V_next_first")
         axes[0].plot(time_u, V_bound, linewidth=2, linestyle="--", label="V_bound")
         axes[0].grid(True, linestyle="--", alpha=0.35)
         axes[0].legend()
 
-        axes[1].plot(time_u, contraction_margin, linewidth=2, color="tab:red", label="contraction_margin")
+        if first_step_replacement_mode:
+            axes[1].plot(time_u, contraction_margin_candidate, linewidth=2, color="tab:orange", label="contraction_margin_candidate")
+            axes[1].plot(time_u, contraction_margin_applied, linewidth=2, color="tab:green", label="contraction_margin_applied")
+        else:
+            axes[1].plot(time_u, contraction_margin, linewidth=2, color="tab:red", label="contraction_margin")
         axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1.0)
         axes[1].grid(True, linestyle="--", alpha=0.35)
         axes[1].legend()
 
-        axes[2].step(
-            time_u,
-            first_step_contraction_satisfied_flags,
-            where="post",
-            linewidth=2,
-            color="tab:green",
-            label="first_step_contraction_satisfied",
-        )
+        if first_step_replacement_mode:
+            axes[2].step(
+                time_u,
+                candidate_first_step_lyap_ok_flags,
+                where="post",
+                linewidth=2,
+                color="tab:blue",
+                label="candidate_first_step_ok",
+            )
+            axes[2].step(
+                time_u,
+                first_step_contraction_satisfied_applied_flags,
+                where="post",
+                linewidth=2,
+                color="tab:green",
+                label="applied_first_step_ok",
+            )
+            axes[2].step(
+                time_u,
+                constrained_mpc_failed_applied_candidate_flags,
+                where="post",
+                linewidth=1.5,
+                linestyle="--",
+                color="tab:red",
+                label="constrained_failed_candidate_applied",
+            )
+        else:
+            axes[2].step(
+                time_u,
+                first_step_contraction_satisfied_flags,
+                where="post",
+                linewidth=2,
+                color="tab:green",
+                label="first_step_contraction_satisfied",
+            )
         axes[2].set_ylim(-0.05, 1.05)
         axes[2].set_yticks([0.0, 1.0])
         axes[2].grid(True, linestyle="--", alpha=0.35)
@@ -1215,19 +1345,38 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         plt.close(fig)
 
         fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-        axes[0].step(time_u, qcqp_attempted_flags, where="post", linewidth=2, label="qcqp_attempted")
+        if first_step_replacement_mode:
+            axes[0].step(time_u, candidate_first_step_lyap_ok_flags, where="post", linewidth=2, label="candidate_first_step_ok")
+            axes[0].step(time_u, first_step_contraction_triggered_flags, where="post", linewidth=1.5, linestyle="--", label="replacement_triggered")
+        else:
+            axes[0].step(time_u, qcqp_attempted_flags, where="post", linewidth=2, label="qcqp_attempted")
         axes[0].set_ylim(-0.05, 1.05)
         axes[0].set_yticks([0.0, 1.0])
         axes[0].grid(True, linestyle="--", alpha=0.35)
         axes[0].legend()
-        axes[1].step(time_u, qcqp_solved_flags, where="post", linewidth=2, label="qcqp_solved")
-        axes[1].step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", label="qcqp_hard_accept")
+        if first_step_replacement_mode:
+            axes[1].step(time_u, constrained_mpc_attempted_flags, where="post", linewidth=2, label="constrained_mpc_attempted")
+            axes[1].step(time_u, constrained_mpc_solved_flags, where="post", linewidth=1.5, linestyle="--", label="constrained_mpc_solved")
+        else:
+            axes[1].step(time_u, qcqp_solved_flags, where="post", linewidth=2, label="qcqp_solved")
+            axes[1].step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", label="qcqp_hard_accept")
         axes[1].set_ylim(-0.05, 1.05)
         axes[1].set_yticks([0.0, 1.0])
         axes[1].grid(True, linestyle="--", alpha=0.35)
         axes[1].legend()
-        axes[2].step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, label="qcqp_hard_accepted")
-        axes[2].step(time_u, bundle["fallback_verified_flags"], where="post", linewidth=1.5, linestyle="--", label="fallback_verified")
+        if first_step_replacement_mode:
+            axes[2].step(time_u, constrained_mpc_applied_flags, where="post", linewidth=2, label="constrained_mpc_applied")
+            axes[2].step(
+                time_u,
+                constrained_mpc_failed_applied_candidate_flags,
+                where="post",
+                linewidth=1.5,
+                linestyle="--",
+                label="constrained_failed_candidate_applied",
+            )
+        else:
+            axes[2].step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, label="qcqp_hard_accepted")
+            axes[2].step(time_u, bundle["fallback_verified_flags"], where="post", linewidth=1.5, linestyle="--", label="fallback_verified")
         axes[2].set_ylim(-0.05, 1.05)
         axes[2].set_yticks([0.0, 1.0])
         axes[2].grid(True, linestyle="--", alpha=0.35)
@@ -1300,59 +1449,68 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
                 ax.legend(loc="best")
                 ax.set_ylabel(f"y{idx}")
 
-            axes[2].step(
-                local_time_u,
-                qcqp_attempted_flags[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:orange",
-                label="qcqp_attempted",
-            )
-            axes[2].step(
-                local_time_u,
-                qcqp_hard_accepted_flags[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:green",
-                label="qcqp_hard_accepted",
-            )
-            axes[2].step(
-                local_time_u,
-                projection_active[step_start:step_end],
-                where="post",
-                linewidth=1.5,
-                linestyle="--",
-                color="tab:red",
-                label="optimized_correction",
-            )
+            if first_step_replacement_mode:
+                axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
+                axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
+                axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
+                axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
+                axes[2].set_ylabel("replacement")
+                axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
+                axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
+                axes[3].set_ylabel("lyap")
+            else:
+                axes[2].step(
+                    local_time_u,
+                    qcqp_attempted_flags[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:orange",
+                    label="qcqp_attempted",
+                )
+                axes[2].step(
+                    local_time_u,
+                    qcqp_hard_accepted_flags[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:green",
+                    label="qcqp_hard_accepted",
+                )
+                axes[2].step(
+                    local_time_u,
+                    projection_active[step_start:step_end],
+                    where="post",
+                    linewidth=1.5,
+                    linestyle="--",
+                    color="tab:red",
+                    label="optimized_correction",
+                )
+                axes[2].set_ylabel("projection")
+                axes[3].step(
+                    local_time_u,
+                    fallback_mpc_active[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:purple",
+                    label="fallback_mpc_active",
+                )
+                axes[3].step(
+                    local_time_u,
+                    fallback_mpc_verified[step_start:step_end],
+                    where="post",
+                    linewidth=1.5,
+                    linestyle="--",
+                    color="tab:green",
+                    label="fallback_mpc_verified",
+                )
+                axes[3].set_ylabel("fallback")
             axes[2].set_ylim(-0.05, 1.05)
             axes[2].set_yticks([0.0, 1.0])
             axes[2].grid(True, linestyle="--", alpha=0.35)
             axes[2].legend(loc="best")
-            axes[2].set_ylabel("projection")
-
-            axes[3].step(
-                local_time_u,
-                fallback_mpc_active[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:purple",
-                label="fallback_mpc_active",
-            )
-            axes[3].step(
-                local_time_u,
-                fallback_mpc_verified[step_start:step_end],
-                where="post",
-                linewidth=1.5,
-                linestyle="--",
-                color="tab:green",
-                label="fallback_mpc_verified",
-            )
             axes[3].set_ylim(-0.05, 1.05)
             axes[3].set_yticks([0.0, 1.0])
             axes[3].grid(True, linestyle="--", alpha=0.35)
             axes[3].legend(loc="best")
-            axes[3].set_ylabel("fallback")
             axes[3].set_xlabel("step in episode")
 
             fig.suptitle(
@@ -1406,59 +1564,68 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
                 ax.legend(loc="best")
                 ax.set_ylabel(f"y{idx}")
 
-            axes[2].step(
-                local_time_u,
-                qcqp_attempted_flags[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:orange",
-                label="qcqp_attempted",
-            )
-            axes[2].step(
-                local_time_u,
-                qcqp_hard_accepted_flags[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:green",
-                label="qcqp_hard_accepted",
-            )
-            axes[2].step(
-                local_time_u,
-                projection_active[step_start:step_end],
-                where="post",
-                linewidth=1.5,
-                linestyle="--",
-                color="tab:red",
-                label="optimized_correction",
-            )
+            if first_step_replacement_mode:
+                axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
+                axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
+                axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
+                axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
+                axes[2].set_ylabel("replacement")
+                axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
+                axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
+                axes[3].set_ylabel("lyap")
+            else:
+                axes[2].step(
+                    local_time_u,
+                    qcqp_attempted_flags[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:orange",
+                    label="qcqp_attempted",
+                )
+                axes[2].step(
+                    local_time_u,
+                    qcqp_hard_accepted_flags[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:green",
+                    label="qcqp_hard_accepted",
+                )
+                axes[2].step(
+                    local_time_u,
+                    projection_active[step_start:step_end],
+                    where="post",
+                    linewidth=1.5,
+                    linestyle="--",
+                    color="tab:red",
+                    label="optimized_correction",
+                )
+                axes[2].set_ylabel("projection")
+                axes[3].step(
+                    local_time_u,
+                    fallback_mpc_active[step_start:step_end],
+                    where="post",
+                    linewidth=2.0,
+                    color="tab:purple",
+                    label="fallback_mpc_active",
+                )
+                axes[3].step(
+                    local_time_u,
+                    fallback_mpc_verified[step_start:step_end],
+                    where="post",
+                    linewidth=1.5,
+                    linestyle="--",
+                    color="tab:green",
+                    label="fallback_mpc_verified",
+                )
+                axes[3].set_ylabel("fallback")
             axes[2].set_ylim(-0.05, 1.05)
             axes[2].set_yticks([0.0, 1.0])
             axes[2].grid(True, linestyle="--", alpha=0.35)
             axes[2].legend(loc="best")
-            axes[2].set_ylabel("projection")
-
-            axes[3].step(
-                local_time_u,
-                fallback_mpc_active[step_start:step_end],
-                where="post",
-                linewidth=2.0,
-                color="tab:purple",
-                label="fallback_mpc_active",
-            )
-            axes[3].step(
-                local_time_u,
-                fallback_mpc_verified[step_start:step_end],
-                where="post",
-                linewidth=1.5,
-                linestyle="--",
-                color="tab:green",
-                label="fallback_mpc_verified",
-            )
             axes[3].set_ylim(-0.05, 1.05)
             axes[3].set_yticks([0.0, 1.0])
             axes[3].grid(True, linestyle="--", alpha=0.35)
             axes[3].legend(loc="best")
-            axes[3].set_ylabel("fallback")
             axes[3].set_xlabel("step in episode")
 
             fig.suptitle(f"Last episode ({last_episode + 1})", fontsize=12)
@@ -1528,12 +1695,27 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
     qcqp_attempted_flags = np.asarray(bundle["qcqp_attempted_flags"], float)
     qcqp_solved_flags = np.asarray(bundle["qcqp_solved_flags"], float)
     qcqp_hard_accepted_flags = np.asarray(bundle["qcqp_hard_accepted_flags"], float)
+    candidate_first_step_lyap_ok_flags = np.asarray(bundle["candidate_first_step_lyap_ok_flags"], float)
+    first_step_contraction_triggered_flags = np.asarray(bundle["first_step_contraction_triggered_flags"], float)
+    constrained_mpc_attempted_flags = np.asarray(bundle["constrained_mpc_attempted_flags"], float)
+    constrained_mpc_solved_flags = np.asarray(bundle["constrained_mpc_solved_flags"], float)
+    constrained_mpc_applied_flags = np.asarray(bundle["constrained_mpc_applied_flags"], float)
+    constrained_mpc_failed_applied_candidate_flags = np.asarray(bundle["constrained_mpc_failed_applied_candidate_flags"], float)
+    first_step_contraction_satisfied_applied_flags = np.asarray(bundle["first_step_contraction_satisfied_applied_flags"], float)
     projection_active = np.asarray(bundle["projection_active_flags"], float)
     fallback_verified_flags = np.asarray(bundle["fallback_verified_flags"], float)
 
     time_y = np.arange(y_system.shape[0])
     time_u = np.arange(bundle["u_applied_phys"].shape[0])
     n_y = y_system.shape[1]
+    first_step_replacement_mode = bool(
+        "first_step" in str(bundle.get("source", "")).lower()
+        and (
+            np.any(constrained_mpc_attempted_flags > 0.5)
+            or np.any(np.isfinite(candidate_first_step_lyap_ok_flags))
+            or np.any(first_step_contraction_triggered_flags > 0.5)
+        )
+    )
 
     if bundle.get("steady_states") is not None and bundle.get("data_min") is not None and bundle.get("data_max") is not None:
         data_min = bundle["data_min"]
@@ -1567,19 +1749,38 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
     plt.close(fig)
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-    axes[0].step(time_u, qcqp_attempted_flags, where="post", linewidth=2, label="qcqp_attempted")
+    if first_step_replacement_mode:
+        axes[0].step(time_u, candidate_first_step_lyap_ok_flags, where="post", linewidth=2, label="candidate_first_step_ok")
+        axes[0].step(time_u, first_step_contraction_triggered_flags, where="post", linewidth=1.5, linestyle="--", label="replacement_triggered")
+    else:
+        axes[0].step(time_u, qcqp_attempted_flags, where="post", linewidth=2, label="qcqp_attempted")
     axes[0].set_ylim(-0.05, 1.05)
     axes[0].set_yticks([0.0, 1.0])
     axes[0].grid(True, linestyle="--", alpha=0.35)
     axes[0].legend()
-    axes[1].step(time_u, qcqp_solved_flags, where="post", linewidth=2, label="qcqp_solved")
-    axes[1].step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", label="qcqp_hard_accept")
+    if first_step_replacement_mode:
+        axes[1].step(time_u, constrained_mpc_attempted_flags, where="post", linewidth=2, label="constrained_mpc_attempted")
+        axes[1].step(time_u, constrained_mpc_solved_flags, where="post", linewidth=1.5, linestyle="--", label="constrained_mpc_solved")
+    else:
+        axes[1].step(time_u, qcqp_solved_flags, where="post", linewidth=2, label="qcqp_solved")
+        axes[1].step(time_u, projection_active, where="post", linewidth=1.5, linestyle="--", label="qcqp_hard_accept")
     axes[1].set_ylim(-0.05, 1.05)
     axes[1].set_yticks([0.0, 1.0])
     axes[1].grid(True, linestyle="--", alpha=0.35)
     axes[1].legend()
-    axes[2].step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, label="qcqp_hard_accepted")
-    axes[2].step(time_u, fallback_verified_flags, where="post", linewidth=1.5, linestyle="--", label="fallback_verified")
+    if first_step_replacement_mode:
+        axes[2].step(time_u, constrained_mpc_applied_flags, where="post", linewidth=2, label="constrained_mpc_applied")
+        axes[2].step(
+            time_u,
+            constrained_mpc_failed_applied_candidate_flags,
+            where="post",
+            linewidth=1.5,
+            linestyle="--",
+            label="constrained_failed_candidate_applied",
+        )
+    else:
+        axes[2].step(time_u, qcqp_hard_accepted_flags, where="post", linewidth=2, label="qcqp_hard_accepted")
+        axes[2].step(time_u, fallback_verified_flags, where="post", linewidth=1.5, linestyle="--", label="fallback_verified")
     axes[2].set_ylim(-0.05, 1.05)
     axes[2].set_yticks([0.0, 1.0])
     axes[2].grid(True, linestyle="--", alpha=0.35)
@@ -1656,21 +1857,31 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
             ax.set_ylabel(f"y{idx}")
-        axes[2].step(local_time_u, qcqp_attempted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="qcqp_attempted")
-        axes[2].step(local_time_u, qcqp_hard_accepted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="qcqp_hard_accepted")
-        axes[2].step(local_time_u, projection_active[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="optimized_correction")
+        if first_step_replacement_mode:
+            axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
+            axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
+            axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
+            axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
+            axes[2].set_ylabel("replacement")
+            axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
+            axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
+            axes[3].set_ylabel("lyap")
+        else:
+            axes[2].step(local_time_u, qcqp_attempted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="qcqp_attempted")
+            axes[2].step(local_time_u, qcqp_hard_accepted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="qcqp_hard_accepted")
+            axes[2].step(local_time_u, projection_active[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="optimized_correction")
+            axes[2].set_ylabel("projection")
+            axes[3].step(local_time_u, fallback_mpc_active[step_start:step_end], where="post", linewidth=2.0, color="tab:purple", label="fallback_mpc_active")
+            axes[3].step(local_time_u, fallback_verified_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:green", label="fallback_mpc_verified")
+            axes[3].set_ylabel("fallback")
         axes[2].set_ylim(-0.05, 1.05)
         axes[2].set_yticks([0.0, 1.0])
         axes[2].grid(True, linestyle="--", alpha=0.35)
         axes[2].legend(loc="best")
-        axes[2].set_ylabel("projection")
-        axes[3].step(local_time_u, fallback_mpc_active[step_start:step_end], where="post", linewidth=2.0, color="tab:purple", label="fallback_mpc_active")
-        axes[3].step(local_time_u, fallback_verified_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:green", label="fallback_mpc_verified")
         axes[3].set_ylim(-0.05, 1.05)
         axes[3].set_yticks([0.0, 1.0])
         axes[3].grid(True, linestyle="--", alpha=0.35)
         axes[3].legend(loc="best")
-        axes[3].set_ylabel("fallback")
         axes[3].set_xlabel("step in episode")
         fig.suptitle(title, fontsize=12)
         plt.tight_layout()
@@ -1756,7 +1967,7 @@ def save_safety_filter_debug_artifacts(
             paper_root = os.path.join(out_dir, str(paper_plot_subdir))
             plot_safety_filter_bundle(bundle, os.path.join(paper_root, "safety_selector"), paper_style=True)
             if (
-                str(bundle.get("source", "")).lower() == "rl"
+                str(bundle.get("source", "")).lower().startswith("rl")
                 and save_rl_summary_plots
                 and HAS_RL_SUMMARY_PLOTS
             ):
