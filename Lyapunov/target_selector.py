@@ -20,6 +20,13 @@ _DYN_TOL_BY_STATUS = {
 
 REFINED_STEP_A_SELECTOR_NAME = "refined_step_a"
 TARGET_SELECTOR_MODES = (REFINED_STEP_A_SELECTOR_NAME,)
+_SELECTOR_TERM_NAMES = (
+    "target_tracking",
+    "u_applied_anchor",
+    "u_prev_smoothing",
+    "x_prev_smoothing",
+    "xhat_anchor",
+)
 
 
 @dataclass
@@ -30,6 +37,7 @@ class TargetSelectorConfig:
     R_delta_u_sel_diag: object = None
     Q_delta_x_diag: object = None
     Q_x_ref_diag: object = None
+    term_activation: object = None
     alpha_u_ref: float = 0.5
     alpha_du_sel: float = 0.5
     alpha_dx_sel: float = 0.05
@@ -51,6 +59,24 @@ def _solver_sequence(solver_pref):
     if isinstance(solver_pref, str):
         return (solver_pref,)
     return tuple(solver_pref)
+
+
+def _resolve_term_activation(cfg):
+    spec = cfg.get("term_activation")
+    if spec is None:
+        return {name: True for name in _SELECTOR_TERM_NAMES}
+    if not isinstance(spec, dict):
+        raise ValueError("term_activation must be a dict mapping selector term names to booleans.")
+    unknown = sorted(set(spec) - set(_SELECTOR_TERM_NAMES))
+    if unknown:
+        raise ValueError(
+            "term_activation contains unsupported selector term names: "
+            + ", ".join(unknown)
+        )
+    activation = {name: True for name in _SELECTOR_TERM_NAMES}
+    for name, active in spec.items():
+        activation[name] = bool(active)
+    return activation
 
 
 def _reset_variable_values(variables):
@@ -332,6 +358,7 @@ def _finalize_target_info(
     y_hi,
     weights,
     cfg,
+    term_activation,
     warm_start_enabled,
     warm_start_available,
     warm_start_used,
@@ -354,6 +381,7 @@ def _finalize_target_info(
         "alpha_du_sel": float(cfg.get("alpha_du_sel", 0.5)),
         "alpha_dx_sel": float(cfg.get("alpha_dx_sel", 0.05)),
         "alpha_x_ref": float(cfg.get("alpha_x_ref", 0.01)),
+        "term_activation": dict(term_activation),
         "x_weight_base": str(cfg.get("x_weight_base", "CtQC")),
         "Qr_diag_used": weights["Qr_diag_used"].copy(),
         "R_u_ref_diag_used": weights["R_u_ref_diag_used"].copy(),
@@ -602,19 +630,26 @@ def compute_refined_step_a_target(
         raise ValueError("Output tightening is too large. Tightened output bounds are infeasible.")
 
     weights = _resolve_weight_matrices(C, H_arr, cfg_dict, n_x=n_x, n_u=n_u, n_y=n_y, n_r=n_r)
+    term_activation = _resolve_term_activation(cfg_dict)
 
     x_var = cp.Variable(n_x)
     u_var = cp.Variable(n_u)
     y_expr = C @ x_var + Cd @ d_hat
     r_expr = y_expr if H_arr is None else H_arr @ y_expr
 
-    objective = cp.quad_form(r_expr - y_sp, weights["Qr"])
-    objective += cp.quad_form(u_var - u_applied_k, weights["R_u_ref"])
+    objective = 0
+    if term_activation["target_tracking"]:
+        objective += cp.quad_form(r_expr - y_sp, weights["Qr"])
+    if term_activation["u_applied_anchor"]:
+        objective += cp.quad_form(u_var - u_applied_k, weights["R_u_ref"])
     if u_s_prev_arr is not None:
-        objective += cp.quad_form(u_var - u_s_prev_arr, weights["R_delta_u_sel"])
+        if term_activation["u_prev_smoothing"]:
+            objective += cp.quad_form(u_var - u_s_prev_arr, weights["R_delta_u_sel"])
     if x_s_prev_arr is not None:
-        objective += cp.quad_form(x_var - x_s_prev_arr, weights["Q_delta_x"])
-    objective += cp.quad_form(x_var - xhat_k, weights["Q_x_ref"])
+        if term_activation["x_prev_smoothing"]:
+            objective += cp.quad_form(x_var - x_s_prev_arr, weights["Q_delta_x"])
+    if term_activation["xhat_anchor"]:
+        objective += cp.quad_form(x_var - xhat_k, weights["Q_x_ref"])
 
     constraints = [
         x_var == A @ x_var + B @ u_var + Bd @ d_hat,
@@ -663,20 +698,20 @@ def compute_refined_step_a_target(
 
     if success:
         objective_terms = {
-            "target_tracking": float((r_s - y_sp).T @ weights["Qr"] @ (r_s - y_sp)),
-            "u_applied_anchor": float((u_s - u_applied_k).T @ weights["R_u_ref"] @ (u_s - u_applied_k)),
-            "u_prev_smoothing": 0.0 if u_s_prev_arr is None else float((u_s - u_s_prev_arr).T @ weights["R_delta_u_sel"] @ (u_s - u_s_prev_arr)),
-            "x_prev_smoothing": 0.0 if x_s_prev_arr is None else float((x_s - x_s_prev_arr).T @ weights["Q_delta_x"] @ (x_s - x_s_prev_arr)),
-            "xhat_anchor": float((x_s - xhat_k).T @ weights["Q_x_ref"] @ (x_s - xhat_k)),
+            "target_tracking": 0.0 if not term_activation["target_tracking"] else float((r_s - y_sp).T @ weights["Qr"] @ (r_s - y_sp)),
+            "u_applied_anchor": 0.0 if not term_activation["u_applied_anchor"] else float((u_s - u_applied_k).T @ weights["R_u_ref"] @ (u_s - u_applied_k)),
+            "u_prev_smoothing": 0.0 if (u_s_prev_arr is None or not term_activation["u_prev_smoothing"]) else float((u_s - u_s_prev_arr).T @ weights["R_delta_u_sel"] @ (u_s - u_s_prev_arr)),
+            "x_prev_smoothing": 0.0 if (x_s_prev_arr is None or not term_activation["x_prev_smoothing"]) else float((x_s - x_s_prev_arr).T @ weights["Q_delta_x"] @ (x_s - x_s_prev_arr)),
+            "xhat_anchor": 0.0 if not term_activation["xhat_anchor"] else float((x_s - xhat_k).T @ weights["Q_x_ref"] @ (x_s - xhat_k)),
         }
         objective_terms["total"] = float(sum(objective_terms.values()))
     else:
         objective_terms = {
-            "target_tracking": None,
-            "u_applied_anchor": None,
-            "u_prev_smoothing": None if u_s_prev_arr is not None else 0.0,
-            "x_prev_smoothing": None if x_s_prev_arr is not None else 0.0,
-            "xhat_anchor": None,
+            "target_tracking": 0.0 if not term_activation["target_tracking"] else None,
+            "u_applied_anchor": 0.0 if not term_activation["u_applied_anchor"] else None,
+            "u_prev_smoothing": 0.0 if (u_s_prev_arr is None or not term_activation["u_prev_smoothing"]) else None,
+            "x_prev_smoothing": 0.0 if (x_s_prev_arr is None or not term_activation["x_prev_smoothing"]) else None,
+            "xhat_anchor": 0.0 if not term_activation["xhat_anchor"] else None,
             "total": solve_info.get("objective_value"),
         }
 
@@ -707,6 +742,7 @@ def compute_refined_step_a_target(
         y_hi=y_hi,
         weights=weights,
         cfg=cfg_dict,
+        term_activation=term_activation,
         warm_start_enabled=warm_start_enabled,
         warm_start_available=warm_start_available,
         warm_start_used=warm_start_used,
