@@ -1,7 +1,7 @@
 import numpy as np
 
 from Lyapunov.lyapunov_core import compute_terminal_alpha_input_only
-from Lyapunov.target_selector import compute_ss_target_refined_rawlings
+from Lyapunov.target_selector import compute_ss_target_refined_rawlings, prepare_filter_target
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.lyapunov_utils import DEFAULT_CVXPY_SOLVERS, get_y_sp_step, shift_input_guess
 from utils.scaling_helpers import apply_min_max, reverse_min_max
@@ -410,6 +410,9 @@ def run_standard_tracking_lyapunov_mpc_first_step_contraction(
     Rdu_tgt_diag=None,
     u_tight_tgt=None,
     y_tight_tgt=None,
+    target_selector_config=None,
+    selector_warm_start=True,
+    selector_H=None,
     rho_lyap=0.99,
     eps_lyap=1e-9,
     first_step_contraction_on=True,
@@ -469,32 +472,75 @@ def run_standard_tracking_lyapunov_mpc_first_step_contraction(
         yhat_now = np.asarray(LMPC_obj.C @ x0_aug, float).reshape(-1)
         innovation = y_prev_scaled - yhat_now
 
-        x_s, u_s, d_s, dbg_tgt = compute_ss_target_refined_rawlings(
-            A_aug=LMPC_obj.A,
-            B_aug=LMPC_obj.B,
-            C_aug=LMPC_obj.C,
-            xhat_aug=x0_aug,
-            y_sp=y_sp_k,
-            u_min=u_dev_min,
-            u_max=u_dev_max,
-            u_applied_k=u_prev_dev,
-            u_nom=u_nom_tgt,
-            Ty_diag=Ty_tgt_diag,
-            Ru_diag=Ru_tgt_diag,
-            Qx_diag=Qx_tgt_diag,
-            w_x=w_x_tgt,
-            x_s_prev=x_s_prev,
-            u_s_prev=u_s_prev,
-            Qdx_diag=Qdx_tgt_diag,
-            Rdu_diag=Rdu_tgt_diag,
-            y_min=None,
-            y_max=None,
-            u_tight=u_tight_tgt,
-            y_tight=y_tight_tgt,
-            soft_output_bounds=True,
-            solver_pref=DEFAULT_CVXPY_SOLVERS,
-            return_debug=True,
-        )
+        if target_selector_config is not None:
+            target_info = prepare_filter_target(
+                A_aug=LMPC_obj.A,
+                B_aug=LMPC_obj.B,
+                C_aug=LMPC_obj.C,
+                xhat_aug=x0_aug,
+                y_sp=y_sp_k,
+                u_min=u_dev_min,
+                u_max=u_dev_max,
+                config=target_selector_config,
+                x_s_prev=x_s_prev,
+                u_s_prev=u_s_prev,
+                warm_start=selector_warm_start,
+                H=selector_H,
+                u_applied_k=u_prev_dev,
+            )
+            x_s = None if target_info.get("x_s") is None else np.asarray(target_info["x_s"], float).reshape(-1).copy()
+            u_s = None if target_info.get("u_s") is None else np.asarray(target_info["u_s"], float).reshape(-1).copy()
+            d_s = None if target_info.get("d_s") is None else np.asarray(target_info["d_s"], float).reshape(-1).copy()
+            dbg_tgt = dict(target_info.get("selector_debug", {}))
+            dbg_tgt.update({
+                "success": bool(target_info.get("success", False)),
+                "solve_stage": target_info.get("solve_stage"),
+                "x_s": x_s,
+                "u_s": u_s,
+                "d_s": d_s,
+                "y_s": None if target_info.get("y_s") is None else np.asarray(target_info["y_s"], float).reshape(-1).copy(),
+                "r_s": None if target_info.get("r_s") is None else np.asarray(target_info["r_s"], float).reshape(-1).copy(),
+                "target_error": None if target_info.get("target_error") is None else np.asarray(target_info["target_error"], float).reshape(-1).copy(),
+                "target_error_inf": target_info.get("target_error_inf"),
+                "target_error_norm": target_info.get("target_error_norm"),
+                "target_slack_inf": target_info.get("target_slack_inf"),
+                "target_eq_residual_inf": target_info.get("target_eq_residual_inf"),
+                "dyn_residual_inf": target_info.get("dyn_residual_inf"),
+                "bound_violation_inf": target_info.get("bound_violation_inf"),
+                "objective_value": target_info.get("objective_value"),
+                "objective_terms": target_info.get("objective_terms"),
+                "status": target_info.get("status"),
+                "solver": target_info.get("solver"),
+            })
+        else:
+            x_s, u_s, d_s, dbg_tgt = compute_ss_target_refined_rawlings(
+                A_aug=LMPC_obj.A,
+                B_aug=LMPC_obj.B,
+                C_aug=LMPC_obj.C,
+                xhat_aug=x0_aug,
+                y_sp=y_sp_k,
+                u_min=u_dev_min,
+                u_max=u_dev_max,
+                u_applied_k=u_prev_dev,
+                u_nom=u_nom_tgt,
+                Ty_diag=Ty_tgt_diag,
+                Ru_diag=Ru_tgt_diag,
+                Qx_diag=Qx_tgt_diag,
+                w_x=w_x_tgt,
+                x_s_prev=x_s_prev,
+                u_s_prev=u_s_prev,
+                Qdx_diag=Qdx_tgt_diag,
+                Rdu_diag=Rdu_tgt_diag,
+                y_min=None,
+                y_max=None,
+                u_tight=u_tight_tgt,
+                y_tight=y_tight_tgt,
+                soft_output_bounds=True,
+                solver_pref=DEFAULT_CVXPY_SOLVERS,
+                warm_start=selector_warm_start,
+                return_debug=True,
+                H=selector_H,
+            )
 
         dbg_tgt = {} if dbg_tgt is None else dict(dbg_tgt)
         dbg_tgt.update({
