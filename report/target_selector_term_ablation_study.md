@@ -25,6 +25,10 @@ Across all study runs, the following are held fixed:
 
 The only intentional change between runs is which selector objective terms are active.
 
+One explicit study-level exception is intentional:
+
+- fallback MPC is disabled in the ablation notebook, so the comparison isolates selector-term changes without backup-MPC recovery masking the ablation effect
+
 ## Selector Objective Terms
 
 The refined Step A selector solves a steady-state optimization with the decision variables `(x_s, u_s)` and fixed disturbance estimate `d_s = d_hat_k`.
