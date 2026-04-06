@@ -24,6 +24,14 @@ The existing offset-free steady-state sidecar only analyzed the unbounded frozen
   - `box_per_input_activity.csv`
   - `box_event_table.csv`
 - Updated the generic input comparison plots so `inputs_vs_targets.png` and `input_target_mismatch.png` use the bounded steady-state input target whenever box analysis is enabled.
+- Added reduced-equation diagnostics for the exact and bounded targets:
+  - `reduced_rhs_vs_Gu.png`
+  - `reduced_rhs_mismatch.png`
+- Added deviation-space input diagnostics so the target can be checked in the same zero-centered coordinates as the steady-state solve:
+  - `inputs_vs_targets_dev.png`
+  - `input_target_mismatch_dev.png`
+- Added a tail-window overview plot for the latest 20 samples:
+  - `tail_last_20_samples_overview.png`
 - Updated `MPCOffsetFree_SteadyStateDebug.ipynb` to enable the bounded branch and display the new summary tables.
 - Added documentation:
   - `report/steady_state_box_analysis_parameters.md`
@@ -49,3 +57,7 @@ The existing offset-free steady-state sidecar only analyzed the unbounded frozen
   - the convex bounded least-squares problem being solved
   - the numerical algorithm used by SciPy to solve it
 - `report/steady_state_box_analysis.tex` was compiled successfully with `pdflatex` in this environment.
+- The new deviation-space and reduced-equation plots were added to distinguish:
+  - physical-unit inputs from deviation-space targets
+  - `rhs_output` from `G u_s`
+  - late-time state mismatch from true steady-state target mismatch

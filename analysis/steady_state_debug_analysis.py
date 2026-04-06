@@ -48,6 +48,7 @@ DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
     "box_event_window_radius": 5,
     "box_dhat_event_threshold": 5.0e-2,
     "box_max_event_plots": 6,
+    "tail_window_samples": 20,
     "save_csv": True,
     "save_plots": True,
     "sample_table_stride": 10,
@@ -1103,6 +1104,9 @@ def analyze_offsetfree_rollout(
         "smallest_sv_G": float(reduced_info["smallest_sv_G"]),
         "configured_solver_mode": str(config["solver_mode"]),
     }
+    reduced_gain = None
+    if reduced_info["G"] is not None:
+        reduced_gain = np.asarray(reduced_info["G"], dtype=float)
 
     x_s_store = np.zeros((nFE, n_states), dtype=float)
     u_s_store = np.zeros((nFE, n_inputs), dtype=float)
@@ -1133,6 +1137,8 @@ def analyze_offsetfree_rollout(
     dhat_minus_d_s = np.zeros((nFE, n_outputs), dtype=float)
     u_applied_minus_u_s_phys = np.zeros((nFE, n_inputs), dtype=float)
     y_current_minus_y_s_phys = np.zeros((nFE, n_outputs), dtype=float)
+    G_u_s_exact_store = np.full((nFE, n_outputs), np.nan, dtype=float)
+    G_u_s_exact_minus_rhs_store = np.full((nFE, n_outputs), np.nan, dtype=float)
 
     step_rows: List[Dict[str, Any]] = []
     for step_idx in range(nFE):
@@ -1163,6 +1169,11 @@ def analyze_offsetfree_rollout(
         residual_dyn_store[step_idx, :] = solve_info["residual_dyn"]
         residual_out_store[step_idx, :] = solve_info["residual_out"]
         residual_total_store[step_idx, :] = solve_info["residual_total"]
+        if reduced_gain is not None:
+            G_u_s_exact_store[step_idx, :] = reduced_gain @ solve_info["u_s"]
+            G_u_s_exact_minus_rhs_store[step_idx, :] = (
+                G_u_s_exact_store[step_idx, :] - solve_info["rhs_output"]
+            )
 
         u_s_phys[step_idx, :] = _physical_input_from_dev(
             solve_info["u_s"],
@@ -1202,6 +1213,10 @@ def analyze_offsetfree_rollout(
                 "y_s_minus_y_sp_norm": _norm(y_s_minus_y_sp[step_idx, :]),
                 "xhat_minus_x_s_norm": _norm(xhat_minus_x_s[step_idx, :]),
                 "dhat_minus_d_s_norm": _norm(dhat_minus_d_s[step_idx, :]),
+                "rhs_output_norm": _norm(solve_info["rhs_output"]),
+                "u_s_dev_norm": _norm(solve_info["u_s"]),
+                "x_s_norm": _norm(solve_info["x_s"]),
+                "reduced_rhs_exact_residual_norm": _norm(G_u_s_exact_minus_rhs_store[step_idx, :]),
             }
         )
 
@@ -1212,12 +1227,13 @@ def analyze_offsetfree_rollout(
         "u_applied_minus_u_s_norm": _summary_stat_block(np.linalg.norm(u_applied_minus_u_s, axis=1)),
         "y_current_minus_y_s_norm": _summary_stat_block(np.linalg.norm(y_current_minus_y_s, axis=1)),
         "xhat_minus_x_s_norm": _summary_stat_block(np.linalg.norm(xhat_minus_x_s, axis=1)),
+        "rhs_output_norm": _summary_stat_block(np.linalg.norm(rhs_output_store, axis=1)),
+        "u_s_dev_norm": _summary_stat_block(np.linalg.norm(u_s_store, axis=1)),
+        "x_s_norm": _summary_stat_block(np.linalg.norm(x_s_store, axis=1)),
+        "reduced_rhs_exact_residual_norm": _summary_stat_block(
+            np.linalg.norm(G_u_s_exact_minus_rhs_store, axis=1)
+        ),
     }
-
-    summary_stats_row = {}
-    for metric_name, stats in summary_stats.items():
-        for stat_name, stat_value in stats.items():
-            summary_stats_row[f"{metric_name}_{stat_name}"] = stat_value
 
     solver_mode_counts: Dict[str, int] = {}
     for mode_name in solver_mode_used:
@@ -1263,8 +1279,19 @@ def analyze_offsetfree_rollout(
             y_s_store, y_ss_scaled, y_min, y_max
         )
         box_analysis["u_applied_phys"] = u_applied_phys
+        box_analysis["u_applied_dev"] = u_applied_scaled_dev
         box_analysis["dhat_current"] = dhat_current
         box_analysis["y_sp_phys"] = _physical_output_from_dev(y_sp, y_ss_scaled, y_min, y_max)
+        if reduced_gain is not None:
+            box_analysis["G_u_s_exact"] = G_u_s_exact_store.copy()
+            box_analysis["G_u_s_exact_minus_rhs"] = G_u_s_exact_minus_rhs_store.copy()
+            box_analysis["G_u_s_bounded"] = box_analysis["u_s_bounded"] @ reduced_gain.T
+            box_analysis["G_u_s_bounded_minus_rhs"] = (
+                box_analysis["G_u_s_bounded"] - rhs_output_store
+            )
+            summary_stats["reduced_rhs_bounded_residual_norm"] = _summary_stat_block(
+                np.linalg.norm(box_analysis["G_u_s_bounded_minus_rhs"], axis=1)
+            )
         for row, box_row in zip(step_rows, box_analysis["per_step_rows"]):
             row.update(
                 {
@@ -1282,8 +1309,18 @@ def analyze_offsetfree_rollout(
                     "xs_exact_minus_xs_bounded_inf": float(
                         box_analysis["xs_exact_minus_xs_bounded_inf"][row["k"]]
                     ),
+                    "reduced_rhs_bounded_residual_norm": float(
+                        _norm(box_analysis["G_u_s_bounded_minus_rhs"][row["k"], :])
+                    )
+                    if reduced_gain is not None
+                    else float("nan"),
                 }
             )
+
+    summary_stats_row = {}
+    for metric_name, stats in summary_stats.items():
+        for stat_name, stat_value in stats.items():
+            summary_stats_row[f"{metric_name}_{stat_name}"] = stat_value
     sampled_rows = step_rows[:: max(int(config["sample_table_stride"]), 1)]
 
     bundle: Dict[str, Any] = {
@@ -1314,6 +1351,9 @@ def analyze_offsetfree_rollout(
         "x_s": x_s_store,
         "u_s_dev": u_s_store,
         "u_s_phys": u_s_phys,
+        "G_matrix": None if reduced_gain is None else reduced_gain.copy(),
+        "G_u_s_exact": G_u_s_exact_store,
+        "G_u_s_exact_minus_rhs": G_u_s_exact_minus_rhs_store,
         "d_s": d_s_store,
         "y_s_dev": y_s_store,
         "y_s_phys": y_s_phys,
@@ -1403,11 +1443,15 @@ def _save_inputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     target_label = "u_s"
     target_phys = bundle["u_s_phys"]
     applied_minus_target_phys = bundle["u_applied_minus_u_s_phys"]
+    target_dev = bundle["u_s_dev"]
+    applied_minus_target_dev = bundle["u_applied_dev"] - target_dev
     if bundle.get("box_analysis_enabled"):
         box = bundle["box_analysis"]
         target_label = "u_s_bounded"
         target_phys = box["u_s_bounded_phys"]
         applied_minus_target_phys = bundle["u_applied_phys"] - target_phys
+        target_dev = box["u_s_bounded"]
+        applied_minus_target_dev = bundle["u_applied_dev"] - target_dev
 
     fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.8 * n_inputs), sharex=True)
     axes = np.atleast_1d(axes)
@@ -1447,6 +1491,51 @@ def _save_inputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     axes[-1].set_xlabel("time (h)")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "input_target_mismatch.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.8 * n_inputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.step(time_step, bundle["u_applied_dev"][:, idx], where="post", linewidth=2.0, label="u_applied_dev")
+        ax.step(
+            time_step,
+            target_dev[:, idx],
+            where="post",
+            linewidth=2.0,
+            linestyle="--",
+            label=f"{target_label}_dev",
+        )
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0, label="zero dev")
+        if bundle.get("box_analysis_enabled"):
+            ax.axhline(float(bundle["u_box_min"][idx]), color="tab:red", linestyle=":", linewidth=1.0, label="u_min_dev")
+            ax.axhline(float(bundle["u_box_max"][idx]), color="tab:green", linestyle=":", linewidth=1.0, label="u_max_dev")
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+        ax.set_ylabel(f"input_{idx}")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "inputs_vs_targets_dev.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.2 * n_inputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.step(
+            time_step,
+            applied_minus_target_dev[:, idx],
+            where="post",
+            linewidth=2.0,
+            label=f"u_applied_dev - {target_label}_dev",
+        )
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0)
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+        ax.set_ylabel(f"input_{idx}")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "input_target_mismatch_dev.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1509,6 +1598,177 @@ def _save_disturbance_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     axes[-1].set_xlabel("time (h)")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "disturbance_rhs.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_reduced_consistency_plot(bundle: Dict[str, Any], output_dir: str) -> None:
+    if bundle.get("G_matrix") is None:
+        return
+
+    n_outputs = bundle["rhs_output"].shape[1]
+    time_step = bundle["time_step_axis"]
+    fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 3.6 * n_outputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.plot(time_step, bundle["rhs_output"][:, idx], linewidth=2.0, label="rhs_output")
+        ax.plot(time_step, bundle["G_u_s_exact"][:, idx], linewidth=2.0, linestyle="--", label="G u_s_exact")
+        if bundle.get("box_analysis_enabled") and "G_u_s_bounded" in bundle["box_analysis"]:
+            ax.plot(
+                time_step,
+                bundle["box_analysis"]["G_u_s_bounded"][:, idx],
+                linewidth=1.8,
+                linestyle=":",
+                label="G u_s_bounded",
+            )
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0)
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+        ax.set_ylabel(f"rhs_{idx}")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "reduced_rhs_vs_Gu.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 3.2 * n_outputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.plot(
+            time_step,
+            bundle["G_u_s_exact_minus_rhs"][:, idx],
+            linewidth=2.0,
+            label="G u_s_exact - rhs",
+        )
+        if bundle.get("box_analysis_enabled") and "G_u_s_bounded_minus_rhs" in bundle["box_analysis"]:
+            ax.plot(
+                time_step,
+                bundle["box_analysis"]["G_u_s_bounded_minus_rhs"][:, idx],
+                linewidth=1.8,
+                linestyle="--",
+                label="G u_s_bounded - rhs",
+            )
+        ax.axhline(0.0, color="0.4", linestyle=":", linewidth=1.0)
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+        ax.set_ylabel(f"rhs_{idx}")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "reduced_rhs_mismatch.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_tail_window_overview(bundle: Dict[str, Any], output_dir: str) -> None:
+    tail_count = max(int(bundle["config"].get("tail_window_samples", 20)), 1)
+    start_idx = max(int(bundle["nFE"]) - tail_count, 0)
+    stop_idx = int(bundle["nFE"])
+    if start_idx >= stop_idx:
+        return
+
+    k_axis = np.arange(start_idx, stop_idx, dtype=int)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
+    axes = np.atleast_1d(axes)
+
+    for idx in range(bundle["rhs_output"].shape[1]):
+        axes[0].plot(k_axis, bundle["rhs_output"][start_idx:stop_idx, idx], marker="o", linewidth=1.8, label=f"rhs[{idx}]")
+        if bundle.get("G_matrix") is not None:
+            axes[0].plot(
+                k_axis,
+                bundle["G_u_s_exact"][start_idx:stop_idx, idx],
+                marker="x",
+                linewidth=1.6,
+                linestyle="--",
+                label=f"G u_s_exact[{idx}]",
+            )
+            if bundle.get("box_analysis_enabled") and "G_u_s_bounded" in bundle["box_analysis"]:
+                axes[0].plot(
+                    k_axis,
+                    bundle["box_analysis"]["G_u_s_bounded"][start_idx:stop_idx, idx],
+                    marker=".",
+                    linewidth=1.4,
+                    linestyle=":",
+                    label=f"G u_s_bounded[{idx}]",
+                )
+    axes[0].axhline(0.0, color="0.4", linestyle=":", linewidth=1.0)
+    axes[0].set_ylabel("rhs / Gu")
+    axes[0].grid(True, linestyle="--", alpha=0.35)
+    axes[0].legend(loc="best")
+
+    for idx in range(bundle["u_s_dev"].shape[1]):
+        axes[1].plot(k_axis, bundle["u_applied_dev"][start_idx:stop_idx, idx], marker="o", linewidth=1.8, label=f"u_applied_dev[{idx}]")
+        axes[1].plot(
+            k_axis,
+            bundle["u_s_dev"][start_idx:stop_idx, idx],
+            marker="x",
+            linewidth=1.6,
+            linestyle="--",
+            label=f"u_s_exact[{idx}]",
+        )
+        if bundle.get("box_analysis_enabled"):
+            axes[1].plot(
+                k_axis,
+                bundle["box_analysis"]["u_s_bounded"][start_idx:stop_idx, idx],
+                marker=".",
+                linewidth=1.4,
+                linestyle=":",
+                label=f"u_s_bounded[{idx}]",
+            )
+            axes[1].axhline(float(bundle["u_box_min"][idx]), color="tab:red", linestyle=":", linewidth=1.0)
+            axes[1].axhline(float(bundle["u_box_max"][idx]), color="tab:green", linestyle=":", linewidth=1.0)
+    axes[1].axhline(0.0, color="0.4", linestyle=":", linewidth=1.0)
+    axes[1].set_ylabel("u dev")
+    axes[1].grid(True, linestyle="--", alpha=0.35)
+    axes[1].legend(loc="best")
+
+    axes[2].plot(
+        k_axis,
+        np.linalg.norm(bundle["rhs_output"][start_idx:stop_idx, :], axis=1),
+        marker="o",
+        linewidth=1.8,
+        label="||rhs_output||",
+    )
+    axes[2].plot(
+        k_axis,
+        np.linalg.norm(bundle["u_s_dev"][start_idx:stop_idx, :], axis=1),
+        marker="x",
+        linewidth=1.6,
+        linestyle="--",
+        label="||u_s_exact||",
+    )
+    if bundle.get("box_analysis_enabled"):
+        axes[2].plot(
+            k_axis,
+            np.linalg.norm(bundle["box_analysis"]["u_s_bounded"][start_idx:stop_idx, :], axis=1),
+            marker=".",
+            linewidth=1.4,
+            linestyle=":",
+            label="||u_s_bounded||",
+        )
+    axes[2].plot(
+        k_axis,
+        np.linalg.norm(bundle["x_s"][start_idx:stop_idx, :], axis=1),
+        linewidth=1.8,
+        label="||x_s||",
+    )
+    axes[2].plot(
+        k_axis,
+        np.linalg.norm(bundle["xhat_minus_x_s"][start_idx:stop_idx, :], axis=1),
+        linewidth=1.8,
+        linestyle="--",
+        label="||xhat - x_s||",
+    )
+    axes[2].grid(True, linestyle="--", alpha=0.35)
+    axes[2].legend(loc="best")
+    axes[2].set_ylabel("norm")
+    axes[2].set_xlabel("sample k")
+
+    fig.suptitle(f"Tail Window Overview (last {stop_idx - start_idx} samples)", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(output_dir, f"tail_last_{stop_idx - start_idx}_samples_overview.png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close(fig)
 
 
@@ -1754,8 +2014,10 @@ def _save_plots(bundle: Dict[str, Any], output_dir: str) -> None:
     _save_inputs_plot(bundle, output_dir)
     _save_states_plot(bundle, output_dir)
     _save_disturbance_plot(bundle, output_dir)
+    _save_reduced_consistency_plot(bundle, output_dir)
     _save_residual_plot(bundle, output_dir)
     _save_box_analysis_plots(bundle, output_dir)
+    _save_tail_window_overview(bundle, output_dir)
 
 
 def _build_summary_markdown(bundle: Dict[str, Any]) -> str:
