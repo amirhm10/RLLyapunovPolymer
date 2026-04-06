@@ -1,0 +1,174 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, bm, geometry}
+\geometry{margin=1in}
+
+\title{Bounded Steady-State Sidecar Analysis for Offset-Free MPC}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This note documents the analysis-only steady-state workflow used beside the normal offset-free MPC notebook. The closed-loop controller remains unchanged. At each simulation step the sidecar inspects the frozen-disturbance steady-state equations implied by the legacy augmentation and then expands that analysis with input box constraints.
+
+\section{Legacy Augmentation and Frozen Disturbance Target}
+
+Let $x_k \in \mathbb{R}^n$ be the physical state, $u_k \in \mathbb{R}^q$ the manipulated input, $y_k \in \mathbb{R}^p$ the measured output, and $d_k \in \mathbb{R}^p$ the output-disturbance state. The legacy augmented model used for offset-free MPC is
+\begin{align}
+x_{k+1} &= A x_k + B u_k, \\
+d_{k+1} &= d_k, \\
+y_k &= C x_k + d_k.
+\end{align}
+
+At each closed-loop step the observer provides an augmented estimate
+\[
+\hat z_k = \begin{bmatrix}\hat x_k \\ \hat d_k\end{bmatrix},
+\]
+and the sidecar freezes the disturbance target as
+\[
+d_s(k) = \hat d_k.
+\]
+
+\section{Exact Unbounded Steady-State Equations}
+
+For the current setpoint $y_{sp}(k)$ define
+\[
+r_k := y_{sp}(k) - \hat d_k.
+\]
+The exact steady-state equations are
+\begin{align}
+(I-A)x_s(k) - Bu_s(k) &= 0, \\
+Cx_s(k) &= r_k.
+\end{align}
+
+Using the stacked unknown
+\[
+w_s(k) = \begin{bmatrix}x_s(k) \\ u_s(k)\end{bmatrix},
+\]
+the sidecar forms
+\[
+M = \begin{bmatrix}I-A & -B \\ C & 0\end{bmatrix}, \qquad
+b_k = \begin{bmatrix}0 \\ r_k\end{bmatrix},
+\]
+and computes the unbounded solution from
+\[
+M w_s(k) = b_k.
+\]
+
+When $(I-A)$ is invertible, the reduced map
+\[
+G = C(I-A)^{-1}B
+\]
+is also available, so the reduced equation becomes
+\[
+G u_s(k) = r_k.
+\]
+
+\section{Input Box Constraints}
+
+The bounded expansion introduces the input box
+\[
+u_{\min} \le u_s(k) \le u_{\max},
+\]
+where $u_{\min}$ and $u_{\max}$ are taken from the same input box used for the MPC action bounds, expressed in the same scaled-deviation coordinates as the sidecar solve.
+
+After computing the exact unbounded solution, the sidecar classifies each step into one of three main cases:
+\begin{enumerate}
+\item \texttt{exact\_bounded}: the exact solution exists and satisfies the box.
+\item \texttt{exact\_unbounded}: the exact solution exists but violates the box.
+\item \texttt{exact\_unsolved}: the exact solve is not reliable enough to trust directly.
+\end{enumerate}
+
+\section{Bounded Least-Squares Fallback}
+
+If the exact solution violates bounds or cannot be solved reliably, the sidecar solves a box-constrained least-squares problem.
+
+\subsection{Reduced Form}
+
+When the reduced map $G$ is available, the preferred fallback is
+\begin{align}
+\min_{u_s} \quad & \| G u_s - r_k \|_2^2 \\
+\text{subject to} \quad & u_{\min} \le u_s \le u_{\max}.
+\end{align}
+After solving for $u_s$, the state target is recovered from
+\[
+x_s(k) = (I-A)^{-1} B u_s(k).
+\]
+
+\subsection{Full Form}
+
+If the reduced form is unavailable or not numerically suitable, the sidecar solves the full box-constrained least-squares problem
+\begin{align}
+\min_{x_s,u_s} \quad &
+\left\|
+\begin{bmatrix}
+I-A & -B \\
+C & 0
+\end{bmatrix}
+\begin{bmatrix}
+x_s \\
+u_s
+\end{bmatrix}
+-
+\begin{bmatrix}
+0 \\
+r_k
+\end{bmatrix}
+\right\|_2^2 \\
+\text{subject to} \quad & u_{\min} \le u_s \le u_{\max}.
+\end{align}
+
+In code this is handled as a bounded least-squares problem using \texttt{scipy.optimize.lsq\_linear}.
+
+\section{Per-Step Algorithm}
+
+For each simulation step $k$:
+\begin{enumerate}
+\item Read $y_{sp}(k)$ and $\hat d_k$ from the completed OF-MPC rollout.
+\item Form $r_k = y_{sp}(k) - \hat d_k$.
+\item Compute the exact unbounded steady-state solution.
+\item Check whether the exact input target lies inside the box.
+\item If the exact target is inside bounds, keep it as the bounded result.
+\item Otherwise solve the box-constrained least-squares fallback.
+\item Log exact residuals, bounded residuals, bound-activity masks, and exact-versus-bounded differences.
+\end{enumerate}
+
+\section{Diagnostics}
+
+The sidecar stores, for each step:
+\begin{itemize}
+\item exact targets $(x_s^{exact}, u_s^{exact}, y_s^{exact})$
+\item bound-membership flags and exact bound-violation magnitudes
+\item bounded targets $(x_s^{bounded}, u_s^{bounded}, y_s^{bounded})$
+\item bounded residual norms
+\item lower-bound and upper-bound activity masks
+\item solve-mode labels such as \texttt{exact\_bounded} and \texttt{exact\_unbounded\_fallback\_bounded\_ls}
+\end{itemize}
+
+The summary outputs include:
+\begin{itemize}
+\item solve-mode percentages
+\item exact-within-bounds percentages
+\item average and maximum exact bound violations
+\item average and maximum bounded residual norms
+\item per-input lower and upper bound activity fractions
+\item event-window tables around setpoint changes and disturbance-estimate jumps
+\end{itemize}
+
+\section{Figures}
+
+The bounded branch adds the following figures to the existing steady-state debug export:
+\begin{itemize}
+\item exact versus bounded steady-state inputs together with box limits
+\item exact versus bounded steady-state outputs together with setpoints
+\item exact residuals and bounded least-squares residuals
+\item bound-activity time series
+\item zoomed event-window plots around setpoint changes and large disturbance-estimate updates
+\end{itemize}
+
+\section{Scope Boundary}
+
+This workflow is only a diagnostic sidecar. It does not modify the offset-free MPC optimization problem, the plant simulation, the observer, or any Lyapunov or safety-filter logic.
+
+\end{document}

@@ -25,6 +25,14 @@ except Exception:
     pd = None
     HAS_PANDAS = False
 
+try:
+    from scipy.optimize import lsq_linear
+
+    HAS_SCIPY = True
+except Exception:
+    lsq_linear = None
+    HAS_SCIPY = False
+
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 
 
@@ -34,6 +42,12 @@ DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
     "cond_warn_threshold": 1.0e8,
     "residual_warn_threshold": 1.0e-8,
     "rank_tol": None,
+    "enable_box_analysis": True,
+    "box_bound_tol": 1.0e-9,
+    "box_use_reduced_first": True,
+    "box_event_window_radius": 5,
+    "box_dhat_event_threshold": 5.0e-2,
+    "box_max_event_plots": 6,
     "save_csv": True,
     "save_plots": True,
     "sample_table_stride": 10,
@@ -72,6 +86,13 @@ def _safe_singular_values(matrix: np.ndarray) -> np.ndarray:
 
 def _norm(value: np.ndarray) -> float:
     return float(np.linalg.norm(np.asarray(value, dtype=float).reshape(-1)))
+
+
+def _inf_norm(value: np.ndarray) -> float:
+    array = np.asarray(value, dtype=float).reshape(-1)
+    if array.size == 0:
+        return 0.0
+    return float(np.max(np.abs(array)))
 
 
 def _is_well_conditioned(cond_value: float, threshold: float) -> bool:
@@ -485,6 +506,487 @@ def solve_legacy_ss_exact(
     }
 
 
+def solve_exact_steady_state_unbounded(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """Compatibility wrapper for the exact unbounded steady-state solve."""
+    return solve_legacy_ss_exact(*args, **kwargs)
+
+
+def check_box_bounds(
+    u: np.ndarray,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    tol: float = 1.0e-9,
+) -> Dict[str, Any]:
+    u = _as_float_array(u, "u", ndim=1)
+    u_min = _as_float_array(u_min, "u_min", ndim=1)
+    u_max = _as_float_array(u_max, "u_max", ndim=1)
+    if u.shape != u_min.shape or u.shape != u_max.shape:
+        raise ValueError("u, u_min, and u_max must have the same shape.")
+
+    lower_violation = np.maximum(u_min - u, 0.0)
+    upper_violation = np.maximum(u - u_max, 0.0)
+    within_bounds = bool(
+        np.all(u >= (u_min - float(tol))) and np.all(u <= (u_max + float(tol)))
+    )
+    active_lower_mask = u <= (u_min + float(tol))
+    active_upper_mask = u >= (u_max - float(tol))
+
+    return {
+        "within_bounds": within_bounds,
+        "lower_violation": lower_violation,
+        "upper_violation": upper_violation,
+        "lower_violation_inf": _inf_norm(lower_violation),
+        "upper_violation_inf": _inf_norm(upper_violation),
+        "violation_inf": max(_inf_norm(lower_violation), _inf_norm(upper_violation)),
+        "active_lower_mask": active_lower_mask,
+        "active_upper_mask": active_upper_mask,
+    }
+
+
+def solve_bounded_steady_state_least_squares(
+    A: np.ndarray,
+    B: np.ndarray,
+    C: np.ndarray,
+    y_sp_k: np.ndarray,
+    d_hat_k: np.ndarray,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    cond_warn_threshold: float = 1.0e8,
+    rank_tol: Optional[float] = None,
+    box_bound_tol: float = 1.0e-9,
+    use_reduced_first: bool = True,
+) -> Dict[str, Any]:
+    A = _as_float_array(A, "A", ndim=2)
+    B = _as_float_array(B, "B", ndim=2)
+    C = _as_float_array(C, "C", ndim=2)
+    u_min = _as_float_array(u_min, "u_min", ndim=1)
+    u_max = _as_float_array(u_max, "u_max", ndim=1)
+
+    structure = build_legacy_ss_system(A, B, C, rank_tol=rank_tol)
+    reduced_info = compute_reduced_gain(
+        A,
+        B,
+        C,
+        cond_warn_threshold=cond_warn_threshold,
+        rank_tol=rank_tol,
+    )
+    rhs_info = build_legacy_ss_rhs(y_sp_k, d_hat_k, n_states=structure["n_states"])
+    rhs = rhs_info["rhs"]
+    rhs_output = rhs_info["rhs_output"]
+    n_states = int(structure["n_states"])
+    n_inputs = int(structure["n_inputs"])
+
+    if u_min.shape != (n_inputs,) or u_max.shape != (n_inputs,):
+        raise ValueError("u_min and u_max must match the number of inputs.")
+
+    if not HAS_SCIPY:
+        return {
+            "solve_success": False,
+            "solver_name": "unavailable",
+            "solve_form": "none",
+            "status": "scipy_unavailable",
+            "message": "scipy.optimize.lsq_linear is required for bounded steady-state analysis.",
+            "x_s": np.full(n_states, np.nan, dtype=float),
+            "u_s": np.full(n_inputs, np.nan, dtype=float),
+            "d_s": _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy(),
+            "y_s": np.full(C.shape[0], np.nan, dtype=float),
+            "residual_dyn": np.full(n_states, np.nan, dtype=float),
+            "residual_out": np.full(C.shape[0], np.nan, dtype=float),
+            "residual_total": np.full(n_states + n_inputs, np.nan, dtype=float),
+            "residual_norm": float("nan"),
+            "state_residual_inf": float("nan"),
+            "output_residual_inf": float("nan"),
+            "active_lower_mask": np.zeros(n_inputs, dtype=bool),
+            "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+        }
+
+    solve_attempts: List[str] = []
+    last_result = None
+
+    if bool(use_reduced_first) and reduced_info["reduced_lstsq_available"]:
+        G = np.asarray(reduced_info["G"], dtype=float)
+        solve_attempts.append("reduced_lsq_linear")
+        try:
+            reduced_result = lsq_linear(G, rhs_output, bounds=(u_min, u_max))
+            last_result = reduced_result
+            if reduced_result.success:
+                u_s = np.asarray(reduced_result.x, dtype=float).reshape(n_inputs)
+                x_s = np.asarray(reduced_info["state_to_input_gain"], dtype=float) @ u_s
+                d_s = _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy()
+                y_s = np.asarray(C, dtype=float) @ x_s + d_s
+                residual_dyn = structure["I_minus_A"] @ x_s - np.asarray(B, dtype=float) @ u_s
+                residual_out = np.asarray(C, dtype=float) @ x_s - rhs_output
+                residual_total = structure["M"] @ np.concatenate([x_s, u_s]) - rhs
+                bounds_info = check_box_bounds(u_s, u_min, u_max, tol=box_bound_tol)
+                return {
+                    "solve_success": True,
+                    "solver_name": "scipy.optimize.lsq_linear",
+                    "solve_form": "reduced",
+                    "status": str(reduced_result.status),
+                    "message": getattr(reduced_result, "message", ""),
+                    "x_s": x_s,
+                    "u_s": u_s,
+                    "d_s": d_s,
+                    "y_s": y_s,
+                    "residual_dyn": residual_dyn,
+                    "residual_out": residual_out,
+                    "residual_total": residual_total,
+                    "residual_norm": _norm(residual_total),
+                    "state_residual_inf": _inf_norm(residual_dyn),
+                    "output_residual_inf": _inf_norm(residual_out),
+                    "active_lower_mask": bounds_info["active_lower_mask"],
+                    "active_upper_mask": bounds_info["active_upper_mask"],
+                    "cost": float(reduced_result.cost),
+                    "nit": int(getattr(reduced_result, "nit", 0)),
+                    "optimality": float(getattr(reduced_result, "optimality", np.nan)),
+                }
+        except Exception:
+            last_result = None
+
+    solve_attempts.append("full_lsq_linear")
+    M = np.asarray(structure["M"], dtype=float)
+    lower = np.concatenate([np.full(n_states, -np.inf, dtype=float), u_min])
+    upper = np.concatenate([np.full(n_states, np.inf, dtype=float), u_max])
+    try:
+        full_result = lsq_linear(M, rhs, bounds=(lower, upper))
+        last_result = full_result
+        if full_result.success:
+            solution = np.asarray(full_result.x, dtype=float)
+            x_s = solution[:n_states]
+            u_s = solution[n_states:]
+            d_s = _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy()
+            y_s = np.asarray(C, dtype=float) @ x_s + d_s
+            residual_dyn = structure["I_minus_A"] @ x_s - np.asarray(B, dtype=float) @ u_s
+            residual_out = np.asarray(C, dtype=float) @ x_s - rhs_output
+            residual_total = M @ np.concatenate([x_s, u_s]) - rhs
+            bounds_info = check_box_bounds(u_s, u_min, u_max, tol=box_bound_tol)
+            return {
+                "solve_success": True,
+                "solver_name": "scipy.optimize.lsq_linear",
+                "solve_form": "full",
+                "status": str(full_result.status),
+                "message": getattr(full_result, "message", ""),
+                "x_s": x_s,
+                "u_s": u_s,
+                "d_s": d_s,
+                "y_s": y_s,
+                "residual_dyn": residual_dyn,
+                "residual_out": residual_out,
+                "residual_total": residual_total,
+                "residual_norm": _norm(residual_total),
+                "state_residual_inf": _inf_norm(residual_dyn),
+                "output_residual_inf": _inf_norm(residual_out),
+                "active_lower_mask": bounds_info["active_lower_mask"],
+                "active_upper_mask": bounds_info["active_upper_mask"],
+                "cost": float(full_result.cost),
+                "nit": int(getattr(full_result, "nit", 0)),
+                "optimality": float(getattr(full_result, "optimality", np.nan)),
+            }
+    except Exception:
+        last_result = None
+
+    message = "bounded least-squares solve failed."
+    status = "failed"
+    if last_result is not None:
+        message = getattr(last_result, "message", message)
+        status = str(getattr(last_result, "status", status))
+
+    return {
+        "solve_success": False,
+        "solver_name": "scipy.optimize.lsq_linear",
+        "solve_form": "none",
+        "status": status,
+        "message": message,
+        "solve_attempts": solve_attempts,
+        "x_s": np.full(n_states, np.nan, dtype=float),
+        "u_s": np.full(n_inputs, np.nan, dtype=float),
+        "d_s": _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy(),
+        "y_s": np.full(C.shape[0], np.nan, dtype=float),
+        "residual_dyn": np.full(n_states, np.nan, dtype=float),
+        "residual_out": np.full(C.shape[0], np.nan, dtype=float),
+        "residual_total": np.full(n_states + n_inputs, np.nan, dtype=float),
+        "residual_norm": float("nan"),
+        "state_residual_inf": float("nan"),
+        "output_residual_inf": float("nan"),
+        "active_lower_mask": np.zeros(n_inputs, dtype=bool),
+        "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+    }
+
+
+def _build_box_event_rows(
+    y_sp: np.ndarray,
+    dhat_current: np.ndarray,
+    u_s_exact: np.ndarray,
+    u_s_bounded: np.ndarray,
+    solve_mode: List[str],
+    exact_eq_residual_state_inf: np.ndarray,
+    exact_eq_residual_output_inf: np.ndarray,
+    bounded_residual_norm: np.ndarray,
+    setpoint_change_indices: np.ndarray,
+    event_window_radius: int,
+    dhat_event_threshold: float,
+) -> List[Dict[str, Any]]:
+    dhat_delta = np.zeros(dhat_current.shape[0], dtype=float)
+    if dhat_current.shape[0] > 1:
+        dhat_delta[1:] = np.max(np.abs(np.diff(dhat_current, axis=0)), axis=1)
+    dhat_event_indices = np.where(dhat_delta >= float(dhat_event_threshold))[0]
+
+    rows: List[Dict[str, Any]] = []
+    event_meta: List[tuple[int, str]] = []
+    event_meta.extend((int(idx), "setpoint_change") for idx in np.asarray(setpoint_change_indices, dtype=int))
+    event_meta.extend((int(idx), "dhat_jump") for idx in np.asarray(dhat_event_indices, dtype=int))
+    if not event_meta:
+        return rows
+
+    n_steps = y_sp.shape[0]
+    for event_idx, event_kind in event_meta:
+        start = max(event_idx - int(event_window_radius), 0)
+        stop = min(event_idx + int(event_window_radius) + 1, n_steps)
+        for step_idx in range(start, stop):
+            rows.append(
+                {
+                    "event_kind": event_kind,
+                    "event_anchor": int(event_idx),
+                    "k": int(step_idx),
+                    "y_sp": np.asarray(y_sp[step_idx, :], dtype=float),
+                    "dhat_k": np.asarray(dhat_current[step_idx, :], dtype=float),
+                    "us_exact": np.asarray(u_s_exact[step_idx, :], dtype=float),
+                    "us_bounded": np.asarray(u_s_bounded[step_idx, :], dtype=float),
+                    "solve_mode": solve_mode[step_idx],
+                    "exact_eq_residual_state_inf": float(exact_eq_residual_state_inf[step_idx]),
+                    "exact_eq_residual_output_inf": float(exact_eq_residual_output_inf[step_idx]),
+                    "bounded_residual_norm": float(bounded_residual_norm[step_idx]),
+                    "dhat_delta_inf": float(dhat_delta[step_idx]),
+                }
+            )
+    return rows
+
+
+def run_parallel_steady_state_box_analysis(
+    A: np.ndarray,
+    B: np.ndarray,
+    C: np.ndarray,
+    y_sp: np.ndarray,
+    dhat_current: np.ndarray,
+    x_s_exact: np.ndarray,
+    u_s_exact: np.ndarray,
+    d_s_exact: np.ndarray,
+    y_s_exact: np.ndarray,
+    exact_solution_flags: np.ndarray,
+    exact_eq_residual_state_inf: np.ndarray,
+    exact_eq_residual_output_inf: np.ndarray,
+    u_box_min: np.ndarray,
+    u_box_max: np.ndarray,
+    setpoint_change_indices: np.ndarray,
+    analysis_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    n_steps = y_sp.shape[0]
+    n_states = A.shape[0]
+    n_inputs = B.shape[1]
+    n_outputs = C.shape[0]
+
+    x_s_bounded = np.full((n_steps, n_states), np.nan, dtype=float)
+    u_s_bounded = np.full((n_steps, n_inputs), np.nan, dtype=float)
+    d_s_bounded = np.full((n_steps, n_outputs), np.nan, dtype=float)
+    y_s_bounded = np.full((n_steps, n_outputs), np.nan, dtype=float)
+    bounded_success = np.zeros(n_steps, dtype=bool)
+    exact_solve_success = np.asarray(exact_solution_flags, dtype=bool).copy()
+    exact_within_bounds = np.zeros(n_steps, dtype=bool)
+    exact_bound_violation_inf = np.zeros(n_steps, dtype=float)
+    exact_bound_violation_lower_inf = np.zeros(n_steps, dtype=float)
+    exact_bound_violation_upper_inf = np.zeros(n_steps, dtype=float)
+    bounded_residual_norm = np.full(n_steps, np.nan, dtype=float)
+    bounded_state_residual_inf = np.full(n_steps, np.nan, dtype=float)
+    bounded_output_residual_inf = np.full(n_steps, np.nan, dtype=float)
+    bounded_active_lower_mask = np.zeros((n_steps, n_inputs), dtype=bool)
+    bounded_active_upper_mask = np.zeros((n_steps, n_inputs), dtype=bool)
+    solve_mode: List[str] = []
+    box_solver_name: List[str] = []
+    box_solver_form: List[str] = []
+    us_exact_minus_us_bounded_inf = np.full(n_steps, np.nan, dtype=float)
+    xs_exact_minus_xs_bounded_inf = np.full(n_steps, np.nan, dtype=float)
+
+    per_step_rows: List[Dict[str, Any]] = []
+    for step_idx in range(n_steps):
+        exact_bounds = check_box_bounds(
+            u_s_exact[step_idx, :],
+            u_box_min,
+            u_box_max,
+            tol=float(analysis_config["box_bound_tol"]),
+        )
+        exact_within_bounds[step_idx] = bool(exact_bounds["within_bounds"])
+        exact_bound_violation_inf[step_idx] = float(exact_bounds["violation_inf"])
+        exact_bound_violation_lower_inf[step_idx] = float(exact_bounds["lower_violation_inf"])
+        exact_bound_violation_upper_inf[step_idx] = float(exact_bounds["upper_violation_inf"])
+
+        if exact_solve_success[step_idx] and exact_within_bounds[step_idx]:
+            mode = "exact_bounded"
+            bounded_success[step_idx] = True
+            x_s_bounded[step_idx, :] = x_s_exact[step_idx, :]
+            u_s_bounded[step_idx, :] = u_s_exact[step_idx, :]
+            d_s_bounded[step_idx, :] = d_s_exact[step_idx, :]
+            y_s_bounded[step_idx, :] = y_s_exact[step_idx, :]
+            bounded_residual_norm[step_idx] = 0.0
+            bounded_state_residual_inf[step_idx] = float(exact_eq_residual_state_inf[step_idx])
+            bounded_output_residual_inf[step_idx] = float(exact_eq_residual_output_inf[step_idx])
+            bounded_active_lower_mask[step_idx, :] = exact_bounds["active_lower_mask"]
+            bounded_active_upper_mask[step_idx, :] = exact_bounds["active_upper_mask"]
+            box_solver_name.append("exact_unbounded")
+            box_solver_form.append("none")
+        else:
+            bounded_info = solve_bounded_steady_state_least_squares(
+                A,
+                B,
+                C,
+                y_sp[step_idx, :],
+                dhat_current[step_idx, :],
+                u_box_min,
+                u_box_max,
+                cond_warn_threshold=float(analysis_config["cond_warn_threshold"]),
+                rank_tol=analysis_config["rank_tol"],
+                box_bound_tol=float(analysis_config["box_bound_tol"]),
+                use_reduced_first=bool(analysis_config["box_use_reduced_first"]),
+            )
+            box_solver_name.append(str(bounded_info["solver_name"]))
+            box_solver_form.append(str(bounded_info["solve_form"]))
+            if bounded_info["solve_success"]:
+                mode = (
+                    "exact_unbounded_fallback_bounded_ls"
+                    if exact_solve_success[step_idx]
+                    else "exact_unsolved_fallback_bounded_ls"
+                )
+                bounded_success[step_idx] = True
+                x_s_bounded[step_idx, :] = bounded_info["x_s"]
+                u_s_bounded[step_idx, :] = bounded_info["u_s"]
+                d_s_bounded[step_idx, :] = bounded_info["d_s"]
+                y_s_bounded[step_idx, :] = bounded_info["y_s"]
+                bounded_residual_norm[step_idx] = float(bounded_info["residual_norm"])
+                bounded_state_residual_inf[step_idx] = float(bounded_info["state_residual_inf"])
+                bounded_output_residual_inf[step_idx] = float(bounded_info["output_residual_inf"])
+                bounded_active_lower_mask[step_idx, :] = np.asarray(
+                    bounded_info["active_lower_mask"], dtype=bool
+                )
+                bounded_active_upper_mask[step_idx, :] = np.asarray(
+                    bounded_info["active_upper_mask"], dtype=bool
+                )
+            else:
+                mode = "failed"
+
+        solve_mode.append(mode)
+        if bounded_success[step_idx]:
+            us_exact_minus_us_bounded_inf[step_idx] = _inf_norm(
+                u_s_exact[step_idx, :] - u_s_bounded[step_idx, :]
+            )
+            xs_exact_minus_xs_bounded_inf[step_idx] = _inf_norm(
+                x_s_exact[step_idx, :] - x_s_bounded[step_idx, :]
+            )
+
+        per_step_rows.append(
+            {
+                "k": int(step_idx),
+                "r_k": np.asarray(y_sp[step_idx, :] - dhat_current[step_idx, :], dtype=float),
+                "xs_exact": np.asarray(x_s_exact[step_idx, :], dtype=float),
+                "us_exact": np.asarray(u_s_exact[step_idx, :], dtype=float),
+                "exact_solve_success": bool(exact_solve_success[step_idx]),
+                "exact_within_bounds": bool(exact_within_bounds[step_idx]),
+                "exact_bound_violation_inf": float(exact_bound_violation_inf[step_idx]),
+                "exact_eq_residual_state_inf": float(exact_eq_residual_state_inf[step_idx]),
+                "exact_eq_residual_output_inf": float(exact_eq_residual_output_inf[step_idx]),
+                "xs_bounded": np.asarray(x_s_bounded[step_idx, :], dtype=float),
+                "us_bounded": np.asarray(u_s_bounded[step_idx, :], dtype=float),
+                "bounded_solve_success": bool(bounded_success[step_idx]),
+                "bounded_residual_norm": float(bounded_residual_norm[step_idx]),
+                "bounded_active_lower_mask": np.asarray(bounded_active_lower_mask[step_idx, :], dtype=bool),
+                "bounded_active_upper_mask": np.asarray(bounded_active_upper_mask[step_idx, :], dtype=bool),
+                "solve_mode": mode,
+            }
+        )
+
+    solve_mode_counts: Dict[str, int] = {}
+    for mode_name in solve_mode:
+        solve_mode_counts[mode_name] = solve_mode_counts.get(mode_name, 0) + 1
+
+    overall_summary = {
+        "pct_exact_bounded": 100.0 * solve_mode_counts.get("exact_bounded", 0) / max(n_steps, 1),
+        "pct_exact_unbounded_fallback_bounded_ls": 100.0
+        * solve_mode_counts.get("exact_unbounded_fallback_bounded_ls", 0)
+        / max(n_steps, 1),
+        "pct_exact_unsolved_fallback_bounded_ls": 100.0
+        * solve_mode_counts.get("exact_unsolved_fallback_bounded_ls", 0)
+        / max(n_steps, 1),
+        "pct_failed": 100.0 * solve_mode_counts.get("failed", 0) / max(n_steps, 1),
+        "pct_exact_solutions_inside_bounds": 100.0
+        * float(np.mean(np.logical_and(exact_solve_success, exact_within_bounds))),
+        "avg_exact_bound_violation_inf": float(np.nanmean(exact_bound_violation_inf)),
+        "max_exact_bound_violation_inf": float(np.nanmax(exact_bound_violation_inf)),
+        "avg_bounded_residual_norm": float(np.nanmean(bounded_residual_norm)),
+        "max_bounded_residual_norm": float(np.nanmax(bounded_residual_norm)),
+        "avg_us_exact_minus_us_bounded_inf": float(np.nanmean(us_exact_minus_us_bounded_inf)),
+        "max_us_exact_minus_us_bounded_inf": float(np.nanmax(us_exact_minus_us_bounded_inf)),
+        "avg_xs_exact_minus_xs_bounded_inf": float(np.nanmean(xs_exact_minus_xs_bounded_inf)),
+        "max_xs_exact_minus_xs_bounded_inf": float(np.nanmax(xs_exact_minus_xs_bounded_inf)),
+    }
+
+    per_input_rows: List[Dict[str, Any]] = []
+    for input_idx in range(n_inputs):
+        lower_violation = np.maximum(u_box_min[input_idx] - u_s_exact[:, input_idx], 0.0)
+        upper_violation = np.maximum(u_s_exact[:, input_idx] - u_box_max[input_idx], 0.0)
+        per_input_rows.append(
+            {
+                "input_index": int(input_idx),
+                "fraction_lower_bound_active": float(np.mean(bounded_active_lower_mask[:, input_idx])),
+                "fraction_upper_bound_active": float(np.mean(bounded_active_upper_mask[:, input_idx])),
+                "average_exact_violation_below_lower": float(np.mean(lower_violation)),
+                "average_exact_violation_above_upper": float(np.mean(upper_violation)),
+            }
+        )
+
+    event_rows = _build_box_event_rows(
+        y_sp=y_sp,
+        dhat_current=dhat_current,
+        u_s_exact=u_s_exact,
+        u_s_bounded=u_s_bounded,
+        solve_mode=solve_mode,
+        exact_eq_residual_state_inf=exact_eq_residual_state_inf,
+        exact_eq_residual_output_inf=exact_eq_residual_output_inf,
+        bounded_residual_norm=bounded_residual_norm,
+        setpoint_change_indices=setpoint_change_indices,
+        event_window_radius=int(analysis_config["box_event_window_radius"]),
+        dhat_event_threshold=float(analysis_config["box_dhat_event_threshold"]),
+    )
+
+    return {
+        "enabled": True,
+        "u_box_min": u_box_min,
+        "u_box_max": u_box_max,
+        "x_s_bounded": x_s_bounded,
+        "u_s_bounded": u_s_bounded,
+        "d_s_bounded": d_s_bounded,
+        "y_s_bounded": y_s_bounded,
+        "exact_solve_success": exact_solve_success,
+        "exact_within_bounds": exact_within_bounds,
+        "exact_bound_violation_inf": exact_bound_violation_inf,
+        "exact_bound_violation_lower_inf": exact_bound_violation_lower_inf,
+        "exact_bound_violation_upper_inf": exact_bound_violation_upper_inf,
+        "bounded_solve_success": bounded_success,
+        "bounded_residual_norm": bounded_residual_norm,
+        "bounded_state_residual_inf": bounded_state_residual_inf,
+        "bounded_output_residual_inf": bounded_output_residual_inf,
+        "bounded_active_lower_mask": bounded_active_lower_mask,
+        "bounded_active_upper_mask": bounded_active_upper_mask,
+        "solve_mode": solve_mode,
+        "solve_mode_counts": solve_mode_counts,
+        "solver_name": box_solver_name,
+        "solver_form": box_solver_form,
+        "us_exact_minus_us_bounded_inf": us_exact_minus_us_bounded_inf,
+        "xs_exact_minus_xs_bounded_inf": xs_exact_minus_xs_bounded_inf,
+        "overall_summary": overall_summary,
+        "per_input_rows": per_input_rows,
+        "event_rows": event_rows,
+        "per_step_rows": per_step_rows,
+    }
+
+
 def _physical_output_from_dev(
     y_dev: np.ndarray,
     y_ss_scaled: np.ndarray,
@@ -548,13 +1050,17 @@ def analyze_offsetfree_rollout(
             "xhatdhat does not contain enough augmented states for the legacy offset-free split."
         )
 
-    u_min = data_min[:n_inputs]
-    u_max = data_max[:n_inputs]
+    u_scale_min = data_min[:n_inputs]
+    u_scale_max = data_max[:n_inputs]
     y_min = data_min[n_inputs:]
     y_max = data_max[n_inputs:]
 
-    u_ss_scaled = apply_min_max(steady_states["ss_inputs"], u_min, u_max)
+    u_ss_scaled = apply_min_max(steady_states["ss_inputs"], u_scale_min, u_scale_max)
     y_ss_scaled = apply_min_max(steady_states["y_ss"], y_min, y_max)
+    if "b_min" not in system_data or "b_max" not in system_data:
+        raise ValueError("system_data must include 'b_min' and 'b_max' for the box-constrained analysis.")
+    u_box_min = _as_float_array(system_data["b_min"], "system_data['b_min']", ndim=1)
+    u_box_max = _as_float_array(system_data["b_max"], "system_data['b_max']", ndim=1)
 
     y_current_phys = y_mpc[:-1].copy()
     y_after_step_phys = y_mpc[1:].copy()
@@ -562,7 +1068,7 @@ def analyze_offsetfree_rollout(
     y_after_step_scaled_dev = apply_min_max(y_after_step_phys, y_min, y_max) - y_ss_scaled
 
     u_applied_phys = u_mpc.copy()
-    u_applied_scaled_dev = apply_min_max(u_applied_phys, u_min, u_max) - u_ss_scaled
+    u_applied_scaled_dev = apply_min_max(u_applied_phys, u_scale_min, u_scale_max) - u_ss_scaled
 
     xhat_current = xhatdhat[:n_states, :nFE].T.copy()
     dhat_current = xhatdhat[n_states : n_states + n_outputs, :nFE].T.copy()
@@ -661,8 +1167,8 @@ def analyze_offsetfree_rollout(
         u_s_phys[step_idx, :] = _physical_input_from_dev(
             solve_info["u_s"],
             u_ss_scaled,
-            u_min,
-            u_max,
+            u_scale_min,
+            u_scale_max,
         )
         y_s_phys[step_idx, :] = _physical_output_from_dev(
             solve_info["y_s"],
@@ -718,6 +1224,66 @@ def analyze_offsetfree_rollout(
         solver_mode_counts[mode_name] = solver_mode_counts.get(mode_name, 0) + 1
 
     change_indices = _setpoint_change_indices(y_sp)
+    exact_eq_residual_state_inf = np.max(np.abs(residual_dyn_store), axis=1)
+    exact_eq_residual_output_inf = np.max(np.abs(residual_out_store), axis=1)
+    box_analysis = None
+    if bool(config["enable_box_analysis"]):
+        box_analysis = run_parallel_steady_state_box_analysis(
+            A=A,
+            B=B,
+            C=C,
+            y_sp=y_sp,
+            dhat_current=dhat_current,
+            x_s_exact=x_s_store,
+            u_s_exact=u_s_store,
+            d_s_exact=d_s_store,
+            y_s_exact=y_s_store,
+            exact_solution_flags=exact_solution_flags,
+            exact_eq_residual_state_inf=exact_eq_residual_state_inf,
+            exact_eq_residual_output_inf=exact_eq_residual_output_inf,
+            u_box_min=u_box_min,
+            u_box_max=u_box_max,
+            setpoint_change_indices=change_indices,
+            analysis_config=config,
+        )
+        u_box_min_phys = _physical_input_from_dev(u_box_min, u_ss_scaled, u_scale_min, u_scale_max)
+        u_box_max_phys = _physical_input_from_dev(u_box_max, u_ss_scaled, u_scale_min, u_scale_max)
+        box_analysis["u_box_min_phys"] = u_box_min_phys
+        box_analysis["u_box_max_phys"] = u_box_max_phys
+        box_analysis["u_s_bounded_phys"] = _physical_input_from_dev(
+            box_analysis["u_s_bounded"], u_ss_scaled, u_scale_min, u_scale_max
+        )
+        box_analysis["y_s_bounded_phys"] = _physical_output_from_dev(
+            box_analysis["y_s_bounded"], y_ss_scaled, y_min, y_max
+        )
+        box_analysis["u_s_exact_phys"] = _physical_input_from_dev(
+            u_s_store, u_ss_scaled, u_scale_min, u_scale_max
+        )
+        box_analysis["y_s_exact_phys"] = _physical_output_from_dev(
+            y_s_store, y_ss_scaled, y_min, y_max
+        )
+        box_analysis["u_applied_phys"] = u_applied_phys
+        box_analysis["dhat_current"] = dhat_current
+        box_analysis["y_sp_phys"] = _physical_output_from_dev(y_sp, y_ss_scaled, y_min, y_max)
+        for row, box_row in zip(step_rows, box_analysis["per_step_rows"]):
+            row.update(
+                {
+                    "exact_solve_success": box_row["exact_solve_success"],
+                    "exact_within_bounds": box_row["exact_within_bounds"],
+                    "exact_bound_violation_inf": box_row["exact_bound_violation_inf"],
+                    "exact_eq_residual_state_inf": box_row["exact_eq_residual_state_inf"],
+                    "exact_eq_residual_output_inf": box_row["exact_eq_residual_output_inf"],
+                    "bounded_solve_success": box_row["bounded_solve_success"],
+                    "bounded_residual_norm": box_row["bounded_residual_norm"],
+                    "box_solve_mode": box_row["solve_mode"],
+                    "us_exact_minus_us_bounded_inf": float(
+                        box_analysis["us_exact_minus_us_bounded_inf"][row["k"]]
+                    ),
+                    "xs_exact_minus_xs_bounded_inf": float(
+                        box_analysis["xs_exact_minus_xs_bounded_inf"][row["k"]]
+                    ),
+                }
+            )
     sampled_rows = step_rows[:: max(int(config["sample_table_stride"]), 1)]
 
     bundle: Dict[str, Any] = {
@@ -767,6 +1333,8 @@ def analyze_offsetfree_rollout(
         "cond_M": cond_M_store,
         "cond_G": cond_G_store,
         "cond_I_minus_A": cond_I_minus_A_store,
+        "u_box_min": u_box_min,
+        "u_box_max": u_box_max,
         "u_applied_minus_u_s": u_applied_minus_u_s,
         "u_applied_minus_u_s_phys": u_applied_minus_u_s_phys,
         "y_current_minus_y_s": y_current_minus_y_s,
@@ -774,6 +1342,10 @@ def analyze_offsetfree_rollout(
         "y_s_minus_y_sp": y_s_minus_y_sp,
         "xhat_minus_x_s": xhat_minus_x_s,
         "dhat_minus_d_s": dhat_minus_d_s,
+        "exact_eq_residual_state_inf": exact_eq_residual_state_inf,
+        "exact_eq_residual_output_inf": exact_eq_residual_output_inf,
+        "box_analysis_enabled": bool(box_analysis is not None),
+        "box_analysis": box_analysis,
         "time_step_axis": _step_axis(nFE, delta_t),
     }
 
@@ -950,6 +1522,215 @@ def _save_residual_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     plt.close(fig)
 
 
+def _save_box_inputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
+    box = bundle["box_analysis"]
+    n_inputs = bundle["u_applied_phys"].shape[1]
+    time_step = bundle["time_step_axis"]
+    fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.8 * n_inputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.step(time_step, box["u_s_exact_phys"][:, idx], where="post", linewidth=2.0, label="u_s_exact")
+        ax.step(time_step, box["u_s_bounded_phys"][:, idx], where="post", linewidth=2.0, linestyle="--", label="u_s_bounded")
+        ax.step(time_step, bundle["u_applied_phys"][:, idx], where="post", linewidth=1.5, alpha=0.8, label="u_applied")
+        ax.axhline(float(box["u_box_min_phys"][idx]), color="tab:red", linestyle=":", linewidth=1.5, label="u_min")
+        ax.axhline(float(box["u_box_max_phys"][idx]), color="tab:green", linestyle=":", linewidth=1.5, label="u_max")
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.set_ylabel(f"input_{idx}")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "box_inputs_vs_bounds.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_box_outputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
+    box = bundle["box_analysis"]
+    n_outputs = bundle["y_sp_phys"].shape[1]
+    time_step = bundle["time_step_axis"]
+    fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 3.8 * n_outputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.step(time_step, bundle["y_sp_phys"][:, idx], where="post", linewidth=2.0, label="y_sp")
+        ax.plot(time_step, box["y_s_exact_phys"][:, idx], linewidth=2.0, label="y_s_exact")
+        ax.plot(time_step, box["y_s_bounded_phys"][:, idx], linewidth=2.0, linestyle="--", label="y_s_bounded")
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.set_ylabel(f"output_{idx}")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "box_outputs_exact_vs_bounded.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 3.2 * n_outputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.plot(
+            time_step,
+            box["y_s_bounded_phys"][:, idx] - bundle["y_sp_phys"][:, idx],
+            linewidth=2.0,
+            label="y_s_bounded - y_sp",
+        )
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.set_ylabel(f"output_{idx}")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "box_output_mismatch.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_box_residual_plot(bundle: Dict[str, Any], output_dir: str) -> None:
+    box = bundle["box_analysis"]
+    time_step = bundle["time_step_axis"]
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4.5))
+    ax.plot(time_step, bundle["exact_eq_residual_state_inf"], linewidth=2.0, label="exact state residual inf")
+    ax.plot(time_step, bundle["exact_eq_residual_output_inf"], linewidth=2.0, label="exact output residual inf")
+    ax.plot(time_step, box["bounded_residual_norm"], linewidth=2.0, label="bounded residual norm")
+    _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+    ax.set_xlabel("time (h)")
+    ax.set_ylabel("residual")
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "box_residuals.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_box_constraint_activity_plot(bundle: Dict[str, Any], output_dir: str) -> None:
+    box = bundle["box_analysis"]
+    n_inputs = box["bounded_active_lower_mask"].shape[1]
+    time_step = bundle["time_step_axis"]
+    fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.2 * n_inputs), sharex=True)
+    axes = np.atleast_1d(axes)
+    for idx, ax in enumerate(axes):
+        ax.step(
+            time_step,
+            box["bounded_active_lower_mask"][:, idx].astype(float),
+            where="post",
+            linewidth=2.0,
+            label="lower active",
+        )
+        ax.step(
+            time_step,
+            box["bounded_active_upper_mask"][:, idx].astype(float),
+            where="post",
+            linewidth=2.0,
+            linestyle="--",
+            label="upper active",
+        )
+        _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_ylabel(f"input_{idx}")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("time (h)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "box_constraint_activity.png"), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_box_event_plots(bundle: Dict[str, Any], output_dir: str) -> None:
+    box = bundle["box_analysis"]
+    event_rows = box["event_rows"]
+    if not event_rows:
+        return
+
+    event_dir = os.path.join(output_dir, "box_event_windows")
+    os.makedirs(event_dir, exist_ok=True)
+    unique_events = []
+    seen = set()
+    for row in event_rows:
+        key = (int(row["event_anchor"]), str(row["event_kind"]))
+        if key not in seen:
+            seen.add(key)
+            unique_events.append(key)
+    unique_events = unique_events[: int(bundle["config"]["box_max_event_plots"])]
+
+    y_sp_phys = box["y_sp_phys"]
+    dhat_current = box["dhat_current"]
+    for event_anchor, event_kind in unique_events:
+        start = max(event_anchor - int(bundle["config"]["box_event_window_radius"]), 0)
+        stop = min(event_anchor + int(bundle["config"]["box_event_window_radius"]) + 1, bundle["nFE"])
+        local_time = bundle["time_step_axis"][start:stop]
+        fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True)
+        axes = np.atleast_1d(axes)
+        for input_idx in range(box["u_s_exact_phys"].shape[1]):
+            axes[0].step(
+                local_time,
+                box["u_s_exact_phys"][start:stop, input_idx],
+                where="post",
+                linewidth=2.0,
+                label=f"u_s_exact[{input_idx}]",
+            )
+            axes[0].step(
+                local_time,
+                box["u_s_bounded_phys"][start:stop, input_idx],
+                where="post",
+                linewidth=2.0,
+                linestyle="--",
+                label=f"u_s_bounded[{input_idx}]",
+            )
+        axes[0].grid(True, linestyle="--", alpha=0.35)
+        axes[0].legend(loc="best")
+        for output_idx in range(y_sp_phys.shape[1]):
+            axes[1].step(
+                local_time,
+                y_sp_phys[start:stop, output_idx],
+                where="post",
+                linewidth=2.0,
+                label=f"y_sp[{output_idx}]",
+            )
+            axes[1].plot(
+                local_time,
+                box["y_s_bounded_phys"][start:stop, output_idx],
+                linewidth=2.0,
+                label=f"y_s_bounded[{output_idx}]",
+            )
+        axes[1].grid(True, linestyle="--", alpha=0.35)
+        axes[1].legend(loc="best")
+        axes[2].plot(local_time, box["bounded_residual_norm"][start:stop], linewidth=2.0, label="bounded residual")
+        axes[2].plot(
+            local_time,
+            np.linalg.norm(box["y_s_bounded_phys"][start:stop, :] - y_sp_phys[start:stop, :], axis=1),
+            linewidth=2.0,
+            linestyle="--",
+            label="bounded output error norm",
+        )
+        axes[2].grid(True, linestyle="--", alpha=0.35)
+        axes[2].legend(loc="best")
+        for output_idx in range(dhat_current.shape[1]):
+            axes[3].plot(
+                local_time,
+                dhat_current[start:stop, output_idx],
+                linewidth=2.0,
+                label=f"dhat[{output_idx}]",
+            )
+        axes[3].grid(True, linestyle="--", alpha=0.35)
+        axes[3].legend(loc="best")
+        axes[3].set_xlabel("time (h)")
+        fig.suptitle(f"Event {event_anchor} ({event_kind})", fontsize=12)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(event_dir, f"event_{event_anchor:04d}_{event_kind}.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+
+def _save_box_analysis_plots(bundle: Dict[str, Any], output_dir: str) -> None:
+    if not bundle.get("box_analysis_enabled"):
+        return
+    _save_box_inputs_plot(bundle, output_dir)
+    _save_box_outputs_plot(bundle, output_dir)
+    _save_box_residual_plot(bundle, output_dir)
+    _save_box_constraint_activity_plot(bundle, output_dir)
+    _save_box_event_plots(bundle, output_dir)
+
+
 def _save_plots(bundle: Dict[str, Any], output_dir: str) -> None:
     if not HAS_MATPLOTLIB:
         return
@@ -958,6 +1739,7 @@ def _save_plots(bundle: Dict[str, Any], output_dir: str) -> None:
     _save_states_plot(bundle, output_dir)
     _save_disturbance_plot(bundle, output_dir)
     _save_residual_plot(bundle, output_dir)
+    _save_box_analysis_plots(bundle, output_dir)
 
 
 def _build_summary_markdown(bundle: Dict[str, Any]) -> str:
@@ -973,6 +1755,7 @@ def _build_summary_markdown(bundle: Dict[str, Any]) -> str:
         f"- Configured solver mode: `{bundle['config']['solver_mode']}`",
         f"- Least-squares used on `{int(np.sum(bundle['used_lstsq_flags']))}` steps",
         f"- Requested-mode fallbacks: `{int(np.sum(bundle['requested_fallback_flags']))}`",
+        f"- Box analysis enabled: `{bool(bundle.get('box_analysis_enabled'))}`",
         "",
         "## Model Structure",
         "",
@@ -1009,6 +1792,53 @@ def _build_summary_markdown(bundle: Dict[str, Any]) -> str:
         ),
         "",
     ]
+    if bundle.get("box_analysis_enabled"):
+        box = bundle["box_analysis"]
+        box_mode_rows = [
+            {"solve_mode": key, "count": value}
+            for key, value in sorted(box["solve_mode_counts"].items())
+        ]
+        markdown.extend(
+            [
+                "## Box-Constrained Analysis Summary",
+                "",
+                _rows_to_markdown([box["overall_summary"]], box["overall_summary"].keys()),
+                "",
+                "## Box Solve Mode Counts",
+                "",
+                _rows_to_markdown(box_mode_rows, ["solve_mode", "count"]),
+                "",
+                "## Per-Input Bound Activity",
+                "",
+                _rows_to_markdown(
+                    box["per_input_rows"],
+                    [
+                        "input_index",
+                        "fraction_lower_bound_active",
+                        "fraction_upper_bound_active",
+                        "average_exact_violation_below_lower",
+                        "average_exact_violation_above_upper",
+                    ],
+                ),
+                "",
+                "## Box Event Table",
+                "",
+                _rows_to_markdown(
+                    box["event_rows"][: max(int(bundle["config"]["sample_table_stride"]), 1)],
+                    [
+                        "event_kind",
+                        "event_anchor",
+                        "k",
+                        "solve_mode",
+                        "exact_eq_residual_state_inf",
+                        "exact_eq_residual_output_inf",
+                        "bounded_residual_norm",
+                        "dhat_delta_inf",
+                    ],
+                ),
+                "",
+            ]
+        )
     return "\n".join(markdown)
 
 
@@ -1040,6 +1870,11 @@ def save_offsetfree_ss_debug_artifacts(
         _write_csv(os.path.join(out_dir, "linear_algebra_summary.csv"), [bundle["linear_algebra_summary"]])
         _write_csv(os.path.join(out_dir, "step_table.csv"), bundle["step_rows"])
         _write_csv(os.path.join(out_dir, "summary_stats.csv"), [bundle["summary_stats_row"]])
+        if bundle.get("box_analysis_enabled"):
+            box = bundle["box_analysis"]
+            _write_csv(os.path.join(out_dir, "box_overall_summary.csv"), [box["overall_summary"]])
+            _write_csv(os.path.join(out_dir, "box_per_input_activity.csv"), box["per_input_rows"])
+            _write_csv(os.path.join(out_dir, "box_event_table.csv"), box["event_rows"])
 
     summary_md = _build_summary_markdown(bundle)
     with open(os.path.join(out_dir, "analysis_summary.md"), "w", encoding="utf-8") as file:
@@ -1047,6 +1882,9 @@ def save_offsetfree_ss_debug_artifacts(
 
     if HAS_PANDAS and save_csv:
         pd.DataFrame(bundle["step_rows"]).to_pickle(os.path.join(out_dir, "step_table.pkl"))
+        if bundle.get("box_analysis_enabled"):
+            box = bundle["box_analysis"]
+            pd.DataFrame(box["event_rows"]).to_pickle(os.path.join(out_dir, "box_event_table.pkl"))
 
     if save_plots:
         _save_plots(bundle, out_dir)
@@ -1071,7 +1909,7 @@ def run_synthetic_smoke_checks() -> Dict[str, Dict[str, Any]]:
         d_hat_k=np.array([0.0], dtype=float),
         solver_mode="auto",
     )
-    return {
+    results = {
         "exact_case": {
             "solver_mode_used": exact_case["solver_mode_used"],
             "used_lstsq": bool(exact_case["used_lstsq"]),
@@ -1085,3 +1923,25 @@ def run_synthetic_smoke_checks() -> Dict[str, Dict[str, Any]]:
             "residual_total_norm": float(fallback_case["residual_total_norm"]),
         },
     }
+    if HAS_SCIPY:
+        box_case = solve_bounded_steady_state_least_squares(
+            A=np.array([[0.5]], dtype=float),
+            B=np.array([[1.0]], dtype=float),
+            C=np.array([[1.0]], dtype=float),
+            y_sp_k=np.array([0.2], dtype=float),
+            d_hat_k=np.array([0.0], dtype=float),
+            u_min=np.array([-0.05], dtype=float),
+            u_max=np.array([0.05], dtype=float),
+        )
+        results["box_case"] = {
+            "solve_success": bool(box_case["solve_success"]),
+            "solve_form": str(box_case["solve_form"]),
+            "residual_norm": float(box_case["residual_norm"]),
+        }
+    else:
+        results["box_case"] = {
+            "solve_success": False,
+            "solve_form": "unavailable",
+            "residual_norm": float("nan"),
+        }
+    return results
