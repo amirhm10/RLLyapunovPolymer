@@ -1,5 +1,5 @@
 \documentclass[11pt]{article}
-\usepackage{amsmath, amssymb, bm, geometry}
+\usepackage{amsmath, amssymb, bm, geometry, hyperref}
 \geometry{margin=1in}
 
 \title{Bounded Steady-State Sidecar Analysis for Offset-Free MPC}
@@ -11,6 +11,11 @@
 \section{Purpose}
 
 This note documents the analysis-only steady-state workflow used beside the normal offset-free MPC notebook. The closed-loop controller remains unchanged. At each simulation step the sidecar inspects the frozen-disturbance steady-state equations implied by the legacy augmentation and then expands that analysis with input box constraints.
+
+The main practical question is:
+\begin{quote}
+If the bounded steady-state input target $u_s^{bounded}(k)$ often lands on the box limits, does this indicate a bad optimization problem or is it the correct behavior of the chosen formulation?
+\end{quote}
 
 \section{Legacy Augmentation and Frozen Disturbance Target}
 
@@ -88,7 +93,7 @@ If the exact solution violates bounds or cannot be solved reliably, the sidecar 
 
 When the reduced map $G$ is available, the preferred fallback is
 \begin{align}
-\min_{u_s} \quad & \| G u_s - r_k \|_2^2 \\
+\min_{u_s} \quad & \frac{1}{2}\| G u_s - r_k \|_2^2 \\
 \text{subject to} \quad & u_{\min} \le u_s \le u_{\max}.
 \end{align}
 After solving for $u_s$, the state target is recovered from
@@ -101,7 +106,7 @@ x_s(k) = (I-A)^{-1} B u_s(k).
 If the reduced form is unavailable or not numerically suitable, the sidecar solves the full box-constrained least-squares problem
 \begin{align}
 \min_{x_s,u_s} \quad &
-\left\|
+\frac{1}{2}\left\|
 \begin{bmatrix}
 I-A & -B \\
 C & 0
@@ -121,7 +126,271 @@ r_k
 
 In code this is handled as a bounded least-squares problem using \texttt{scipy.optimize.lsq\_linear}.
 
-\section{Per-Step Algorithm}
+\section{Current Solver Choice in the Sidecar Code}
+
+The current implementation calls \texttt{scipy.optimize.lsq\_linear} as
+\begin{align}
+\texttt{lsq\_linear}(G,\ r_k,\ \texttt{bounds}=(u_{\min},u_{\max}))
+\end{align}
+for the reduced fallback, and
+\begin{align}
+\texttt{lsq\_linear}(M,\ b_k,\ \texttt{bounds}=(\ell, u))
+\end{align}
+for the full fallback, with no explicit \texttt{method=} argument. Therefore the SciPy default method is used:
+\[
+\texttt{method='trf'}.
+\]
+
+This matters for interpretation:
+\begin{itemize}
+\item the \emph{optimization problem} is the convex bounded least-squares problem written above;
+\item the \emph{algorithm} used to solve it is currently the trust-region reflective linear least-squares method;
+\item SciPy also offers \texttt{method='bvls'}, which is an active-set bounded-variable least-squares method.
+\end{itemize}
+
+So there are really two separate questions:
+\begin{enumerate}
+\item Is the mathematical optimization problem itself appropriate?
+\item Is the chosen numerical algorithm the most interpretable one for a small dense box-constrained target-selection problem?
+\end{enumerate}
+
+These questions should not be conflated.
+
+\section{Why the Reduced Problem Is a Weighted Projection}
+
+Assume the reduced map $G$ is square and invertible, and let the exact unbounded input target be
+\[
+u_s^{exact}(k) = G^{-1}r_k.
+\]
+Then the bounded reduced objective can be rewritten as
+\begin{align}
+\frac{1}{2}\|Gu-r_k\|_2^2
+&= \frac{1}{2}\|G(u-u_s^{exact})\|_2^2 \\
+&= \frac{1}{2}(u-u_s^{exact})^T G^T G (u-u_s^{exact}).
+\end{align}
+
+Therefore the bounded problem is not an arbitrary heuristic. It is the projection of the exact unbounded target onto the feasible box under the positive-definite metric
+\[
+H = G^T G.
+\]
+
+This identity is central:
+\begin{itemize}
+\item if $u_s^{exact}$ already lies inside the box, then the bounded and unbounded solutions coincide;
+\item if $u_s^{exact}$ lies outside the box, then the bounded solution is the closest feasible point to $u_s^{exact}$ in the $H$-weighted norm.
+\end{itemize}
+
+So if $u_s^{bounded}$ lies on a bound, that is often the expected geometric outcome of the metric projection.
+
+\section{KKT Conditions and Active Bounds}
+
+For the reduced bounded least-squares problem, define
+\[
+J(u) = \frac{1}{2}\|Gu-r_k\|_2^2.
+\]
+Its gradient is
+\[
+\nabla J(u) = G^T(Gu-r_k).
+\]
+
+The Karush--Kuhn--Tucker conditions for an optimal bounded solution $u^\star$ are:
+\begin{align}
+u_{\min} \le u^\star \le u_{\max}, \\
+G^T(Gu^\star-r_k) + \lambda^+ - \lambda^- = 0, \\
+\lambda^+ \ge 0,\qquad \lambda^- \ge 0, \\
+\lambda_i^+(u_i^\star-u_{\max,i}) = 0, \\
+\lambda_i^-(u_{\min,i}-u_i^\star) = 0.
+\end{align}
+
+These conditions explain the behavior at the limits:
+\begin{itemize}
+\item if input $i$ is strictly interior, then the corresponding gradient component must vanish;
+\item if input $i$ is at its upper bound, a nonzero multiplier $\lambda_i^+$ can balance a gradient component that would otherwise push the optimum outside the box;
+\item if input $i$ is at its lower bound, the same happens with $\lambda_i^-$.
+\end{itemize}
+
+Hence a bound-active solution is not evidence of a broken solver. It can simply be the KKT-consistent optimum of the chosen convex problem.
+
+\section{Problem Versus Algorithm}
+
+\subsection{The Mathematical Problem}
+
+For the reduced fallback, the sidecar solves
+\begin{align}
+\min_{u_s \in [u_{\min},u_{\max}]} \quad \frac{1}{2}\|G u_s-r_k\|_2^2.
+\end{align}
+This is a convex quadratic optimization problem. If the solver converges, the returned minimizer is a global optimum of that objective.
+
+\subsection{The Numerical Algorithm}
+
+The current implementation uses SciPy's default trust-region reflective method. For linear least-squares with bounds this is a legitimate solver choice, but it is not the only one. In SciPy's own documentation:
+\begin{itemize}
+\item \texttt{trf} is described as an interior-point-like method;
+\item \texttt{bvls} is described as an active-set bounded-variable least-squares method;
+\item for \texttt{bvls}, the stopping condition is tied directly to KKT satisfaction;
+\item for \texttt{trf}, active-set reporting can be tolerance-dependent because iterates remain strictly feasible.
+\end{itemize}
+
+This suggests the following practical interpretation:
+\begin{itemize}
+\item if the concern is \emph{correctness of the optimum}, the current solver is acceptable because the problem is convex;
+\item if the concern is \emph{active-bound interpretability}, \texttt{method='bvls'} may be more transparent for this small dense analysis problem.
+\end{itemize}
+
+\section{What the Current Run Statistics Suggest}
+
+For the disturbance run inspected in the sidecar artifacts:
+\begin{itemize}
+\item the exact unbounded steady-state target was inside the box on only about $13.9\%$ of steps;
+\item about $86.1\%$ of steps required the bounded fallback;
+\item the average exact-box violation in the scaled coordinates was about $120.1$;
+\item the maximum exact-box violation was about $1234.9$.
+\end{itemize}
+
+These are not small edge-of-feasibility corrections. They indicate that the exact steady-state target is often far outside the admissible input box. In that regime, a box-constrained projection or least-squares correction will naturally spend substantial time on the boundary.
+
+Therefore, the dominant explanation for ``$u_s^{bounded}$ goes to the limits'' in the current run is:
+\begin{quote}
+the exact target is usually far outside the feasible region, so the closest feasible approximation under the current residual objective is frequently located on a box face or corner.
+\end{quote}
+
+That behavior is consistent with the formulation.
+
+\section{When Bound Hitting Is Expected}
+
+The bounded solution tends to land on faces or corners of the box in three common situations.
+
+\subsection{The Exact Target Is Far Outside the Box}
+
+If $u_s^{exact}$ lies well outside the feasible set, then its projection onto the box will typically lie on the nearest face or corner in the $H$-metric. In that case a boundary solution is the natural optimum.
+
+\subsection{The Requested Output Is Unreachable Under the Box}
+
+If no feasible input within the box can reproduce $r_k$ exactly, then the bounded solver returns the feasible input that minimizes the output mismatch. The optimum may sit on the boundary because that is where the smallest achievable residual occurs.
+
+\subsection{The Objective Has No Interior-Preferring Regularization}
+
+The current bounded formulation only minimizes steady-state equation mismatch. It does \emph{not} penalize:
+\begin{itemize}
+\item distance from the current applied input,
+\item distance from the steady-state anchor,
+\item distance from the previous bounded target,
+\item preference for interior points.
+\end{itemize}
+
+Therefore, if the residual is reduced most effectively by moving to a bound, the optimizer has no reason to stay away from that bound.
+
+\section{Is the Current Optimization Problem Proper?}
+
+\subsection{Answer for Feasible Approximation}
+
+Yes, if the purpose is:
+\begin{quote}
+``Find the closest feasible steady-state target to the exact unbounded target, measured by the model residual under the input box constraints.''
+\end{quote}
+For that purpose, the reduced bounded least-squares problem is a proper convex optimization problem with a global minimizer.
+
+\subsection{Answer for Smooth or Interior Targets}
+
+Not necessarily, if the purpose is instead:
+\begin{quote}
+``Find a feasible target that also remains smooth, stays near the currently applied input, or avoids saturation whenever possible.''
+\end{quote}
+The current formulation does not encode those preferences. So it can be mathematically proper for feasibility restoration while still being too aggressive as a target selector.
+
+\section{Alternative Formulations If Boundary Solutions Are Undesirable}
+
+If the current bounded solution is too often pinned at limits, the objective can be changed. Common options are:
+
+\subsection{Input-Regularized Bounded Least Squares}
+
+\begin{align}
+\min_{u_s} \quad &
+\frac{1}{2}\|Gu_s-r_k\|_2^2
++
+\frac{\rho}{2}\|u_s-u_{ref}\|_2^2 \\
+\text{subject to} \quad & u_{\min} \le u_s \le u_{\max}.
+\end{align}
+
+Choices for $u_{ref}$ include the current applied input, the previous bounded target, or the steady-state anchor. This often reduces corner-seeking behavior.
+
+\subsection{Weighted Regularization}
+
+\begin{align}
+\min_{u_s} \quad &
+\frac{1}{2}\|Gu_s-r_k\|_{W_y}^2
++
+\frac{1}{2}\|u_s-u_{ref}\|_{W_u}^2 \\
+\text{subject to} \quad & u_{\min} \le u_s \le u_{\max},
+\end{align}
+where $W_y \succeq 0$ and $W_u \succ 0$ encode output priority and input preference.
+
+\subsection{Tracking the Applied Input}
+
+If the goal is to create an analysis target comparable to the controller action, a term such as
+\[
+\frac{\rho}{2}\|u_s-u_{applied}(k)\|_2^2
+\]
+can make the bounded target much less likely to jump to a far corner of the box.
+
+\subsection{Softening Boundary Attraction With Reference Tracking}
+
+If the analysis target is intended to answer
+\begin{quote}
+``What feasible target is both model-consistent and close to what the controller is actually doing?''
+\end{quote}
+then the current pure least-squares objective is incomplete. A more appropriate problem is
+\begin{align}
+\min_{u_s \in [u_{\min},u_{\max}]} \quad
+\frac{1}{2}\|Gu_s-r_k\|_{W_y}^2
++
+\frac{\rho}{2}\|u_s-u_{ref}\|_{W_u}^2,
+\end{align}
+where $u_{ref}$ could be:
+\begin{itemize}
+\item the current applied input $u_{applied}(k)$,
+\item the previous bounded target $u_s^{bounded}(k-1)$,
+\item the nominal steady-state input anchor.
+\end{itemize}
+
+This changes the interpretation from
+\begin{quote}
+``closest feasible point to the exact model target''
+\end{quote}
+to
+\begin{quote}
+``best tradeoff between model fit and target plausibility''.
+\end{quote}
+
+If your goal is to produce a target that should visually align with the controller action, this regularized form is usually more meaningful than plain projection.
+
+\section{Practical Interpretation of the Current Sidecar}
+
+With the present implementation, the bounded sidecar should be interpreted as answering:
+\begin{quote}
+``Given the current model and frozen disturbance estimate, what is the best feasible steady-state approximation to the exact target if only box constraints are enforced and only equation mismatch is minimized?''
+\end{quote}
+
+It should \emph{not} be interpreted as:
+\begin{quote}
+``What input target would necessarily be best for a smooth controller-friendly target selection policy?''
+\end{quote}
+
+\section{Bottom-Line Answer}
+
+\subsection{Are We Using a Proper Optimization Problem?}
+
+Yes, for the narrow purpose of feasibility restoration under box constraints. The current bounded least-squares problem is mathematically proper, convex, and globally solvable.
+
+\subsection{Is It the Right Problem for an Interpretable or Smooth Target?}
+
+Not always. If the bounded target is expected to remain near the controller action, avoid saturation when possible, or stay away from the corners of the admissible box, then the current objective is too weak because it contains no such preference.
+
+\subsection{Is the Boundary-Hitting Alone Evidence of a Bug?}
+
+No. Given the current run statistics, boundary-hitting is expected. The stronger concern is not solver correctness, but whether the current objective matches the interpretation you want for $u_s^{bounded}$.
+
+\section{Per-Step Algorithm Implemented in Code}
 
 For each simulation step $k$:
 \begin{enumerate}
@@ -144,6 +413,7 @@ The sidecar stores, for each step:
 \item bounded residual norms
 \item lower-bound and upper-bound activity masks
 \item solve-mode labels such as \texttt{exact\_bounded} and \texttt{exact\_unbounded\_fallback\_bounded\_ls}
+\item exact-versus-bounded differences in both state and input targets
 \end{itemize}
 
 The summary outputs include:
@@ -161,6 +431,7 @@ The summary outputs include:
 The bounded branch adds the following figures to the existing steady-state debug export:
 \begin{itemize}
 \item exact versus bounded steady-state inputs together with box limits
+\item applied input versus bounded steady-state input
 \item exact versus bounded steady-state outputs together with setpoints
 \item exact residuals and bounded least-squares residuals
 \item bound-activity time series
@@ -170,5 +441,29 @@ The bounded branch adds the following figures to the existing steady-state debug
 \section{Scope Boundary}
 
 This workflow is only a diagnostic sidecar. It does not modify the offset-free MPC optimization problem, the plant simulation, the observer, or any Lyapunov or safety-filter logic.
+
+\begin{thebibliography}{9}
+
+\bibitem{scipy-lsq-linear}
+SciPy documentation,
+\emph{\texttt{scipy.optimize.lsq\_linear}},
+\url{https://docs.scipy.org/doc/scipy-1.15.2/reference/generated/scipy.optimize.lsq_linear.html}.
+
+\bibitem{scipy-least-squares}
+SciPy documentation,
+\emph{\texttt{scipy.optimize.least\_squares}},
+\url{https://docs.scipy.org/doc/scipy-1.13.0/reference/generated/scipy.optimize.least_squares.html}.
+
+\bibitem{stir}
+M. A. Branch, T. F. Coleman, and Y. Li,
+\emph{A Subspace, Interior, and Conjugate Gradient Method for Large-Scale Bound-Constrained Minimization Problems},
+SIAM Journal on Scientific Computing, 21(1), 1--23, 1999.
+
+\bibitem{bvls}
+P. B. Stark and R. L. Parker,
+\emph{Bounded-Variable Least-Squares: an Algorithm and Applications},
+Computational Statistics, 10, 129--141, 1995.
+
+\end{thebibliography}
 
 \end{document}

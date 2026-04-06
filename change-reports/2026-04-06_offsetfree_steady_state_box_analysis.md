@@ -28,6 +28,12 @@ The existing offset-free steady-state sidecar only analyzed the unbounded frozen
 - Added documentation:
   - `report/steady_state_box_analysis_parameters.md`
   - `report/steady_state_box_analysis.tex`
+  - extended the LaTeX report with:
+    - weighted-projection interpretation of the bounded solve
+    - KKT conditions for active lower and upper bounds
+    - a solver-vs-objective discussion for `scipy.optimize.lsq_linear`
+    - current-run interpretation showing that the exact target is usually far outside the box
+    - literature references for `lsq_linear`, trust-region reflective, and BVLS
 
 ## Validation
 
@@ -39,4 +45,7 @@ The existing offset-free steady-state sidecar only analyzed the unbounded frozen
 - The existing unbounded analysis outputs were kept intact.
 - The controller path remains unchanged.
 - The bounded branch prefers `scipy.optimize.lsq_linear`; if SciPy is unavailable, the bounded solve is marked as failed instead of crashing the sidecar.
-- The LaTeX source was added, but PDF compilation was not run in this environment.
+- The LaTeX report now makes an explicit distinction between:
+  - the convex bounded least-squares problem being solved
+  - the numerical algorithm used by SciPy to solve it
+- `report/steady_state_box_analysis.tex` was compiled successfully with `pdflatex` in this environment.
