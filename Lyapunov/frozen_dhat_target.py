@@ -22,6 +22,7 @@ DEFAULT_FROZEN_DHAT_TARGET_CONFIG: Dict[str, Any] = {
     "rank_tol": DEFAULT_ANALYSIS_CONFIG["rank_tol"],
     "box_bound_tol": DEFAULT_ANALYSIS_CONFIG["box_bound_tol"],
     "box_use_reduced_first": DEFAULT_ANALYSIS_CONFIG["box_use_reduced_first"],
+    "u_ref_weight": DEFAULT_ANALYSIS_CONFIG["u_ref_weight"],
     "integrator_tol": 1.0e-9,
     "cd_identity_tol": 1.0e-9,
     "zero_block_tol": 1.0e-9,
@@ -294,6 +295,8 @@ def prepare_filter_target_from_bounded_frozen_dhat(
             rank_tol=cfg["rank_tol"],
             box_bound_tol=float(cfg["box_bound_tol"]),
             use_reduced_first=bool(cfg["box_use_reduced_first"]),
+            u_ref=u_applied,
+            u_ref_weight=cfg.get("u_ref_weight", 0.0),
         )
         if not bounded_info.get("solve_success", False):
             failure = _failure_target_info(
@@ -334,11 +337,22 @@ def prepare_filter_target_from_bounded_frozen_dhat(
 
     objective_terms = {
         "target_tracking": 0.5 * _norm_sq(target_error),
-        "u_applied_anchor": np.nan,
+        "u_applied_anchor": 0.0,
         "u_prev_smoothing": np.nan,
         "x_prev_smoothing": np.nan,
         "xhat_anchor": np.nan,
     }
+    u_ref_weight = np.asarray(cfg.get("u_ref_weight", 0.0), dtype=float).reshape(-1)
+    if u_ref_weight.size == 0:
+        u_ref_weight = np.zeros(n_u, dtype=float)
+    elif u_ref_weight.size == 1:
+        u_ref_weight = np.full(n_u, float(u_ref_weight.item()), dtype=float)
+    elif u_ref_weight.size != n_u:
+        raise ValueError("u_ref_weight must be scalar or match the number of inputs.")
+    u_ref_weight = np.maximum(u_ref_weight, 0.0)
+    objective_terms["u_applied_anchor"] = float(
+        chosen.get("u_ref_penalty", np.sum(u_ref_weight * np.square(u_s - u_applied)))
+    )
     objective_value = float(chosen.get("cost", objective_terms["target_tracking"]))
     solve_status = exact_info["solver_mode_used"] if solve_stage == "frozen_dhat_exact" else chosen.get("status", "bounded_success")
 
@@ -351,17 +365,17 @@ def prepare_filter_target_from_bounded_frozen_dhat(
         "warm_start_enabled": warm_start_enabled,
         "warm_start_available": warm_start_available,
         "warm_start_used": False,
-        "prev_input_term_active": False,
+        "prev_input_term_active": bool(np.any(u_ref_weight > 0.0)),
         "prev_state_term_active": False,
         "use_output_bounds_in_selector": False,
         "x_weight_base": "frozen_dhat_projection",
         "Qr_diag_used": None,
-        "R_u_ref_diag_used": None,
+        "R_u_ref_diag_used": u_ref_weight.copy(),
         "R_delta_u_sel_diag_used": None,
         "Q_delta_x_diag_used": None,
         "Q_x_ref_diag_used": None,
         "Qx_base_diag_used": None,
-        "Rdu_diag_used": None,
+        "Rdu_diag_used": u_ref_weight.copy(),
         "exact_solver_mode_requested": exact_info["solver_mode_requested"],
         "exact_solver_mode_used": exact_info["solver_mode_used"],
         "exact_residual_total_norm": exact_info["residual_total_norm"],

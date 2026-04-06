@@ -45,6 +45,7 @@ DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
     "enable_box_analysis": True,
     "box_bound_tol": 1.0e-9,
     "box_use_reduced_first": True,
+    "u_ref_weight": 0.0,
     "box_event_window_radius": 5,
     "box_dhat_event_threshold": 5.0e-2,
     "box_max_event_plots": 6,
@@ -556,6 +557,8 @@ def solve_bounded_steady_state_least_squares(
     rank_tol: Optional[float] = None,
     box_bound_tol: float = 1.0e-9,
     use_reduced_first: bool = True,
+    u_ref: Optional[np.ndarray] = None,
+    u_ref_weight: Any = 0.0,
 ) -> Dict[str, Any]:
     A = _as_float_array(A, "A", ndim=2)
     B = _as_float_array(B, "B", ndim=2)
@@ -579,6 +582,24 @@ def solve_bounded_steady_state_least_squares(
 
     if u_min.shape != (n_inputs,) or u_max.shape != (n_inputs,):
         raise ValueError("u_min and u_max must match the number of inputs.")
+
+    if u_ref is None:
+        u_ref = np.zeros(n_inputs, dtype=float)
+    else:
+        u_ref = _as_float_array(u_ref, "u_ref", ndim=1)
+        if u_ref.shape != (n_inputs,):
+            raise ValueError("u_ref must match the number of inputs.")
+
+    u_ref_weight = np.asarray(u_ref_weight, dtype=float).reshape(-1)
+    if u_ref_weight.size == 0:
+        u_ref_weight = np.zeros(n_inputs, dtype=float)
+    elif u_ref_weight.size == 1:
+        u_ref_weight = np.full(n_inputs, float(u_ref_weight.item()), dtype=float)
+    elif u_ref_weight.size != n_inputs:
+        raise ValueError("u_ref_weight must be scalar or match the number of inputs.")
+    u_ref_weight = np.maximum(u_ref_weight, 0.0)
+    use_u_ref_term = bool(np.any(u_ref_weight > 0.0))
+    sqrt_u_ref_weight = np.sqrt(u_ref_weight)
 
     if not HAS_SCIPY:
         return {
@@ -608,7 +629,13 @@ def solve_bounded_steady_state_least_squares(
         G = np.asarray(reduced_info["G"], dtype=float)
         solve_attempts.append("reduced_lsq_linear")
         try:
-            reduced_result = lsq_linear(G, rhs_output, bounds=(u_min, u_max))
+            if use_u_ref_term:
+                G_aug = np.vstack([G, np.diag(sqrt_u_ref_weight)])
+                rhs_aug = np.concatenate([rhs_output, sqrt_u_ref_weight * u_ref])
+            else:
+                G_aug = G
+                rhs_aug = rhs_output
+            reduced_result = lsq_linear(G_aug, rhs_aug, bounds=(u_min, u_max))
             last_result = reduced_result
             if reduced_result.success:
                 u_s = np.asarray(reduced_result.x, dtype=float).reshape(n_inputs)
@@ -640,6 +667,9 @@ def solve_bounded_steady_state_least_squares(
                     "cost": float(reduced_result.cost),
                     "nit": int(getattr(reduced_result, "nit", 0)),
                     "optimality": float(getattr(reduced_result, "optimality", np.nan)),
+                    "u_ref": u_ref.copy(),
+                    "u_ref_weight": u_ref_weight.copy(),
+                    "u_ref_penalty": float(np.sum(u_ref_weight * np.square(u_s - u_ref))),
                 }
         except Exception:
             last_result = None
@@ -649,7 +679,14 @@ def solve_bounded_steady_state_least_squares(
     lower = np.concatenate([np.full(n_states, -np.inf, dtype=float), u_min])
     upper = np.concatenate([np.full(n_states, np.inf, dtype=float), u_max])
     try:
-        full_result = lsq_linear(M, rhs, bounds=(lower, upper))
+        if use_u_ref_term:
+            reg_block = np.hstack([np.zeros((n_inputs, n_states), dtype=float), np.diag(sqrt_u_ref_weight)])
+            M_aug = np.vstack([M, reg_block])
+            rhs_aug = np.concatenate([rhs, sqrt_u_ref_weight * u_ref])
+        else:
+            M_aug = M
+            rhs_aug = rhs
+        full_result = lsq_linear(M_aug, rhs_aug, bounds=(lower, upper))
         last_result = full_result
         if full_result.success:
             solution = np.asarray(full_result.x, dtype=float)
@@ -682,6 +719,9 @@ def solve_bounded_steady_state_least_squares(
                 "cost": float(full_result.cost),
                 "nit": int(getattr(full_result, "nit", 0)),
                 "optimality": float(getattr(full_result, "optimality", np.nan)),
+                "u_ref": u_ref.copy(),
+                "u_ref_weight": u_ref_weight.copy(),
+                "u_ref_penalty": float(np.sum(u_ref_weight * np.square(u_s - u_ref))),
             }
     except Exception:
         last_result = None
@@ -711,6 +751,9 @@ def solve_bounded_steady_state_least_squares(
         "output_residual_inf": float("nan"),
         "active_lower_mask": np.zeros(n_inputs, dtype=bool),
         "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+        "u_ref": u_ref.copy(),
+        "u_ref_weight": u_ref_weight.copy(),
+        "u_ref_penalty": float("nan"),
     }
 
 
@@ -778,6 +821,7 @@ def run_parallel_steady_state_box_analysis(
     exact_eq_residual_output_inf: np.ndarray,
     u_box_min: np.ndarray,
     u_box_max: np.ndarray,
+    u_ref_prev_dev: np.ndarray,
     setpoint_change_indices: np.ndarray,
     analysis_config: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -847,6 +891,8 @@ def run_parallel_steady_state_box_analysis(
                 rank_tol=analysis_config["rank_tol"],
                 box_bound_tol=float(analysis_config["box_bound_tol"]),
                 use_reduced_first=bool(analysis_config["box_use_reduced_first"]),
+                u_ref=u_ref_prev_dev[step_idx, :],
+                u_ref_weight=analysis_config.get("u_ref_weight", 0.0),
             )
             box_solver_name.append(str(bounded_info["solver_name"]))
             box_solver_form.append(str(bounded_info["solve_form"]))
@@ -900,6 +946,7 @@ def run_parallel_steady_state_box_analysis(
                 "bounded_active_lower_mask": np.asarray(bounded_active_lower_mask[step_idx, :], dtype=bool),
                 "bounded_active_upper_mask": np.asarray(bounded_active_upper_mask[step_idx, :], dtype=bool),
                 "solve_mode": mode,
+                "u_ref": np.asarray(u_ref_prev_dev[step_idx, :], dtype=float),
             }
         )
 
@@ -985,6 +1032,7 @@ def run_parallel_steady_state_box_analysis(
         "per_input_rows": per_input_rows,
         "event_rows": event_rows,
         "per_step_rows": per_step_rows,
+        "u_ref_prev_dev": u_ref_prev_dev,
     }
 
 
@@ -1070,6 +1118,18 @@ def analyze_offsetfree_rollout(
 
     u_applied_phys = u_mpc.copy()
     u_applied_scaled_dev = apply_min_max(u_applied_phys, u_scale_min, u_scale_max) - u_ss_scaled
+    u_prev0_dev = _as_float_array(
+        rollout.get("u_prev0_dev", np.zeros(n_inputs, dtype=float)),
+        "rollout['u_prev0_dev']",
+        ndim=1,
+    )
+    if u_prev0_dev.shape != (n_inputs,):
+        raise ValueError(f"u_prev0_dev must have shape {(n_inputs,)}, got {u_prev0_dev.shape}.")
+    u_ref_prev_dev = np.zeros((nFE, n_inputs), dtype=float)
+    if nFE > 0:
+        u_ref_prev_dev[0, :] = u_prev0_dev
+    if nFE > 1:
+        u_ref_prev_dev[1:, :] = u_applied_scaled_dev[:-1, :]
 
     xhat_current = xhatdhat[:n_states, :nFE].T.copy()
     dhat_current = xhatdhat[n_states : n_states + n_outputs, :nFE].T.copy()
@@ -1259,6 +1319,7 @@ def analyze_offsetfree_rollout(
             exact_eq_residual_output_inf=exact_eq_residual_output_inf,
             u_box_min=u_box_min,
             u_box_max=u_box_max,
+            u_ref_prev_dev=u_ref_prev_dev,
             setpoint_change_indices=change_indices,
             analysis_config=config,
         )
@@ -1346,6 +1407,7 @@ def analyze_offsetfree_rollout(
         "y_after_step_dev": y_after_step_scaled_dev,
         "u_applied_phys": u_applied_phys,
         "u_applied_dev": u_applied_scaled_dev,
+        "u_ref_prev_dev": u_ref_prev_dev,
         "xhat_current": xhat_current,
         "dhat_current": dhat_current,
         "x_s": x_s_store,

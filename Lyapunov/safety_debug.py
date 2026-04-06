@@ -898,7 +898,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         xhatdhat[:n_x, :len(time_u)],
         x_target_store.T,
         "xhat_",
-        "xs_",
+        "x_s_eff_",
         "tab:blue",
         "tab:red",
     )
@@ -907,7 +907,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         xhatdhat[n_x:, :len(time_u)],
         d_target_store.T,
         "dhat_",
-        "ds_",
+        "d_s_eff_",
         "tab:orange",
         "tab:green",
     )
@@ -1147,7 +1147,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         xhatdhat[:n_x, start_idx:start_idx + x_target_last.shape[1]],
         x_target_last,
         "xhat_",
-        "xs_",
+        "x_s_eff_",
         "tab:blue",
         "tab:red",
     )
@@ -1156,7 +1156,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         xhatdhat[n_x:, start_idx:start_idx + d_target_last.shape[1]],
         d_target_last,
         "dhat_",
-        "ds_",
+        "d_s_eff_",
         "tab:orange",
         "tab:green",
     )
