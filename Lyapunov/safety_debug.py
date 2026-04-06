@@ -36,13 +36,17 @@ _TARGET_STAGE_CODE_MAP = {
     "failed": 0.0,
     "legacy_slack_target": 1.0,
     "refined_step_a": 2.0,
+    "frozen_dhat_exact": 3.0,
+    "frozen_dhat_bounded_fallback": 4.0,
 }
 
-_TARGET_STAGE_TICKS = [0.0, 1.0, 2.0]
+_TARGET_STAGE_TICKS = [0.0, 1.0, 2.0, 3.0, 4.0]
 _TARGET_STAGE_LABELS = [
     "failed",
     "legacy_slack_target",
     "refined_step_a",
+    "frozen_dhat_exact",
+    "frozen_dhat_bounded_fallback",
 ]
 
 
@@ -160,10 +164,12 @@ def make_safety_filter_step_records(lyap_info_storage):
             "target_success": target_success,
             "target_failure": (not target_success),
             "target_stage": info.get("target_stage"),
+            "target_generation_mode": info.get("target_generation_mode"),
             "target_source": info.get("target_source"),
             "selector_mode": info.get("selector_mode"),
             "effective_selector_mode": info.get("effective_selector_mode"),
             "selector_name": info.get("selector_name"),
+            "effective_selector_name": info.get("effective_selector_name"),
             "current_target_success": info.get("current_target_success"),
             "current_target_stage": info.get("current_target_stage"),
             "effective_target_success": info.get("effective_target_success"),
@@ -173,6 +179,10 @@ def make_safety_filter_step_records(lyap_info_storage):
             "d_s_minus_dhat_inf": info.get("d_s_minus_dhat_inf"),
             "d_s_frozen": info.get("d_s_frozen"),
             "d_s_optimized": info.get("d_s_optimized"),
+            "box_solve_mode": info.get("box_solve_mode"),
+            "exact_within_bounds": info.get("exact_within_bounds"),
+            "exact_bound_violation_inf": info.get("exact_bound_violation_inf"),
+            "bounded_residual_norm": info.get("bounded_residual_norm"),
             "selector_objective_value": info.get("selector_objective_value"),
             "selector_objective_terms": json.dumps(_jsonable(info.get("selector_objective_terms"))),
             "selector_term_target_tracking": selector_terms.get("target_tracking"),

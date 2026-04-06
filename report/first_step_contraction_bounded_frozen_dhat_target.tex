@@ -1,0 +1,499 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{First-Step-Contraction MPC With a Bounded Frozen-\texttt{dhat} Steady-State Target}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This report documents the bounded frozen-\texttt{dhat} target method that is now available beside the existing refined Step A selector in the first-step-contraction MPC workflow.
+
+The intent is narrow:
+\begin{itemize}
+\item keep the maintained upstream offset-free MPC and first-step-contraction logic unchanged,
+\item replace only the steady-state target package used as the Lyapunov center,
+\item preserve the old refined-selector path in the codebase and in the original notebook.
+\end{itemize}
+
+The new notebook uses the same upstream controller, the same replacement logic, and the same debug-export path. Only the way the steady-state package $(x_s,u_s,d_s,y_s,r_s)$ is computed changes.
+
+\section{Scaled Deviation Coordinates}
+
+All quantities below are in the same scaled deviation coordinates already used by the identified linear model, the observer, and the MPC controller. Let
+\begin{align}
+u_k^{\mathrm{dev}} &= \mathrm{scale}(u_k^{\mathrm{phys}}) - u_{ss}^{\mathrm{scaled}}, \\
+y_k^{\mathrm{dev}} &= \mathrm{scale}(y_k^{\mathrm{phys}}) - y_{ss}^{\mathrm{scaled}}.
+\end{align}
+The steady-state target calculation is performed entirely in these deviation coordinates. Conversion back to physical units is done only for plotting or reporting.
+
+\section{Augmented Offset-Free Model}
+
+The first-step-contraction notebook uses the same Rawlings-style output-disturbance augmentation as the maintained offset-free MPC workflow:
+\begin{align}
+z_k &=
+\begin{bmatrix}
+x_k \\
+d_k
+\end{bmatrix}, \\
+z_{k+1} &=
+\underbrace{\begin{bmatrix}
+A & B_d \\
+0 & I
+\end{bmatrix}}_{A_{\mathrm{aug}}}
+z_k
++
+\underbrace{\begin{bmatrix}
+B \\
+0
+\end{bmatrix}}_{B_{\mathrm{aug}}}
+u_k, \\
+y_k &=
+\underbrace{\begin{bmatrix}
+C & C_d
+\end{bmatrix}}_{C_{\mathrm{aug}}}
+z_k.
+\end{align}
+
+In the notebook configuration used for the new method:
+\begin{align}
+C_d = I,
+\end{align}
+and the augmented state is ordered as
+\begin{align}
+z_k = \begin{bmatrix} x_k \\ d_k \end{bmatrix},
+\end{align}
+with the last $n_y$ augmented states representing output disturbances.
+
+\section{Observer Split and Frozen Disturbance Assumption}
+
+At each control step the observer provides the augmented estimate
+\begin{align}
+\hat z_k =
+\begin{bmatrix}
+\hat x_k \\
+\hat d_k
+\end{bmatrix}.
+\end{align}
+
+The bounded frozen-\texttt{dhat} target method uses the simplest steady-state disturbance policy:
+\begin{align}
+d_s(k) = \hat d_k.
+\end{align}
+So the disturbance target is \emph{not} optimized. It is frozen at the current observer estimate.
+
+This differs from the refined Step A selector, where the target package is produced by a separate convex selector problem with its own smoothing and anchoring penalties. Here there is no secondary selector cost shaping the steady package. The disturbance estimate itself defines the output offset.
+
+\section{Frozen-\texttt{dhat} Steady-State Equations}
+
+Because the target computation is based on the unaugmented plant model with output disturbance entering through the measurement equation, the steady-state conditions are
+\begin{align}
+x_s &= A x_s + B u_s, \\
+y_s &= C x_s + d_s,
+\end{align}
+with
+\begin{align}
+d_s = \hat d_k.
+\end{align}
+
+If the requested setpoint at step $k$ is $y_{sp,k}$, then the exact offset-free target must satisfy
+\begin{align}
+y_s = y_{sp,k}.
+\end{align}
+Substituting $d_s = \hat d_k$ gives
+\begin{align}
+C x_s = y_{sp,k} - \hat d_k.
+\end{align}
+
+Define the right-hand side
+\begin{align}
+r_k := y_{sp,k} - \hat d_k.
+\end{align}
+Then the frozen-\texttt{dhat} steady-state equations become
+\begin{align}
+(I-A)x_s - B u_s &= 0, \\
+C x_s &= r_k.
+\end{align}
+
+\section{Stacked Exact Solve}
+
+Introduce the stacked unknown
+\begin{align}
+w_s :=
+\begin{bmatrix}
+x_s \\
+u_s
+\end{bmatrix}.
+\end{align}
+Then the steady-state equations can be written as
+\begin{align}
+M w_s = b_k,
+\end{align}
+with
+\begin{align}
+M &=
+\begin{bmatrix}
+I-A & -B \\
+C   & 0
+\end{bmatrix}, \\
+b_k &=
+\begin{bmatrix}
+0 \\
+r_k
+\end{bmatrix}.
+\end{align}
+
+The exact solution is obtained from this linear system whenever the system is square, full-rank, and sufficiently well-conditioned. In code this is the \texttt{stacked\_exact} branch.
+
+\section{Reduced Exact Solve}
+
+If $(I-A)$ is safely invertible, then
+\begin{align}
+x_s = (I-A)^{-1} B u_s.
+\end{align}
+Substituting this into the output equation yields the reduced map
+\begin{align}
+G := C(I-A)^{-1}B,
+\end{align}
+and the reduced steady-state equation
+\begin{align}
+G u_s = r_k.
+\end{align}
+
+If $G$ is square, full-rank, and well-conditioned, the exact target is
+\begin{align}
+u_s = G^{-1} r_k, \qquad
+x_s = (I-A)^{-1} B u_s.
+\end{align}
+
+The code uses the following exact-solve priority:
+\begin{enumerate}
+\item \texttt{stacked\_exact} if the stacked system is square, full-rank, and well-conditioned,
+\item \texttt{reduced\_exact} if the reduced map is available and well-conditioned,
+\item least-squares fallbacks only if the exact modes are not numerically trustworthy.
+\end{enumerate}
+
+\section{Why a Box-Constrained Fallback Is Needed}
+
+The exact frozen-\texttt{dhat} target may violate the input box
+\begin{align}
+u_{\min} \le u_s \le u_{\max}.
+\end{align}
+When this happens, the exact target is not an admissible steady-state center for a constrained controller. It is still diagnostically useful, but it is not a proper feasible target.
+
+That is why the second stage solves a simple bounded optimization problem.
+
+\section{Bounded Least-Squares Fallback}
+
+The simplest bounded version of the target problem is
+\begin{align}
+\min_{x_s,u_s} \quad
+\left\|
+\begin{bmatrix}
+I-A & -B \\
+C   & 0
+\end{bmatrix}
+\begin{bmatrix}
+x_s \\
+u_s
+\end{bmatrix}
+-
+\begin{bmatrix}
+0 \\
+r_k
+\end{bmatrix}
+\right\|_2^2
+\qquad
+\text{subject to }
+u_{\min} \le u_s \le u_{\max}.
+\end{align}
+
+If the reduced map is available, the same problem can be written more compactly as
+\begin{align}
+\min_{u_s} \quad \|G u_s - r_k\|_2^2
+\qquad
+\text{subject to }
+u_{\min} \le u_s \le u_{\max},
+\end{align}
+and then
+\begin{align}
+x_s = (I-A)^{-1}B u_s.
+\end{align}
+
+This is exactly the ``simplest optimization version'' described in the design discussion.
+
+\section{Projection Interpretation}
+
+Assume the reduced map $G$ is invertible and define the unbounded exact target
+\begin{align}
+u_s^{\mathrm{exact}} = G^{-1} r_k.
+\end{align}
+Then the bounded objective becomes
+\begin{align}
+\|G u - r_k\|_2^2
+=
+\|G(u-u_s^{\mathrm{exact}})\|_2^2
+=
+(u-u_s^{\mathrm{exact}})^\top G^\top G (u-u_s^{\mathrm{exact}}).
+\end{align}
+
+So the bounded fallback is the projection of the exact target onto the admissible input box under the metric
+\begin{align}
+H = G^\top G.
+\end{align}
+This explains an important practical point:
+\begin{itemize}
+\item if the exact target lies inside the box, the bounded and exact solutions coincide,
+\item if the exact target lies outside the box, the bounded solution often lands on a box face or corner.
+\end{itemize}
+
+\section{KKT Conditions and Active Bounds}
+
+For the reduced bounded problem define
+\begin{align}
+J(u) = \frac{1}{2}\|G u - r_k\|_2^2.
+\end{align}
+Its gradient is
+\begin{align}
+\nabla J(u) = G^\top(G u - r_k).
+\end{align}
+
+The Karush--Kuhn--Tucker conditions at an optimum $u^\star$ are
+\begin{align}
+u_{\min} \le u^\star \le u_{\max}, \\
+G^\top(G u^\star - r_k) + \lambda^+ - \lambda^- = 0, \\
+\lambda^+ \ge 0, \qquad \lambda^- \ge 0, \\
+\lambda_i^+(u_i^\star - u_{\max,i}) = 0, \\
+\lambda_i^-(u_{\min,i} - u_i^\star) = 0.
+\end{align}
+
+These conditions explain why a bound-active steady-state target is expected in disturbance cases: if the exact target is outside the box, the optimal constrained solution is often characterized by nonzero multipliers on active bounds.
+
+\section{Returned Steady-State Package}
+
+The new target helper returns a package compatible with the first-step-contraction workflow:
+\begin{align}
+x_s, \qquad
+u_s, \qquad
+d_s = \hat d_k, \qquad
+y_s = Cx_s + d_s, \qquad
+r_s = y_s.
+\end{align}
+
+It also returns
+\begin{align}
+x_s^{\mathrm{aug}} =
+\begin{bmatrix}
+x_s \\
+d_s
+\end{bmatrix},
+\end{align}
+plus diagnostics such as
+\begin{align}
+\|r_s-y_{sp,k}\|_\infty, \quad
+\|(I-A)x_s-Bu_s\|_\infty, \quad
+\text{bound violation}, \quad
+\text{exact-within-bounds flag}, \quad
+\text{bounded residual norm}.
+\end{align}
+
+The key semantic choices are:
+\begin{itemize}
+\item \texttt{d\_s\_frozen = True},
+\item \texttt{d\_s\_optimized = False},
+\item \texttt{d\_s\_minus\_dhat\_inf = 0}.
+\end{itemize}
+
+\section{How the New Target Enters the First-Step Controller}
+
+The first-step-contraction controller still follows the maintained architecture:
+\begin{enumerate}
+\item compute a target package,
+\item build the effective target using current target or last valid target,
+\item solve the ordinary upstream offset-free MPC candidate,
+\item check first-step Lyapunov contraction relative to the effective target,
+\item if needed, solve a constrained replacement MPC problem with one additional first-step Lyapunov inequality.
+\end{enumerate}
+
+Only Step 1 changes.
+
+\section{Upstream Offset-Free MPC Candidate}
+
+With the augmented model
+\begin{align}
+z_{j+1|k} = A_{\mathrm{aug}} z_{j|k} + B_{\mathrm{aug}} u_{c(j)|k},
+\qquad
+c(j)=\min(j,N_C-1),
+\end{align}
+the predicted output is
+\begin{align}
+y_{j|k} = C_{\mathrm{aug}} z_{j|k}.
+\end{align}
+
+The upstream controller still solves the baseline offset-free MPC objective
+\begin{align}
+J_{\mathrm{MPC}}(U)
+=
+\sum_{j=1}^{N_P}
+\|y_{j|k} - y_{\mathrm{track},k}\|_{Q_y}^2
++
+\sum_{j=0}^{N_C-1}
+\|\Delta u_{j|k}\|_{R_{\Delta u}}^2.
+\end{align}
+
+In the new notebook,
+\begin{align}
+y_{\mathrm{track},k} = y_{sp,k},
+\end{align}
+because both
+\texttt{mpc\_target\_policy} and
+\texttt{tracking\_target\_policy}
+remain \texttt{raw\_setpoint}.
+
+So the new steady-state method affects the Lyapunov center, not the nominal tracking objective of the upstream MPC.
+
+\section{Lyapunov Function}
+
+Let $P_x \succ 0$ be the physical-state Lyapunov matrix used by the maintained first-step-contraction code. Define the physical-state error relative to the effective target:
+\begin{align}
+e_{x,k} = \hat x_k - x_s^{\mathrm{eff}}.
+\end{align}
+
+The Lyapunov function is
+\begin{align}
+V_k = e_{x,k}^\top P_x e_{x,k}.
+\end{align}
+The contraction bound is
+\begin{align}
+V_{\mathrm{bound},k} = \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}},
+\qquad
+0 < \rho_{\mathrm{lyap}} < 1.
+\end{align}
+
+\section{First-Step Contraction Inequality}
+
+For a candidate first move $u_{0|k}$, the predicted first physical-state step is
+\begin{align}
+\hat x_{k+1|k}^{(1)} = A \hat x_k + B u_{0|k} + B_d \hat d_k,
+\end{align}
+using the augmented model that the controller itself predicts with.
+
+The corresponding predicted Lyapunov value is
+\begin{align}
+V_{k+1|k}^{(1)}
+=
+(\hat x_{k+1|k}^{(1)} - x_s^{\mathrm{eff}})^\top
+P_x
+(\hat x_{k+1|k}^{(1)} - x_s^{\mathrm{eff}}).
+\end{align}
+
+The maintained first-step condition is
+\begin{align}
+V_{k+1|k}^{(1)} \le \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}}.
+\end{align}
+
+If the upstream candidate already satisfies this inequality, it is accepted unchanged. If not, the controller triggers the replacement solve.
+
+\section{Replacement Solve}
+
+The replacement controller keeps the same MPC objective and the same move/input constraints as the upstream problem, but adds the single extra hard first-step constraint
+\begin{align}
+V_{k+1|k}^{(1)} \le \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}}.
+\end{align}
+
+So the modified optimization is still
+\begin{align}
+\min_U \quad J_{\mathrm{MPC}}(U)
+\end{align}
+subject to
+\begin{align}
+& z_{j+1|k} = A_{\mathrm{aug}} z_{j|k} + B_{\mathrm{aug}} u_{c(j)|k}, \\
+& u_{\min} \le u_{j|k} \le u_{\max}, \\
+& V_{k+1|k}^{(1)} \le \rho_{\mathrm{lyap}} V_k + \varepsilon_{\mathrm{lyap}}.
+\end{align}
+
+There is still
+\begin{itemize}
+\item no QCQP projection stage,
+\item no post-hoc safety filter,
+\item no change to the upstream stage cost,
+\item no change to the candidate reuse and backup logic.
+\end{itemize}
+
+\section{Nominal Versus Disturbance Interpretation}
+
+The nominal case and the disturbance case behave differently even if the target solver is implemented correctly.
+
+\subsection{Nominal Case}
+
+If
+\begin{align}
+\hat d_k \approx 0,
+\end{align}
+then
+\begin{align}
+r_k = y_{sp,k} - \hat d_k \approx y_{sp,k}.
+\end{align}
+If the loop settles, both the plant and the frozen-\texttt{dhat} target tend toward the same nominal equilibrium. In that case it is common to see
+\begin{align}
+u_{\mathrm{applied},k} \to u_s(k).
+\end{align}
+
+\subsection{Disturbance Case}
+
+In the disturbance case, the target is driven by
+\begin{align}
+r_k = y_{sp,k} - \hat d_k.
+\end{align}
+Even when $r_k$ becomes small, the reduced map may amplify that small residual:
+\begin{align}
+u_s = G^{-1} r_k.
+\end{align}
+If $G^{-1}$ has large entries, then small changes in $r_k$ can still produce visible motion in $u_s$.
+
+Also, the controller does \emph{not} track $u_s$ directly. The upstream MPC still tracks the raw output setpoint, while the bounded frozen-\texttt{dhat} target is used only as the Lyapunov center. Therefore there is no reason to expect
+\begin{align}
+u_{\mathrm{applied},k} = u_s(k)
+\end{align}
+in the disturbance case, even near apparent steady output behavior.
+
+\section{Algorithmic Summary}
+
+At each control step $k$ the new target-generation branch executes:
+\begin{enumerate}
+\item Split $\hat z_k$ into $\hat x_k$ and $\hat d_k$.
+\item Form $r_k = y_{sp,k} - \hat d_k$.
+\item Solve the exact frozen-\texttt{dhat} steady-state equations using the unaugmented $A,B,C$.
+\item Check whether the exact input target lies inside the input box.
+\item If yes, return the exact target package.
+\item If no, solve the bounded least-squares fallback and return the bounded target package.
+\item Hand that package to the existing effective-target, upstream MPC, and first-step-contraction logic.
+\end{enumerate}
+
+\section{Code-Level Mapping}
+
+The implementation is split as follows:
+\begin{itemize}
+\item \texttt{Lyapunov/frozen\_dhat\_target.py}: computes the bounded frozen-\texttt{dhat} target package.
+\item \texttt{Simulation/run\_mpc\_first\_step\_contraction.py}: adds a new \texttt{target\_generation\_mode} branch.
+\item \texttt{LyapunovFirstStepContractionMPC\_BoundedFrozenDhat.ipynb}: uses the new branch.
+\item \texttt{LyapunovFirstStepContractionMPC.ipynb}: remains on the refined-selector path.
+\end{itemize}
+
+\section{Conclusion}
+
+The bounded frozen-\texttt{dhat} method is intentionally simpler than the refined Step A selector. It produces the Lyapunov center by solving the frozen-disturbance steady-state equations directly, then projecting onto the admissible input box when the exact target is infeasible. This gives a target that is easier to interpret mathematically:
+\begin{itemize}
+\item exact equilibrium if the box permits it,
+\item closest feasible equilibrium surrogate in the least-squares sense otherwise.
+\end{itemize}
+
+The rest of the first-step-contraction MPC architecture remains unchanged.
+
+\end{document}
