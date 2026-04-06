@@ -23,6 +23,7 @@ The existing offset-free steady-state sidecar only analyzed the unbounded frozen
   - `box_overall_summary.csv`
   - `box_per_input_activity.csv`
   - `box_event_table.csv`
+- Updated the generic input comparison plots so `inputs_vs_targets.png` and `input_target_mismatch.png` use the bounded steady-state input target whenever box analysis is enabled.
 - Updated `MPCOffsetFree_SteadyStateDebug.ipynb` to enable the bounded branch and display the new summary tables.
 - Added documentation:
   - `report/steady_state_box_analysis_parameters.md`

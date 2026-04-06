@@ -1400,11 +1400,27 @@ def _save_outputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
 def _save_inputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     n_inputs = bundle["u_applied_phys"].shape[1]
     time_step = bundle["time_step_axis"]
+    target_label = "u_s"
+    target_phys = bundle["u_s_phys"]
+    applied_minus_target_phys = bundle["u_applied_minus_u_s_phys"]
+    if bundle.get("box_analysis_enabled"):
+        box = bundle["box_analysis"]
+        target_label = "u_s_bounded"
+        target_phys = box["u_s_bounded_phys"]
+        applied_minus_target_phys = bundle["u_applied_phys"] - target_phys
+
     fig, axes = plt.subplots(n_inputs, 1, figsize=(10, 3.8 * n_inputs), sharex=True)
     axes = np.atleast_1d(axes)
     for idx, ax in enumerate(axes):
         ax.step(time_step, bundle["u_applied_phys"][:, idx], where="post", linewidth=2.0, label="u_applied")
-        ax.step(time_step, bundle["u_s_phys"][:, idx], where="post", linewidth=2.0, linestyle="--", label="u_s")
+        ax.step(
+            time_step,
+            target_phys[:, idx],
+            where="post",
+            linewidth=2.0,
+            linestyle="--",
+            label=target_label,
+        )
         _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
@@ -1419,10 +1435,10 @@ def _save_inputs_plot(bundle: Dict[str, Any], output_dir: str) -> None:
     for idx, ax in enumerate(axes):
         ax.step(
             time_step,
-            bundle["u_applied_minus_u_s_phys"][:, idx],
+            applied_minus_target_phys[:, idx],
             where="post",
             linewidth=2.0,
-            label="u_applied - u_s",
+            label=f"u_applied - {target_label}",
         )
         _append_vertical_lines(ax, bundle["setpoint_change_indices"], bundle["delta_t"])
         ax.grid(True, linestyle="--", alpha=0.35)
