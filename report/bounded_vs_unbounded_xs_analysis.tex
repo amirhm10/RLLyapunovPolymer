@@ -1,0 +1,411 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+
+\title{Why the Bounded-\texorpdfstring{$u_{\mathrm{ref}}$}{u\_ref} Run Produces a Very Small \texorpdfstring{$x_s$}{x\_s}}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Question}
+
+The observed behavior is:
+\begin{itemize}
+\item in the \emph{unbounded} frozen-$\hat d$ run, the online target state $x_s$ is large,
+\item in the \emph{bounded with $u_{\mathrm{ref}}$} run, the online target state $x_s$ stays close to zero,
+\item this raises the question of whether the steady-state equations were implemented incorrectly, or whether $x_s$ is simply very dependent on $u_s$.
+\end{itemize}
+
+This note answers that question using the actual matrices and the latest two runs:
+\begin{itemize}
+\item bounded with $u_{\mathrm{ref}}$: \texttt{Data/debug\_exports/mpc\_first\_step\_replacement\_bounded\_frozen\_dhat/20260406\_232910}
+\item unbounded: \texttt{Data/debug\_exports/mpc\_first\_step\_replacement\_unbounded\_frozen\_dhat/20260406\_232953}
+\end{itemize}
+
+\section{Bottom Line}
+
+The implementation is internally consistent. The evidence strongly supports:
+\begin{enumerate}
+\item the code is using the correct steady-state algebra,
+\item $x_s$ is exactly determined from $u_s$ through
+\begin{align}
+x_s = (I-A)^{-1}Bu_s,
+\end{align}
+\item the very small bounded target state does \emph{not} come from a wrong $x_s$ formula,
+\item it comes from the fact that the bounded-\(u_{\mathrm{ref}}\) optimization is choosing a very small $u_s$.
+\end{enumerate}
+
+The key structural point is:
+\begin{align}
+\text{small bounded } x_s
+\quad\Longleftarrow\quad
+\text{small bounded } u_s
+\quad\Longleftarrow\quad
+\lambda_u \|u_s-u_{\mathrm{ref}}\|_2^2 \text{ dominates } \|Gu_s-r_k\|_2^2.
+\end{align}
+
+\section{Steady-State Equations Used in the Code}
+
+For the frozen-$\hat d$ target, the code solves
+\begin{align}
+(I-A)x_s - Bu_s &= 0, \\
+Cx_s &= r_k,
+\end{align}
+where
+\begin{align}
+r_k = y_{sp,k} - \hat d_k.
+\end{align}
+
+If $(I-A)$ is invertible, then
+\begin{align}
+x_s &= (I-A)^{-1}Bu_s, \\
+Gu_s &= r_k, \qquad G := C(I-A)^{-1}B.
+\end{align}
+
+Define
+\begin{align}
+W := (I-A)^{-1}B.
+\end{align}
+Then
+\begin{align}
+x_s = Wu_s,
+\qquad
+y_s - d_s = Cx_s = CWu_s = Gu_s.
+\end{align}
+
+This means:
+\begin{itemize}
+\item the output-side steady-state relation is controlled by $G$,
+\item the state-side steady-state relation is controlled by $W$.
+\end{itemize}
+
+\section{Actual Identified Matrices}
+
+For the current notebook setup, the identified unaugmented model is
+\begin{align}
+A =
+\begin{bmatrix}
+0.946394 & 0 & 0 & 0 & 0 & 0 & 0 \\
+0 & 0.936731 & 0 & 0 & 0 & 0 & 0 \\
+0 & 0 & 0.885846 & 0 & 0 & 0 & 0 \\
+0 & 0 & 0 & 0.927830 & 0 & 0 & 0 \\
+0 & 0 & 0 & 0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 0 & 0 & 0 & 1 \\
+0.010342 & 0 & 0 & 0 & 0 & 0 & 0
+\end{bmatrix},
+\end{align}
+\begin{align}
+B =
+\begin{bmatrix}
+7.601178\times 10^{-3} & 0 \\
+1.512532\times 10^{-2} & 0 \\
+0 & 1.471516\times 10^{-2} \\
+0 & 3.010827\times 10^{-2} \\
+0 & 0 \\
+0 & 0 \\
+3.267612\times 10^{-5} & 0
+\end{bmatrix},
+\end{align}
+\begin{align}
+C =
+\begin{bmatrix}
+0 & 0 & 0.029531 & 0 & 1 & 0 & 0 \\
+0 & -0.050171 & 0 & 0.046562 & 0 & 0 & 0
+\end{bmatrix}.
+\end{align}
+
+The matrix $(I-A)$ is not near singular:
+\begin{align}
+\kappa(I-A) \approx 33.62.
+\end{align}
+So there is no evidence that the $x_s$ calculation is blowing up because $(I-A)^{-1}$ is numerically invalid.
+
+\section{State Map and Output Map}
+
+Using the actual model,
+\begin{align}
+W = (I-A)^{-1}B =
+\begin{bmatrix}
+0.141797 & 0 \\
+0.239063 & 0 \\
+0 & 0.128906 \\
+0 & 0.417188 \\
+0.001499 & 0 \\
+0.001499 & 0 \\
+0.001499 & 0
+\end{bmatrix},
+\end{align}
+and
+\begin{align}
+G = CW =
+\begin{bmatrix}
+0.001499 & 0.003807 \\
+-0.011994 & 0.019425
+\end{bmatrix}.
+\end{align}
+
+Its inverse is
+\begin{align}
+G^{-1} =
+\begin{bmatrix}
+259.770673 & -50.907293 \\
+160.396561 & 20.047199
+\end{bmatrix}.
+\end{align}
+
+\subsection{Interpretation}
+
+These numbers immediately explain the behavior:
+\begin{itemize}
+\item $W$ has moderate gain. The singular values of $W$ are
+\begin{align}
+\sigma(W) = [0.436649,\; 0.277964].
+\end{align}
+So $x_s$ is \emph{not} exploding relative to $u_s$.
+\item The real amplification is in $G^{-1}$. A modest output-side right-hand side $r_k$ can require a very large exact $u_s$.
+\end{itemize}
+
+So the main story is not
+\begin{quote}
+``$x_s$ is hypersensitive to $u_s$.''
+\end{quote}
+It is instead
+\begin{quote}
+``the exact output-tracking target requires a huge $u_s$, and then $x_s$ follows that $u_s$ linearly through $W$.'' 
+\end{quote}
+
+\section{Run-to-Run Comparison}
+
+Comparing the latest two runs gives:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Metric & bounded with $u_{\mathrm{ref}}$ & unbounded \\
+\midrule
+mean $\|u_s\|_2$ & 5.0394 & 449.3150 \\
+mean $\|x_s\|_2$ & 1.7323 & 149.1337 \\
+ratio to unbounded & 0.0112 & 1.0000 \\
+ratio of $\|x_s\|_2$ & 0.0116 & 1.0000 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The crucial observation is that the shrinkage ratios are almost the same:
+\begin{align}
+\frac{\mathbb{E}\|x_s^{\mathrm{bounded}}\|}{\mathbb{E}\|x_s^{\mathrm{unbounded}}\|} &\approx 0.0116, \\
+\frac{\mathbb{E}\|u_s^{\mathrm{bounded}}\|}{\mathbb{E}\|u_s^{\mathrm{unbounded}}\|} &\approx 0.0112.
+\end{align}
+
+That is exactly what one expects from
+\begin{align}
+x_s = Wu_s
+\end{align}
+with a moderate-gain matrix $W$.
+
+\section{Direct Consistency Check}
+
+For both runs, the saved online target satisfies the steady-state state equation numerically:
+\begin{align}
+x_s \approx Wu_s.
+\end{align}
+The measured reconstruction residuals were:
+\begin{align}
+\max_k \|x_s^{\mathrm{bounded}}(k) - W u_s^{\mathrm{bounded}}(k)\|_2
+&= 5.44\times 10^{-16}, \\
+\max_k \|x_s^{\mathrm{unbounded}}(k) - W u_s^{\mathrm{unbounded}}(k)\|_2
+&= 8.16\times 10^{-14}.
+\end{align}
+
+Also, the run-to-run difference satisfies
+\begin{align}
+x_s^{\mathrm{unbounded}} - x_s^{\mathrm{bounded}}
+=
+W\left(u_s^{\mathrm{unbounded}} - u_s^{\mathrm{bounded}}\right)
+\end{align}
+to machine precision:
+\begin{align}
+\max_k
+\left\|
+\left(x_s^{\mathrm{unbounded}} - x_s^{\mathrm{bounded}}\right)
+- W\left(u_s^{\mathrm{unbounded}} - u_s^{\mathrm{bounded}}\right)
+\right\|_2
+=
+1.15\times 10^{-13}.
+\end{align}
+
+This is very strong evidence that the implementation is algebraically correct.
+
+\section{Why the Bounded-\texorpdfstring{$u_{\mathrm{ref}}$}{u\_ref} Target Is So Small}
+
+The bounded-with-anchor objective is
+\begin{align}
+\min_{u_s}
+\quad
+\|Gu_s-r_k\|_2^2 + \lambda_u \|u_s-u_{\mathrm{ref}}\|_2^2
+\qquad
+\text{subject to }
+u_{\min} \le u_s \le u_{\max}.
+\end{align}
+
+In the current run,
+\begin{align}
+\lambda_u = 1.0,
+\qquad
+u_{\mathrm{ref}} = u_{k-1}.
+\end{align}
+
+The Hessian of the output-tracking term is
+\begin{align}
+G^\top G =
+\begin{bmatrix}
+1.4610\times 10^{-4} & -2.2728\times 10^{-4} \\
+-2.2728\times 10^{-4} & 3.9182\times 10^{-4}
+\end{bmatrix},
+\end{align}
+with eigenvalues
+\begin{align}
+\lambda(G^\top G) = [1.0604\times 10^{-5},\; 5.2732\times 10^{-4}].
+\end{align}
+
+This is the crucial scale comparison:
+\begin{align}
+G^\top G \sim 10^{-5}\text{ to }10^{-4},
+\qquad
+\lambda_u I \sim 1.
+\end{align}
+
+So the anchor term is about \(10^3\) to \(10^5\) times stronger than the output-tracking curvature.
+
+\subsection{Inactive Bounds in the Actual Run}
+
+In the bounded-with-$u_{\mathrm{ref}}$ run, the target never actually sat on the input bounds:
+\begin{align}
+\text{fraction active at lower bounds} &= [0,\;0], \\
+\text{fraction active at upper bounds} &= [0,\;0].
+\end{align}
+
+So in this particular run, the small bounded target is \emph{not} mainly caused by clipping on the box. It is mainly caused by the $u_{\mathrm{ref}}$ penalty.
+
+\subsection{Step-0 Proof}
+
+At step \(k=0\), the exact unbounded target was
+\begin{align}
+u_s^{\mathrm{unbounded}} =
+\begin{bmatrix}
+689.123462 \\
+451.554842
+\end{bmatrix},
+\end{align}
+which corresponds to
+\begin{align}
+r_0 = Gu_s^{\mathrm{unbounded}} =
+\begin{bmatrix}
+2.752065 \\
+0.506106
+\end{bmatrix}.
+\end{align}
+
+Because the bounded solution at this step is interior, the regularized unconstrained minimizer is
+\begin{align}
+u_s^{\mathrm{reg}}
+=
+(G^\top G + \lambda_u I)^{-1}(G^\top r_0 + \lambda_u u_{\mathrm{ref}}).
+\end{align}
+With \(u_{\mathrm{ref}} = 0\) and \(\lambda_u = 1\), this gives
+\begin{align}
+u_s^{\mathrm{reg}}
+=
+\begin{bmatrix}
+-0.001940 \\
+0.020300
+\end{bmatrix},
+\end{align}
+which matches the actual bounded online target:
+\begin{align}
+u_s^{\mathrm{bounded}}
+=
+\begin{bmatrix}
+-0.001939 \\
+0.020298
+\end{bmatrix}.
+\end{align}
+
+This is the cleanest evidence in the whole analysis:
+\begin{quote}
+the tiny bounded target is exactly what the weighted optimization asks for, even before the box constraints matter.
+\end{quote}
+
+\section{Why \texorpdfstring{$x_s$}{x\_s} Then Becomes Tiny}
+
+Once the optimization chooses a tiny \(u_s\), the state target is forced to be tiny because
+\begin{align}
+x_s = Wu_s.
+\end{align}
+At step \(k=0\),
+\begin{align}
+x_s^{\mathrm{bounded}}
+&=
+\begin{bmatrix}
+-2.75\times 10^{-4} \\
+-4.64\times 10^{-4} \\
+2.62\times 10^{-3} \\
+8.47\times 10^{-3} \\
+-2.91\times 10^{-6} \\
+-2.91\times 10^{-6} \\
+-2.91\times 10^{-6}
+\end{bmatrix}, \\
+x_s^{\mathrm{unbounded}}
+&=
+\begin{bmatrix}
+97.715553 \\
+164.743578 \\
+58.208241 \\
+188.383036 \\
+1.033049 \\
+1.033049 \\
+1.033049
+\end{bmatrix}.
+\end{align}
+
+This is not because \(x_s\) was coded incorrectly. It is because the chosen \(u_s\) changed by orders of magnitude, and \(x_s\) follows it linearly.
+
+\section{Answer}
+
+The correct answer is:
+\begin{enumerate}
+\item Yes, \(x_s\) is directly determined by \(u_s\) through the exact relation
+\begin{align}
+x_s = (I-A)^{-1}Bu_s.
+\end{align}
+\item No, the evidence does \emph{not} suggest the code was written incorrectly.
+\item The actual source of the discrepancy is the optimization scaling:
+\begin{itemize}
+\item \(G^{-1}\) is large, so the exact output-tracking target wants a huge \(u_s\),
+\item \(W\) is moderate, so \(x_s\) then becomes proportionally large,
+\item with \(\lambda_u = 1\), the \(u_{\mathrm{ref}}\) penalty dominates \(G^\top G\),
+\item therefore the bounded-with-\(u_{\mathrm{ref}}\) optimization picks a tiny \(u_s\),
+\item and then \(x_s = Wu_s\) is also tiny.
+\end{itemize}
+\end{enumerate}
+
+\section{Practical Consequence}
+
+If the goal is for the bounded target to remain closer to the exact frozen-$\hat d$ equilibrium, then the main tuning issue is not the \(x_s\) formula. The main tuning issue is the relative scale of
+\begin{align}
+\|Gu-r_k\|_2^2
+\quad\text{versus}\quad
+\lambda_u \|u-u_{\mathrm{ref}}\|_2^2.
+\end{align}
+
+With the present model,
+\begin{align}
+\lambda_u = 1
+\end{align}
+is extremely large relative to the natural scale of \(G^\top G\). That is why the bounded-with-anchor target stays very close to \(u_{\mathrm{ref}}\) and therefore produces a very small \(x_s\).
+
+\end{document}
