@@ -1,6 +1,9 @@
 import numpy as np
 
-from Lyapunov.frozen_dhat_target import prepare_filter_target_from_bounded_frozen_dhat
+from Lyapunov.frozen_dhat_target import (
+    prepare_filter_target_from_bounded_frozen_dhat,
+    prepare_filter_target_from_unbounded_frozen_dhat,
+)
 from Lyapunov.lyapunov_core import design_lyapunov_filter_ingredients
 from Lyapunov.target_selector import build_target_selector_config, prepare_filter_target
 from Lyapunov.upstream_controllers import (
@@ -199,9 +202,14 @@ def run_mpc_first_step_contraction(
         Rmove_diag=Rmove_diag,
     )
     target_generation_mode = str(target_generation_mode).strip().lower()
-    if target_generation_mode not in {"refined_selector", "bounded_frozen_dhat"}:
+    if target_generation_mode not in {
+        "refined_selector",
+        "bounded_frozen_dhat",
+        "unbounded_frozen_dhat",
+    }:
         raise ValueError(
-            "target_generation_mode must be either 'refined_selector' or 'bounded_frozen_dhat'."
+            "target_generation_mode must be one of 'refined_selector', "
+            "'bounded_frozen_dhat', or 'unbounded_frozen_dhat'."
         )
 
     u_min = np.array([float(lo) for (lo, _hi) in bnds[:n_u]], dtype=float)
@@ -268,6 +276,22 @@ def run_mpc_first_step_contraction(
 
         if target_generation_mode == "bounded_frozen_dhat":
             target_info = prepare_filter_target_from_bounded_frozen_dhat(
+                A_aug=MPC_obj.A,
+                B_aug=MPC_obj.B,
+                C_aug=MPC_obj.C,
+                xhat_aug=xhat_aug_store[:, k],
+                y_sp=y_sp_k,
+                u_min=u_min,
+                u_max=u_max,
+                prev_target=prev_target_info,
+                H=selector_H,
+                return_debug=False,
+                warm_start=selector_warm_start,
+                u_applied_k=u_prev_dev,
+                config=frozen_target_config,
+            )
+        elif target_generation_mode == "unbounded_frozen_dhat":
+            target_info = prepare_filter_target_from_unbounded_frozen_dhat(
                 A_aug=MPC_obj.A,
                 B_aug=MPC_obj.B,
                 C_aug=MPC_obj.C,

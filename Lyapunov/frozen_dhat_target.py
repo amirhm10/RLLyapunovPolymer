@@ -14,6 +14,7 @@ from analysis.steady_state_debug_analysis import (
 
 
 FROZEN_DHAT_SELECTOR_NAME = "bounded_frozen_dhat"
+UNBOUNDED_FROZEN_DHAT_SELECTOR_NAME = "unbounded_frozen_dhat"
 
 DEFAULT_FROZEN_DHAT_TARGET_CONFIG: Dict[str, Any] = {
     "solver_mode": DEFAULT_ANALYSIS_CONFIG["solver_mode"],
@@ -443,6 +444,210 @@ def prepare_filter_target_from_bounded_frozen_dhat(
         "exact_within_bounds": exact_within_bounds,
         "exact_bound_violation_inf": exact_bound_violation_inf,
         "bounded_residual_norm": bounded_residual_norm,
+    }
+
+    if return_debug:
+        return target_info, dict(selector_debug)
+    return target_info
+
+
+def prepare_filter_target_from_unbounded_frozen_dhat(
+    A_aug,
+    B_aug,
+    C_aug,
+    xhat_aug,
+    y_sp,
+    u_min,
+    u_max,
+    *,
+    prev_target=None,
+    warm_start=True,
+    u_applied_k=None,
+    config=None,
+    return_debug=False,
+    H=None,
+):
+    cfg = _merge_config(config)
+    x_prev, u_prev = _extract_prev_target(prev_target)
+    warm_start_enabled = bool(warm_start)
+    warm_start_available = bool(isinstance(prev_target, dict) and prev_target.get("success", False))
+
+    model = _recover_unaugmented_model(A_aug, B_aug, C_aug, cfg)
+    n_x = int(model["n_x"])
+    n_y = int(model["n_y"])
+    n_u = int(model["n_u"])
+
+    xhat_aug = _as_float_array(xhat_aug, "xhat_aug", ndim=1)
+    if xhat_aug.size != (n_x + n_y):
+        raise ValueError(f"xhat_aug has incorrect size. Expected {n_x + n_y}, got {xhat_aug.size}.")
+    xhat_k = xhat_aug[:n_x].copy()
+    d_hat_k = xhat_aug[n_x:].copy()
+
+    if H is not None:
+        H_arr = _as_float_array(H, "H", ndim=2)
+        if H_arr.shape != (n_y, n_y) or not np.allclose(H_arr, np.eye(n_y), atol=1.0e-12, rtol=0.0):
+            raise ValueError(
+                "unbounded_frozen_dhat currently supports only full-output targets with H = None or H = I."
+            )
+
+    y_sp = _as_float_array(y_sp, "y_sp", ndim=1)
+    if y_sp.size != n_y:
+        raise ValueError(f"y_sp has incorrect size. Expected {n_y}, got {y_sp.size}.")
+
+    u_min = _as_float_array(u_min, "u_min", ndim=1)
+    u_max = _as_float_array(u_max, "u_max", ndim=1)
+    if u_min.size != n_u or u_max.size != n_u:
+        raise ValueError(f"u_min and u_max must have size {n_u}.")
+
+    if u_applied_k is None:
+        u_applied = np.zeros(n_u, dtype=float)
+    else:
+        u_applied = _as_float_array(u_applied_k, "u_applied_k", ndim=1)
+        if u_applied.size != n_u:
+            raise ValueError(f"u_applied_k must have size {n_u}.")
+
+    exact_info = solve_legacy_ss_exact(
+        model["A"],
+        model["B"],
+        model["C"],
+        y_sp_k=y_sp,
+        d_hat_k=d_hat_k,
+        solver_mode=cfg["solver_mode"],
+        cond_warn_threshold=float(cfg["cond_warn_threshold"]),
+        residual_warn_threshold=float(cfg["residual_warn_threshold"]),
+        rank_tol=cfg["rank_tol"],
+    )
+
+    exact_success = bool(exact_info["is_exact_solution"]) and np.all(np.isfinite(exact_info["u_s"]))
+    if not exact_success:
+        failure = _failure_target_info(
+            y_sp=y_sp,
+            message="unbounded frozen-dhat exact solve failed.",
+            warm_start_enabled=warm_start_enabled,
+            warm_start_available=warm_start_available,
+        )
+        failure["selector_mode"] = UNBOUNDED_FROZEN_DHAT_SELECTOR_NAME
+        failure["selector_name"] = UNBOUNDED_FROZEN_DHAT_SELECTOR_NAME
+        failure["solve_stage"] = "frozen_dhat_exact_unbounded_failed"
+        failure["status"] = exact_info["solver_mode_used"]
+        failure["solver"] = exact_info["solver_mode_used"]
+        failure["box_solve_mode"] = "forced_unbounded_failed"
+        failure["selector_debug"]["status"] = exact_info["solver_mode_used"]
+        failure["selector_debug"]["solver"] = exact_info["solver_mode_used"]
+        failure["selector_debug"]["solver_error"] = "unbounded frozen-dhat exact solve failed."
+        failure["selector_debug"]["box_solve_mode"] = "forced_unbounded_failed"
+        if return_debug:
+            return failure, dict(failure["selector_debug"])
+        return failure
+
+    x_s = np.asarray(exact_info["x_s"], dtype=float).reshape(n_x)
+    u_s = np.asarray(exact_info["u_s"], dtype=float).reshape(n_u)
+    d_s = np.asarray(exact_info["d_s"], dtype=float).reshape(n_y)
+    y_s = np.asarray(exact_info["y_s"], dtype=float).reshape(n_y)
+    r_s = y_s.copy()
+
+    dyn_residual = (np.eye(n_x, dtype=float) - model["A"]) @ x_s - model["B"] @ u_s
+    target_error = r_s - y_sp
+    target_error_inf = _inf_norm(target_error)
+    target_error_norm = float(np.linalg.norm(target_error))
+    bounds_info = check_box_bounds(u_s, u_min, u_max, tol=float(cfg["box_bound_tol"]))
+
+    objective_terms = {
+        "target_tracking": 0.5 * _norm_sq(target_error),
+        "u_applied_anchor": 0.0,
+        "u_prev_smoothing": np.nan,
+        "x_prev_smoothing": np.nan,
+        "xhat_anchor": np.nan,
+    }
+    objective_value = float(objective_terms["target_tracking"])
+
+    selector_debug = {
+        "status": exact_info["solver_mode_used"],
+        "solver": exact_info["solver_mode_used"],
+        "solver_error": None,
+        "objective_value": objective_value,
+        "objective_terms": objective_terms,
+        "warm_start_enabled": warm_start_enabled,
+        "warm_start_available": warm_start_available,
+        "warm_start_used": False,
+        "prev_input_term_active": False,
+        "prev_state_term_active": False,
+        "use_output_bounds_in_selector": False,
+        "x_weight_base": "frozen_dhat_exact_unbounded",
+        "Qr_diag_used": None,
+        "R_u_ref_diag_used": None,
+        "R_delta_u_sel_diag_used": None,
+        "Q_delta_x_diag_used": None,
+        "Q_x_ref_diag_used": None,
+        "Qx_base_diag_used": None,
+        "Rdu_diag_used": None,
+        "exact_solver_mode_requested": exact_info["solver_mode_requested"],
+        "exact_solver_mode_used": exact_info["solver_mode_used"],
+        "exact_residual_total_norm": exact_info["residual_total_norm"],
+        "exact_residual_dyn_norm": exact_info["residual_dyn_norm"],
+        "exact_residual_out_norm": exact_info["residual_out_norm"],
+        "exact_within_bounds": bool(bounds_info["within_bounds"]),
+        "exact_bound_violation_inf": float(bounds_info["violation_inf"]),
+        "box_solve_mode": "forced_unbounded_exact",
+        "bounded_residual_norm": None,
+        "bounded_solver_name": None,
+        "bounded_status": None,
+        "bounded_message": None,
+        "bounded_solve_form": None,
+        "active_lower_mask": bounds_info["active_lower_mask"].copy(),
+        "active_upper_mask": bounds_info["active_upper_mask"].copy(),
+    }
+
+    target_info = {
+        "success": True,
+        "selector_mode": UNBOUNDED_FROZEN_DHAT_SELECTOR_NAME,
+        "selector_name": UNBOUNDED_FROZEN_DHAT_SELECTOR_NAME,
+        "solve_stage": "frozen_dhat_exact_unbounded_forced",
+        "x_s": x_s.copy(),
+        "u_s": u_s.copy(),
+        "d_s": d_s.copy(),
+        "x_s_aug": np.concatenate([x_s, d_s]).copy(),
+        "y_s": y_s.copy(),
+        "yc_s": r_s.copy(),
+        "r_s": r_s.copy(),
+        "requested_y_sp": y_sp.copy(),
+        "objective_value": objective_value,
+        "objective": objective_value,
+        "objective_terms": objective_terms,
+        "target_error": target_error.copy(),
+        "target_error_inf": target_error_inf,
+        "target_error_norm": target_error_norm,
+        "target_slack": target_error.copy(),
+        "target_slack_inf": target_error_inf,
+        "target_slack_2": target_error_norm,
+        "target_eq_residual_inf": target_error_inf,
+        "dyn_residual_inf": _inf_norm(dyn_residual),
+        "bound_violation_inf": float(bounds_info["violation_inf"]),
+        "input_bound_violation_inf": float(bounds_info["violation_inf"]),
+        "output_bound_violation_inf": 0.0,
+        "d_s_minus_dhat_inf": 0.0,
+        "d_s_frozen": True,
+        "d_s_optimized": False,
+        "warm_start": {
+            "enabled": warm_start_enabled,
+            "available": warm_start_available,
+            "used": False,
+        },
+        "status": exact_info["solver_mode_used"],
+        "solver": exact_info["solver_mode_used"],
+        "selector_debug": selector_debug,
+        "margin_to_u_min": (u_s - u_min).copy(),
+        "margin_to_u_max": (u_max - u_s).copy(),
+        "y_s_minus_y_sp": (y_s - y_sp).copy(),
+        "r_s_minus_y_sp": target_error.copy(),
+        "u_s_minus_u_applied": (u_s - u_applied).copy(),
+        "u_s_minus_u_prev": None if u_prev is None else (u_s - u_prev).copy(),
+        "x_s_minus_x_prev": None if x_prev is None else (x_s - x_prev).copy(),
+        "x_s_minus_xhat": (x_s - xhat_k).copy(),
+        "box_solve_mode": "forced_unbounded_exact",
+        "exact_within_bounds": bool(bounds_info["within_bounds"]),
+        "exact_bound_violation_inf": float(bounds_info["violation_inf"]),
+        "bounded_residual_norm": None,
     }
 
     if return_debug:
