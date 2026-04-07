@@ -1,0 +1,287 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\title{Role of $u_s$ and Exact-vs-Bounded Analysis Modes in First-Step-Contraction MPC}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This note answers two related questions for the current first-step-contraction MPC path:
+\begin{enumerate}
+\item Is the steady-state input target $u_s$ actually used in the Lyapunov logic, or is only $x_s$ relevant?
+\item Why can the offline exact frozen-$\hat d$ target look more ``correct'' than the bounded target in some plots, even though the online controller uses the bounded target?
+\end{enumerate}
+
+The short answer is:
+\begin{itemize}
+\item the exact frozen-$\hat d$ target is the correct \emph{unconstrained model equilibrium diagnostic},
+\item the bounded frozen-$\hat d$ target is the correct \emph{feasible controller target} when the exact target violates the input box,
+\item in the maintained first-step-replacement path the hard first-step contraction constraint is centered on $x_s$, not directly on $u_s$,
+\item but $u_s$ is still used in Lyapunov-related prediction and in the standard tracking formulation.
+\end{itemize}
+
+\section{Scaled Deviation Coordinates}
+
+All calculations below are in the same scaled deviation coordinates used by the identified linear model, the observer, and the offset-free MPC code. Let
+\begin{align}
+u_k &= u_k^{\mathrm{scaled}} - u_{ss}^{\mathrm{scaled}}, \\
+y_k &= y_k^{\mathrm{scaled}} - y_{ss}^{\mathrm{scaled}}.
+\end{align}
+The observer estimate, the target package, the Lyapunov center, and the controller action all live in these deviation coordinates.
+
+\section{Augmented Observer and Frozen-Disturbance Target}
+
+The offset-free observer produces the augmented estimate
+\begin{align}
+\hat z_k =
+\begin{bmatrix}
+\hat x_k \\
+\hat d_k
+\end{bmatrix},
+\end{align}
+where $\hat x_k \in \mathbb{R}^{n_x}$ is the physical-state estimate and $\hat d_k \in \mathbb{R}^{n_y}$ is the output-disturbance estimate.
+
+The bounded frozen-$\hat d$ target method freezes the disturbance target at
+\begin{align}
+d_s(k) = \hat d_k.
+\end{align}
+Then the steady-state equations use the unaugmented plant matrices $(A,B,C)$:
+\begin{align}
+x_s &= A x_s + B u_s, \\
+y_s &= C x_s + d_s.
+\end{align}
+If the requested output target is $y_{sp,k}$, then the exact offset-free steady-state equations are
+\begin{align}
+(I-A)x_s - Bu_s &= 0, \\
+Cx_s &= r_k,
+\end{align}
+with
+\begin{align}
+r_k := y_{sp,k} - \hat d_k.
+\end{align}
+
+\section{Exact Unbounded Target}
+
+Define
+\begin{align}
+M :=
+\begin{bmatrix}
+I-A & -B \\
+C & 0
+\end{bmatrix},
+\qquad
+w_s :=
+\begin{bmatrix}
+x_s \\
+u_s
+\end{bmatrix},
+\qquad
+b_k :=
+\begin{bmatrix}
+0 \\
+r_k
+\end{bmatrix}.
+\end{align}
+Then the exact target solves
+\begin{align}
+Mw_s = b_k.
+\end{align}
+
+If $(I-A)$ is invertible, this can be reduced to
+\begin{align}
+G u_s = r_k,
+\qquad
+G := C(I-A)^{-1}B,
+\end{align}
+with
+\begin{align}
+x_s = (I-A)^{-1}Bu_s.
+\end{align}
+
+This exact target is the correct frozen-disturbance equilibrium of the linear model. If the purpose is to answer
+\begin{quote}
+``What stationary input-state pair would the model need in order to maintain the setpoint under the current disturbance estimate?''
+\end{quote}
+then the exact target is the correct answer.
+
+\section{Bounded Feasible Target}
+
+The exact target may be infeasible because $u_s$ may violate the controller box
+\begin{align}
+u_{\min} \le u_s \le u_{\max}.
+\end{align}
+When that happens, the exact target is still valuable as a diagnostic, but it is not a feasible controller center.
+
+The bounded frozen-$\hat d$ fallback solves
+\begin{align}
+\min_{u_s}
+\quad
+\|Gu_s-r_k\|_2^2 + \lambda_u \|u_s-u_{\mathrm{ref},k}\|_2^2
+\qquad
+\text{subject to }
+u_{\min} \le u_s \le u_{\max},
+\end{align}
+where in the current notebook
+\begin{align}
+u_{\mathrm{ref},k} = u_{k-1},
+\end{align}
+and $\lambda_u \ge 0$ is the user-set weight exposed in the notebook.
+
+After the bounded input target is found, the corresponding state target is
+\begin{align}
+x_s = (I-A)^{-1}Bu_s,
+\end{align}
+or the equivalent stacked least-squares state if the reduced form is not used.
+
+This bounded target is the correct answer to a different question:
+\begin{quote}
+``What feasible steady-state pair is closest to the frozen-disturbance equilibrium while respecting the input box and optional anchoring to the previous input?''
+\end{quote}
+
+\section{Why Exact and Bounded State Targets Can Look Very Different}
+
+Suppose the exact input target is outside the box. Then the bounded optimization pushes $u_s$ back to the feasible set. Because $x_s$ and $u_s$ are coupled through
+\begin{align}
+(I-A)x_s = Bu_s,
+\end{align}
+the state target changes as well. Therefore it is completely possible for
+\begin{align}
+x_s^{\mathrm{exact}} \neq x_s^{\mathrm{bounded}}
+\end{align}
+by a large amount.
+
+This is why an offline exact plot can look ``more correct'' as a pure equilibrium diagnostic: it is the exact solution of the frozen-$\hat d$ equations. But if that target requires infeasible inputs, it is not the same object as the feasible target used online.
+
+\section{Where \texorpdfstring{$u_s$}{u\_s} Enters the Lyapunov Logic}
+
+\subsection{Physical Error Centering}
+
+The physical-state tracking error is defined around the target state:
+\begin{align}
+e_x = \hat x_k - x_s.
+\end{align}
+So every Lyapunov quantity is centered at $x_s$.
+
+\subsection{One-Step Predicted Error}
+
+The code also uses the input target when predicting the next physical error:
+\begin{align}
+e_x^+ = A e_x + B(u-u_s).
+\end{align}
+This identity comes from subtracting the target steady-state dynamics
+\begin{align}
+x_s = Ax_s + Bu_s
+\end{align}
+from the plant prediction
+\begin{align}
+x^+ = A\hat x_k + Bu.
+\end{align}
+
+Therefore $u_s$ is not an incidental quantity. It participates in the Lyapunov-centered error propagation.
+
+\subsection{Candidate Evaluation}
+
+When the upstream MPC proposes a candidate input $u_{\mathrm{cand}}$, the candidate evaluation computes
+\begin{align}
+e_x &= \hat x_k - x_s, \\
+e_x^+ &= A e_x + B(u_{\mathrm{cand}}-u_s), \\
+V_k &= e_x^\top P_x e_x, \\
+V_{k+1}^{\mathrm{cand}} &= (e_x^+)^\top P_x e_x^+.
+\end{align}
+Then it checks the Lyapunov inequality
+\begin{align}
+V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon.
+\end{align}
+So in the candidate-evaluation step, $u_s$ explicitly affects the predicted next Lyapunov value.
+
+\subsection{Hard First-Step-Constrained Replacement}
+
+The maintained first-step replacement path solves a constrained upstream MPC candidate problem whose additional hard constraint is
+\begin{align}
+V(x_{1|k}-x_s) \le \rho V(\hat x_k-x_s) + \varepsilon.
+\end{align}
+This constraint is written directly in terms of predicted state and target state:
+\begin{align}
+(x_{1|k}-x_s)^\top P_x (x_{1|k}-x_s)
+\le
+\rho (\hat x_k-x_s)^\top P_x (\hat x_k-x_s) + \varepsilon.
+\end{align}
+
+In this hard first-step inequality, $u_s$ does not appear explicitly. The online constrained replacement is centered on $x_s$.
+
+This is the most important structural answer:
+\begin{quote}
+for the current first-step-replacement path, the hard Lyapunov contraction constraint depends directly on $x_s$, while $u_s$ enters indirectly through the steady-state relation and through separate candidate-evaluation logic.
+\end{quote}
+
+\subsection{Standard Tracking Lyapunov MPC Formulation}
+
+The repository also contains the full standard tracking Lyapunov formulation, where the cost includes input tracking terms around $u_s$:
+\begin{align}
+\sum_{i=0}^{N_c-1} (u_{k+i}-u_s)^\top S_u (u_{k+i}-u_s),
+\end{align}
+along with state centering around $x_s$ and the terminal Lyapunov term
+\begin{align}
+(x_{k+N}-x_s)^\top P_x (x_{k+N}-x_s).
+\end{align}
+
+So for the general Lyapunov-tracking formulation, $u_s$ is absolutely part of the control design. It is only the specific hard first-step replacement inequality that is written entirely around $x_s$.
+
+\section{Implication for Analysis Plots}
+
+The offline sidecar now supports three analysis modes:
+\begin{itemize}
+\item \textbf{exact}: use the unbounded frozen-$\hat d$ target everywhere in the diagnostic plots,
+\item \textbf{bounded}: use the bounded feasible frozen-$\hat d$ target everywhere in the diagnostic plots,
+\item \textbf{hybrid}: preserve the older mixed view, where state/output/disturbance use the exact target while input-side plots use the bounded target.
+\end{itemize}
+
+These modes are \emph{analysis-only}. They do not change the online controller unless the online target-generation mode itself is changed.
+
+\section{Why the Exact Offline Plot Can Be the Better Diagnostic}
+
+If your goal is to inspect model consistency, then the exact mode is often the better diagnostic because it answers:
+\begin{align}
+Mw_s = b_k
+\end{align}
+exactly. In that view,
+\begin{itemize}
+\item if $r_k \to 0$, then the exact target tends to the nominal equilibrium,
+\item if $\hat x_k$ is converging to the frozen-disturbance steady-state manifold, then $\hat x_k$ should move toward $x_s^{\mathrm{exact}}$.
+\end{itemize}
+
+If instead your goal is to inspect what the controller can feasibly aim for under box constraints, then bounded mode is the better diagnostic.
+
+\section{Practical Interpretation}
+
+There are therefore two legitimate but different objects:
+\begin{align}
+(x_s^{\mathrm{exact}},u_s^{\mathrm{exact}}) &:\quad \text{model-equilibrium diagnostic}, \\
+(x_s^{\mathrm{bounded}},u_s^{\mathrm{bounded}}) &:\quad \text{feasible controller target}.
+\end{align}
+
+Comparing the online controller trajectory to the exact target is useful for understanding the unconstrained frozen-disturbance equilibrium. Comparing it to the bounded target is useful for understanding what the constrained controller can actually use as a center.
+
+\section{Answer to the Original Question}
+
+If the question is:
+\begin{quote}
+``Are we even using $u_s$ in the Lyapunov logic at all?''
+\end{quote}
+then the precise answer is:
+\begin{itemize}
+\item \textbf{Yes}, $u_s$ is used in Lyapunov-centered one-step prediction and candidate evaluation through $e_x^+ = Ae_x + B(u-u_s)$.
+\item \textbf{Yes}, $u_s$ is used in the full standard Lyapunov tracking MPC objective through input-centering penalties.
+\item \textbf{No}, the current hard first-step contraction constraint itself is written only around $x_s$ and does not contain $u_s$ explicitly.
+\end{itemize}
+
+So if the offline exact state target looks more physically meaningful for diagnosis, that does not contradict the current online implementation. It just means the exact target is the better unconstrained equilibrium diagnostic, while the bounded target remains the feasible control target.
+
+\end{document}
