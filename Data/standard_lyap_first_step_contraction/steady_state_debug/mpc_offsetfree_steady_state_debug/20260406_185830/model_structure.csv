@@ -1,0 +1,2 @@
+n,p,q,M_shape,G_shape,I_minus_A_invertible,M_square,G_square,rank_M,rank_G,classification
+7,2,2,"(9, 9)","(2, 2)",True,True,True,9,2,square

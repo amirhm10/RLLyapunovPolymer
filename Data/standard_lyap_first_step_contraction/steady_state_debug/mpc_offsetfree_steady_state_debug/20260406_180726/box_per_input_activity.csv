@@ -1,0 +1,3 @@
+input_index,fraction_lower_bound_active,fraction_upper_bound_active,average_exact_violation_below_lower,average_exact_violation_above_upper
+0,0.373125,0.476875,105.16834023308162,136.91907941461056
+1,0.270625,0.25125,65.27563725597979,63.06803513193424

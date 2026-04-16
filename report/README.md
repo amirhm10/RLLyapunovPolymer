@@ -5,6 +5,8 @@
   Main paper-style description of the current selector implementation.
 - `refined_step_a_selector_parameters.md`
   Practical tuning guide for the current selector weights and options.
+- `pretraining_rl_controller_review.md`
+  Notebook-by-notebook review of the offline MPC-to-TD3 pretraining pipeline in `pretraining_rl_controller.ipynb`.
 
 ## Historical Context
 Older selector and safety-filter writeups were removed from the active `report/` directory once the refined Step A selector became the canonical path.
