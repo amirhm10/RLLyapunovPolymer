@@ -1,9 +1,5 @@
 import numpy as np
 
-from Lyapunov.frozen_dhat_target import (
-    prepare_filter_target_from_bounded_frozen_dhat,
-    prepare_filter_target_from_unbounded_frozen_dhat,
-)
 from Lyapunov.lyapunov_core import design_lyapunov_filter_ingredients
 from Lyapunov.target_selector import build_target_selector_config, prepare_filter_target
 from Lyapunov.upstream_controllers import (
@@ -117,8 +113,6 @@ def run_mpc_first_step_contraction(
     reset_system_on_entry=True,
     first_step_contraction_on=True,
     target_solver_pref=None,
-    target_generation_mode="refined_selector",
-    frozen_target_config=None,
 ):
     if reset_system_on_entry:
         _reset_system_on_entry(system)
@@ -201,17 +195,6 @@ def run_mpc_first_step_contraction(
         Q_out=Qs_tgt_diag,
         Rmove_diag=Rmove_diag,
     )
-    target_generation_mode = str(target_generation_mode).strip().lower()
-    if target_generation_mode not in {
-        "refined_selector",
-        "bounded_frozen_dhat",
-        "unbounded_frozen_dhat",
-    }:
-        raise ValueError(
-            "target_generation_mode must be one of 'refined_selector', "
-            "'bounded_frozen_dhat', or 'unbounded_frozen_dhat'."
-        )
-
     u_min = np.array([float(lo) for (lo, _hi) in bnds[:n_u]], dtype=float)
     u_max = np.array([float(hi) for (_lo, hi) in bnds[:n_u]], dtype=float)
 
@@ -274,55 +257,22 @@ def run_mpc_first_step_contraction(
         e_k = y_prev_dev - y_sp_k
         e_store[k, :] = e_k
 
-        if target_generation_mode == "bounded_frozen_dhat":
-            target_info = prepare_filter_target_from_bounded_frozen_dhat(
-                A_aug=MPC_obj.A,
-                B_aug=MPC_obj.B,
-                C_aug=MPC_obj.C,
-                xhat_aug=xhat_aug_store[:, k],
-                y_sp=y_sp_k,
-                u_min=u_min,
-                u_max=u_max,
-                prev_target=prev_target_info,
-                H=selector_H,
-                return_debug=False,
-                warm_start=selector_warm_start,
-                u_applied_k=u_prev_dev,
-                config=frozen_target_config,
-            )
-        elif target_generation_mode == "unbounded_frozen_dhat":
-            target_info = prepare_filter_target_from_unbounded_frozen_dhat(
-                A_aug=MPC_obj.A,
-                B_aug=MPC_obj.B,
-                C_aug=MPC_obj.C,
-                xhat_aug=xhat_aug_store[:, k],
-                y_sp=y_sp_k,
-                u_min=u_min,
-                u_max=u_max,
-                prev_target=prev_target_info,
-                H=selector_H,
-                return_debug=False,
-                warm_start=selector_warm_start,
-                u_applied_k=u_prev_dev,
-                config=frozen_target_config,
-            )
-        else:
-            target_info = prepare_filter_target(
-                A_aug=MPC_obj.A,
-                B_aug=MPC_obj.B,
-                C_aug=MPC_obj.C,
-                xhat_aug=xhat_aug_store[:, k],
-                y_sp=y_sp_k,
-                u_min=u_min,
-                u_max=u_max,
-                config=selector_cfg,
-                prev_target=prev_target_info,
-                H=selector_H,
-                return_debug=False,
-                warm_start=selector_warm_start,
-                u_applied_k=u_prev_dev,
-                selector_mode=selector_mode,
-            )
+        target_info = prepare_filter_target(
+            A_aug=MPC_obj.A,
+            B_aug=MPC_obj.B,
+            C_aug=MPC_obj.C,
+            xhat_aug=xhat_aug_store[:, k],
+            y_sp=y_sp_k,
+            u_min=u_min,
+            u_max=u_max,
+            config=selector_cfg,
+            prev_target=prev_target_info,
+            H=selector_H,
+            return_debug=False,
+            warm_start=selector_warm_start,
+            u_applied_k=u_prev_dev,
+            selector_mode=selector_mode,
+        )
         if target_info.get("success", False):
             prev_target_info = target_info
 
@@ -445,7 +395,6 @@ def run_mpc_first_step_contraction(
             "current_target_stage": target_info.get("solve_stage"),
             "target_stage": target_info.get("solve_stage"),
             "target_source": "recomputed",
-            "target_generation_mode": target_generation_mode,
             "selector_mode": target_info.get("selector_mode"),
             "selector_name": target_info.get("selector_name"),
             "effective_target_success": bool(effective_target_info is not None and effective_target_info.get("success", False)),

@@ -1,6 +1,8 @@
 # Report Directory
 
 ## Canonical Current Documents
+- `direct_lyapunov_mpc_frozen_output_disturbance.tex`
+  Technical note for the direct frozen-output-disturbance Lyapunov MPC rewrite.
 - `refined_step_a_selector_method.tex`
   Main paper-style description of the current selector implementation.
 - `refined_step_a_selector_parameters.md`
@@ -22,6 +24,13 @@ The main selector report can be built with:
 ```powershell
 pdflatex -interaction=nonstopmode refined_step_a_selector_method.tex
 pdflatex -interaction=nonstopmode refined_step_a_selector_method.tex
+```
+
+The direct Lyapunov rewrite note can be built with:
+
+```powershell
+pdflatex -interaction=nonstopmode direct_lyapunov_mpc_frozen_output_disturbance.tex
+pdflatex -interaction=nonstopmode direct_lyapunov_mpc_frozen_output_disturbance.tex
 ```
 
 Run that command from the `report/` directory.
