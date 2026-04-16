@@ -25,6 +25,7 @@ try:
 except Exception:
     HAS_MATPLOTLIB = False
 
+from Plotting_fns.mpc_plot_fns import plot_mpc_results_cstr
 from Lyapunov.frozen_output_disturbance_target import solve_output_disturbance_target
 from Lyapunov.lyapunov_core import (
     _OPTIMAL_STATUSES,
@@ -51,7 +52,7 @@ from utils.lyapunov_utils import (
     shift_input_guess,
     tracking_solver_sequence,
 )
-from utils.plot_style import paper_plot_context
+from utils.plot_style import PAPER_COLORS, paper_plot_context
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 
 
@@ -714,6 +715,18 @@ def run_direct_output_disturbance_lyapunov_mpc(
             "target_residual_total_norm": target_info.get("residual_total_norm"),
             "target_exact_within_bounds": target_info.get("exact_within_bounds"),
             "target_bounded_solution_used": target_info.get("bounded_solution_used"),
+            "target_bounded_active_lower_mask": None
+            if target_info.get("bounded_active_lower_mask") is None
+            else np.asarray(target_info.get("bounded_active_lower_mask"), bool).copy(),
+            "target_bounded_active_upper_mask": None
+            if target_info.get("bounded_active_upper_mask") is None
+            else np.asarray(target_info.get("bounded_active_upper_mask"), bool).copy(),
+            "target_exact_active_lower_mask": None
+            if target_info.get("exact_active_lower_mask") is None
+            else np.asarray(target_info.get("exact_active_lower_mask"), bool).copy(),
+            "target_exact_active_upper_mask": None
+            if target_info.get("exact_active_upper_mask") is None
+            else np.asarray(target_info.get("exact_active_upper_mask"), bool).copy(),
             "slack_lyap": 0.0,
             "slack_penalty": float(slack_penalty),
         }
@@ -912,6 +925,9 @@ def run_direct_output_disturbance_lyapunov_mpc(
         "lyap_eps": float(lyap_eps),
         "slack_penalty": float(slack_penalty),
         "first_step_contraction_on": bool(first_step_contraction_on),
+        "u_dev_min": u_dev_min.copy(),
+        "u_dev_max": u_dev_max.copy(),
+        "delta_t": float(getattr(system, "delta_t", 1.0)),
     }
 
 
@@ -946,6 +962,18 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "target_residual_total_norm": info.get("target_residual_total_norm"),
             "target_exact_within_bounds": info.get("target_exact_within_bounds"),
             "target_bounded_solution_used": info.get("target_bounded_solution_used"),
+            "target_bounded_active_lower_count": None
+            if info.get("target_bounded_active_lower_mask") is None
+            else int(np.sum(np.asarray(info.get("target_bounded_active_lower_mask"), dtype=bool))),
+            "target_bounded_active_upper_count": None
+            if info.get("target_bounded_active_upper_mask") is None
+            else int(np.sum(np.asarray(info.get("target_bounded_active_upper_mask"), dtype=bool))),
+            "target_exact_active_lower_count": None
+            if info.get("target_exact_active_lower_mask") is None
+            else int(np.sum(np.asarray(info.get("target_exact_active_lower_mask"), dtype=bool))),
+            "target_exact_active_upper_count": None
+            if info.get("target_exact_active_upper_mask") is None
+            else int(np.sum(np.asarray(info.get("target_exact_active_upper_mask"), dtype=bool))),
             "solver_status": info.get("status"),
             "solver_name": info.get("tracking_solver"),
             "solver_message": info.get("message"),
@@ -1012,6 +1040,8 @@ def summarize_direct_lyapunov_bundle(bundle):
         "target_residual_total_norm_max": float(np.nanmax(bundle["target_residual_total_norm"])) if bundle["target_residual_total_norm"].size else None,
         "target_cond_M_max": float(np.nanmax(bundle["target_cond_M"])) if bundle["target_cond_M"].size else None,
         "bounded_solution_used_steps": int(np.sum(np.nan_to_num(bundle["target_bounded_solution_used_flags"], nan=0.0) > 0.5)),
+        "bounded_active_lower_count_max": float(np.nanmax(bundle["target_bounded_active_lower_count"])) if bundle["target_bounded_active_lower_count"].size else None,
+        "bounded_active_upper_count_max": float(np.nanmax(bundle["target_bounded_active_upper_count"])) if bundle["target_bounded_active_upper_count"].size else None,
     }
     summary["method_counts"] = {name: methods.count(name) for name in sorted(set(methods))}
     summary["target_stage_counts"] = {name: target_stages.count(name) for name in sorted(set(target_stages))}
@@ -1055,6 +1085,7 @@ def build_direct_lyapunov_run_bundle(
         "y_system": y_system.copy(),
         "u_applied_phys": u_applied_phys.copy(),
         "xhatdhat": xhatdhat.copy(),
+        "y_sp": y_sp_steps.copy(),
         "y_sp_steps": y_sp_steps.copy(),
         "yhat": yhat.copy(),
         "qi": np.asarray(results["qi"], dtype=float).copy(),
@@ -1066,6 +1097,7 @@ def build_direct_lyapunov_run_bundle(
         "lyapunov_mode": results.get("lyapunov_mode"),
         "rho_lyap": results.get("rho_lyap"),
         "lyap_eps": results.get("lyap_eps"),
+        "delta_t": float(results.get("delta_t", 1.0)),
         "slack_penalty": results.get("slack_penalty"),
         "first_step_contraction_on": results.get("first_step_contraction_on"),
         "x_target_store": _stack_vectors(direct_info_storage, "x_s", n_x),
@@ -1084,6 +1116,22 @@ def build_direct_lyapunov_run_bundle(
         "target_cond_M": np.array([info.get("target_cond_M", np.nan) for info in direct_info_storage], dtype=float),
         "target_cond_G": np.array([info.get("target_cond_G", np.nan) for info in direct_info_storage], dtype=float),
         "target_residual_total_norm": np.array([info.get("target_residual_total_norm", np.nan) for info in direct_info_storage], dtype=float),
+        "target_bounded_active_lower_count": np.array(
+            [
+                np.nan if info.get("target_bounded_active_lower_mask") is None
+                else float(np.sum(np.asarray(info.get("target_bounded_active_lower_mask"), dtype=bool)))
+                for info in direct_info_storage
+            ],
+            dtype=float,
+        ),
+        "target_bounded_active_upper_count": np.array(
+            [
+                np.nan if info.get("target_bounded_active_upper_mask") is None
+                else float(np.sum(np.asarray(info.get("target_bounded_active_upper_mask"), dtype=bool)))
+                for info in direct_info_storage
+            ],
+            dtype=float,
+        ),
         "solver_success_flags": np.array([1.0 if bool(info.get("success", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "target_success_flags": np.array([1.0 if bool(info.get("target_success", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "first_step_contraction_satisfied_flags": np.array([1.0 if bool(info.get("first_step_contraction_satisfied", False)) else 0.0 for info in direct_info_storage], dtype=float),
@@ -1109,13 +1157,48 @@ def build_direct_lyapunov_run_bundle(
     if steady_states is not None and data_min is not None and data_max is not None:
         ss_inputs = np.asarray(steady_states["ss_inputs"], dtype=float).reshape(-1)
         ss_scaled_inputs = apply_min_max(ss_inputs, data_min[:n_u], data_max[:n_u])
+        y_ss_scaled = apply_min_max(
+            np.asarray(steady_states["y_ss"], dtype=float).reshape(-1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
         bundle["u_target_phys_store"] = reverse_min_max(
             bundle["u_target_dev_store"] + ss_scaled_inputs.reshape(1, -1),
             data_min[:n_u],
             data_max[:n_u],
         )
+        bundle["y_target_phys_store"] = reverse_min_max(
+            bundle["y_target_store"] + y_ss_scaled.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        bundle["y_tracking_phys_store"] = reverse_min_max(
+            bundle["y_tracking_store"] + y_ss_scaled.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        if results.get("u_dev_min") is not None and results.get("u_dev_max") is not None:
+            u_lower_dev = np.asarray(results["u_dev_min"], dtype=float).reshape(-1)
+            u_upper_dev = np.asarray(results["u_dev_max"], dtype=float).reshape(-1)
+            bundle["u_bounds_phys"] = (
+                reverse_min_max(
+                    u_lower_dev + ss_scaled_inputs,
+                    data_min[:n_u],
+                    data_max[:n_u],
+                ),
+                reverse_min_max(
+                    u_upper_dev + ss_scaled_inputs,
+                    data_min[:n_u],
+                    data_max[:n_u],
+                ),
+            )
+        else:
+            bundle["u_bounds_phys"] = None
     else:
         bundle["u_target_phys_store"] = np.full_like(bundle["u_target_dev_store"], np.nan)
+        bundle["y_target_phys_store"] = np.full_like(bundle["y_target_store"], np.nan)
+        bundle["y_tracking_phys_store"] = np.full_like(bundle["y_tracking_store"], np.nan)
+        bundle["u_bounds_phys"] = None
 
     bundle["summary"] = summarize_direct_lyapunov_bundle(bundle)
     return bundle
@@ -1125,11 +1208,39 @@ def _plot_ctx(paper_style: bool):
     return paper_plot_context() if paper_style else nullcontext()
 
 
+def _save_existing_cstr_plot_views(bundle, output_dir, *, paper_style=False):
+    steady_states = bundle.get("steady_states")
+    data_min = bundle.get("data_min")
+    data_max = bundle.get("data_max")
+    if steady_states is None or data_min is None or data_max is None:
+        return None
+    return plot_mpc_results_cstr(
+        y_sp=bundle["y_sp"],
+        steady_states=steady_states,
+        nFE=int(bundle["nFE"]),
+        delta_t=float(bundle.get("delta_t", 1.0)),
+        time_in_sub_episodes=int(bundle["time_in_sub_episodes"]),
+        y_mpc=bundle["y_system"],
+        u_mpc=bundle["u_applied_phys"],
+        data_min=data_min,
+        data_max=data_max,
+        directory=output_dir,
+        prefix_name="",
+        y_target=bundle.get("y_target_store"),
+        y_tracking_target=bundle.get("y_tracking_store"),
+        u_target=bundle.get("u_target_phys_store"),
+        u_bounds=bundle.get("u_bounds_phys"),
+        timestamp_subdir=False,
+        paper_style=paper_style,
+    )
+
+
 def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     if not HAS_MATPLOTLIB:
         raise ImportError("matplotlib is required to plot direct Lyapunov diagnostics.")
 
     os.makedirs(output_dir, exist_ok=True)
+    _save_existing_cstr_plot_views(bundle, output_dir, paper_style=paper_style)
     y_system = np.asarray(bundle["y_system"], dtype=float)
     y_sp_steps = np.asarray(bundle["y_sp_steps"], dtype=float)
     y_target_store = np.asarray(bundle["y_target_store"], dtype=float)
@@ -1147,6 +1258,8 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     target_residual = np.asarray(bundle["target_residual_total_norm"], dtype=float)
     target_cond_M = np.asarray(bundle["target_cond_M"], dtype=float)
     target_rank_M = np.asarray(bundle["target_rank_M"], dtype=float)
+    target_bounded_active_lower = np.asarray(bundle["target_bounded_active_lower_count"], dtype=float)
+    target_bounded_active_upper = np.asarray(bundle["target_bounded_active_upper_count"], dtype=float)
 
     nFE = int(bundle["nFE"])
     n_y = y_system.shape[1]
@@ -1159,9 +1272,9 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         fig, axes = plt.subplots(n_y, 1, figsize=(11, 3.2 * n_y), sharex=True)
         axes = np.atleast_1d(axes)
         for idx, ax in enumerate(axes):
-            ax.plot(t_y, y_system[:, idx], linewidth=2.0, label="y")
-            ax.step(t_u, y_sp_steps[:, idx], where="post", linewidth=1.8, linestyle="--", label="y_sp")
-            ax.step(t_u, y_target_store[:, idx], where="post", linewidth=1.5, linestyle="-.", label="y_s")
+            ax.plot(t_y, y_system[:, idx], linewidth=2.0, color=PAPER_COLORS["output"], label="y")
+            ax.step(t_u, y_sp_steps[:, idx], where="post", linewidth=1.8, linestyle="--", color=PAPER_COLORS["setpoint"], label="y_sp")
+            ax.step(t_u, y_target_store[:, idx], where="post", linewidth=1.5, linestyle="-.", color=PAPER_COLORS["target"], label="y_s")
             ax.step(t_u, y_tracking_store[:, idx], where="post", linewidth=1.2, linestyle=":", label="stage target")
             ax.set_ylabel(f"y[{idx}]")
             ax.grid(True, linestyle="--", alpha=0.35)
@@ -1174,8 +1287,12 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         fig, axes = plt.subplots(n_u, 1, figsize=(11, 3.0 * n_u), sharex=True)
         axes = np.atleast_1d(axes)
         for idx, ax in enumerate(axes):
-            ax.step(t_u, u_applied_phys[:, idx], where="post", linewidth=2.0, label="u_applied")
-            ax.step(t_u, u_target_phys_store[:, idx], where="post", linewidth=1.5, linestyle="--", label="u_s")
+            ax.step(t_u, u_applied_phys[:, idx], where="post", linewidth=2.0, color=PAPER_COLORS.get(f"input_{idx}", "tab:blue"), label="u_applied")
+            ax.step(t_u, u_target_phys_store[:, idx], where="post", linewidth=1.5, linestyle="--", color=PAPER_COLORS["target"], label="u_s")
+            if bundle.get("u_bounds_phys") is not None:
+                lower_bounds, upper_bounds = bundle["u_bounds_phys"]
+                ax.axhline(lower_bounds[idx], color="tab:red", linewidth=1.0, linestyle=":")
+                ax.axhline(upper_bounds[idx], color="tab:brown", linewidth=1.0, linestyle=":")
             ax.set_ylabel(f"u[{idx}]")
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
@@ -1223,7 +1340,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         plt.savefig(os.path.join(output_dir, "04_lyapunov_diagnostics.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
-        fig, axes = plt.subplots(4, 1, figsize=(11, 11), sharex=True)
+        fig, axes = plt.subplots(5, 1, figsize=(11, 13), sharex=True)
         axes[0].plot(t_u, target_residual, linewidth=1.8, label="target_residual_total_norm")
         axes[0].legend(loc="best")
         axes[0].set_ylabel("residual")
@@ -1233,13 +1350,17 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         axes[2].plot(t_u, target_rank_M, linewidth=1.8, label="rank_M")
         axes[2].legend(loc="best")
         axes[2].set_ylabel("rank")
+        axes[3].step(t_u, np.nan_to_num(target_bounded_active_lower, nan=0.0), where="post", linewidth=1.6, color="tab:red", label="active_lower_count")
+        axes[3].step(t_u, np.nan_to_num(target_bounded_active_upper, nan=0.0), where="post", linewidth=1.6, color="tab:brown", linestyle="--", label="active_upper_count")
+        axes[3].legend(loc="best")
+        axes[3].set_ylabel("active")
         d_hat = xhatdhat[n_x:, :-1]
         for idx in range(d_hat.shape[0]):
-            axes[3].plot(t_u, d_hat[idx, :], linewidth=1.4, label=f"d_hat[{idx}]")
-            axes[3].plot(t_u, d_target_store[:, idx], linewidth=1.2, linestyle="--", label=f"d_s[{idx}]")
-        axes[3].legend(loc="best")
-        axes[3].set_ylabel("disturbance")
-        axes[3].set_xlabel("step")
+            axes[4].plot(t_u, d_hat[idx, :], linewidth=1.4, color=PAPER_COLORS["disturbance"], label=f"d_hat[{idx}]")
+            axes[4].plot(t_u, d_target_store[:, idx], linewidth=1.2, linestyle="--", color=PAPER_COLORS["target"], label=f"d_s[{idx}]")
+        axes[4].legend(loc="best")
+        axes[4].set_ylabel("disturbance")
+        axes[4].set_xlabel("step")
         for ax in axes:
             ax.grid(True, linestyle="--", alpha=0.35)
         plt.tight_layout()
