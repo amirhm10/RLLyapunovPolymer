@@ -4,88 +4,174 @@
 \usepackage{amsmath, amssymb, amsthm}
 \usepackage{booktabs}
 \usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{float}
 \usepackage{hyperref}
 
+\graphicspath{{./}}
+
 \title{Direct Lyapunov MPC With Frozen Output Disturbance}
-\author{Internal Technical Note}
+\author{Internal Technical Report}
 \date{\today}
 
 \begin{document}
 \maketitle
 
-\section{Motivation and Scope}
+\begin{abstract}
+This report documents the direct Lyapunov MPC experiment in
+\texttt{DirectLyapunovMPC\_FrozenOutputDisturbance.ipynb}. The method replaces
+the earlier candidate-and-filter workflow with one controller solve at every
+time step: freeze the output disturbance estimate, compute a steady target, and
+solve a Lyapunov-constrained tracking MPC problem around that target. The report
+also records the first saved run from April 23, 2026, compares the idea with the
+stronger but more heavily regularized
+\texttt{LyapunovSafetyFilterMPCTargetSelectorTermAblation.ipynb} path, and
+places the current design against offset-free MPC, tracking MPC, Lyapunov MPC,
+and predictive safety-filter literature. The first run is diagnostically useful:
+the frozen target calculation succeeds exactly, but the \texttt{unbounded} target
+combined with \texttt{hard} Lyapunov contraction makes the direct MPC infeasible
+at all 1600 steps. The next experimental stage should therefore test bounded
+targets and soft Lyapunov contraction before adding any of the richer selector
+regularization terms back into the direct path.
+\end{abstract}
 
-The previous frozen-\texttt{dhat} experiment path coupled three ideas in one workflow:
+\section{Executive Summary}
+
+The direct frozen-output-disturbance Lyapunov MPC path is a cleaner controller
+architecture for the polymer CSTR experiments. Instead of first producing an
+upstream MPC or RL candidate and then using a safety filter to accept, project,
+or replace that candidate, the direct path solves one Lyapunov MPC problem at
+each online step. This makes the closed-loop law easier to explain and easier to
+diagnose.
+
+The main workflow is:
 \begin{enumerate}[leftmargin=1.5em]
-\item an offset-free upstream MPC candidate,
-\item a first-step Lyapunov acceptance test, and
-\item a replacement controller triggered only when the candidate failed.
-\end{enumerate}
-
-That architecture was useful as a transition study, but it mixed two control laws in a single rollout and made the mathematical interpretation awkward. The rewrite in this note retires that transitional path and replaces it with a single method:
-\begin{enumerate}[leftmargin=1.5em]
-\item freeze the output disturbance estimate,
-\item compute a steady target from that frozen disturbance, and
-\item solve one direct Lyapunov MPC problem at every time step.
-\end{enumerate}
-
-The new baseline is therefore easier to describe, easier to instrument, and closer to the final controller structure that should be compared in future studies.
-
-\section{Model and Coordinate Conventions}
-
-The controller-side model is used in scaled deviation coordinates with output disturbance only:
-\begin{align}
-x_{k+1} &= A x_k + B u_k, \\
-y_k &= C x_k + d_k, \\
-d_{k+1} &= d_k.
-\end{align}
-
-Here:
-\begin{itemize}[leftmargin=1.5em]
-\item $x_k$ is the physical controller state in deviation coordinates,
-\item $u_k$ is the manipulated input in deviation coordinates,
-\item $d_k$ is an output-offset disturbance state,
-\item $y_k$ is the controlled output,
-\item the observer estimate is stored as the augmented vector
+\item estimate the augmented observer state
 \[
 \hat z_k =
 \begin{bmatrix}
 \hat x_k \\
 \hat d_k
-\end{bmatrix}.
+\end{bmatrix},
 \]
+\item freeze the output disturbance target as \(d_s=\hat d_k\),
+\item compute a steady target \((x_s,u_s,y_s)\),
+\item solve a tracking MPC problem with terminal ingredients and a first-step
+Lyapunov contraction constraint,
+\item apply the first input and export target, solver, contraction, and plotting
+diagnostics.
+\end{enumerate}
+
+The first saved run used \texttt{target\_mode="unbounded"} and
+\texttt{lyapunov\_mode="hard"}. It showed a sharp separation between the two
+pieces of the method:
+\begin{itemize}[leftmargin=1.5em]
+\item the target solve is numerically successful, with maximum total residual
+\(4.58\times 10^{-15}\),
+\item the unbounded target is outside the admissible input box at every step,
+\item the hard direct MPC solve is infeasible at every step,
+\item the controller therefore holds the previous input for the whole run.
 \end{itemize}
 
-The rewrite intentionally excludes any $A_{xd} d_k$ term from the state dynamics. In the code this is validated explicitly before a frozen-output-disturbance target is accepted.
+This means the report should not be read as evidence that the direct controller
+is already tuned. It is evidence that the new instrumentation is doing its job:
+it identifies the target admissibility and hard-contraction bottleneck cleanly.
 
-\section{Frozen Output-Disturbance Steady-State Target}
+\section{Why This Controller Exists}
 
-\subsection{Definition}
+The repository has several Lyapunov-related workstreams. The strongest closed
+loop so far appears to come from
+\texttt{LyapunovSafetyFilterMPCTargetSelectorTermAblation.ipynb}, but that path
+uses a richer target selector with several objective terms:
+\begin{align}
+&\|r_s-y_{\mathrm{sp}}\|_{Q_r}^2
++\|u_s-u_{\mathrm{applied},k}\|_{R_{u,\mathrm{ref}}}^2
++\|u_s-u_{s,\mathrm{prev}}\|_{R_{\Delta u,\mathrm{sel}}}^2 \nonumber \\
+&\qquad
++\|x_s-x_{s,\mathrm{prev}}\|_{Q_{\Delta x}}^2
++\|x_s-\hat x_k\|_{Q_{x,\mathrm{ref}}}^2.
+\label{eq:ablation_selector_objective}
+\end{align}
 
-At each time step $k$, the disturbance estimate is frozen:
+Those terms are useful, and the ablation notebook was designed to measure their
+closed-loop value. But they also make interpretation harder. When the target is
+good, it is not immediately clear which mechanism caused the improvement:
+output matching, current-input anchoring, previous-target smoothing, or the weak
+observer-state anchor.
+
+The direct frozen-output-disturbance path intentionally starts from a simpler
+question:
+\begin{quote}
+If the output disturbance estimate is fixed, can a direct Lyapunov MPC track the
+resulting steady target without relying on a separate candidate controller or a
+large target-selector objective?
+\end{quote}
+
+That question is important because a final reportable controller should separate
+three roles:
+\begin{enumerate}[leftmargin=1.5em]
+\item the model and disturbance estimate,
+\item the steady target calculation,
+\item the Lyapunov-constrained online controller.
+\end{enumerate}
+The current direct path isolates these roles better than the safety-filter
+ablation path, even though the first hard/unbounded run is infeasible.
+
+\section{Model and Coordinate Conventions}
+
+The controller-side model is used in scaled deviation coordinates with an
+output-disturbance-only augmentation:
+\begin{align}
+x_{k+1} &= A x_k + B u_k, \\
+y_k &= Cx_k + d_k, \\
+d_{k+1} &= d_k.
+\end{align}
+
+The augmented state is
+\begin{equation}
+z_k =
+\begin{bmatrix}
+x_k \\
+d_k
+\end{bmatrix},
+\qquad
+\hat z_k =
+\begin{bmatrix}
+\hat x_k \\
+\hat d_k
+\end{bmatrix}.
+\end{equation}
+
+Here \(x_k\) is the controller state in scaled deviation coordinates, \(u_k\) is
+the manipulated input in scaled deviation coordinates, \(d_k\) is the estimated
+output disturbance, and \(y_k\) is the controlled output in scaled deviation
+coordinates. The notebook builds this model through
+\texttt{augmentation\_mode="output\_disturbance"}. The implementation rejects
+models with a nonzero disturbance-to-state block \(A_{xd}\), because the direct
+target solver assumes that the frozen disturbance affects only the output
+equation.
+
+\section{Frozen Output-Disturbance Target}
+
+\subsection{Unbounded Target}
+
+At each time step \(k\), the target disturbance is fixed:
 \begin{equation}
 d_s = \hat d_k.
 \end{equation}
-
-Only $x_s$ and $u_s$ are solved online. The steady-state equations are
+Only \(x_s\) and \(u_s\) are solved. The steady-state equations are
 \begin{align}
-(I - A) x_s - B u_s &= 0, \\
-C x_s + d_s &= y_{sp,k}.
+(I-A)x_s - Bu_s &= 0, \label{eq:ss_dyn}\\
+Cx_s &= y_{\mathrm{sp},k} - \hat d_k. \label{eq:ss_out}
 \end{align}
 
-After substituting $d_s = \hat d_k$, the output equation becomes
+Stacking \eqref{eq:ss_dyn} and \eqref{eq:ss_out} gives
 \begin{equation}
-C x_s = y_{sp,k} - \hat d_k.
-\end{equation}
-
-\subsection{Stacked Exact Form}
-
-The unbounded target solve is written as
-\begin{equation}
+\underbrace{
 \begin{bmatrix}
-I - A & -B \\
+I-A & -B \\
 C & 0
-\end{bmatrix}
+\end{bmatrix}}_{M}
 \begin{bmatrix}
 x_s \\
 u_s
@@ -93,222 +179,471 @@ u_s
 =
 \begin{bmatrix}
 0 \\
-y_{sp,k} - \hat d_k
+y_{\mathrm{sp},k}-\hat d_k
 \end{bmatrix}.
+\label{eq:target_stacked}
 \end{equation}
 
-The implementation supports:
-\begin{itemize}[leftmargin=1.5em]
-\item direct exact solves when the stacked matrix is square and numerically acceptable,
-\item least-squares fallback when the system is rectangular or rank-deficient,
-\item explicit diagnostics for rank, singular values, residual norms, and conditioning.
-\end{itemize}
+The unbounded target solver in
+\texttt{Lyapunov/frozen\_output\_disturbance\_target.py} solves
+\eqref{eq:target_stacked} directly when possible and falls back to least squares
+when needed. It reports the rank of \(M\), its condition number, singular-value
+diagnostics, exact-vs-least-squares flags, residuals, and input-bound checks.
 
-\subsection{Reduced Form}
+\subsection{Reduced Representation}
 
-When $I-A$ is invertible,
+When \(I-A\) is invertible,
 \begin{equation}
-x_s = (I-A)^{-1} B u_s,
+x_s = (I-A)^{-1}Bu_s,
 \end{equation}
-which induces the reduced output map
+so the output equation can be written as
 \begin{equation}
-G u_s = y_{sp,k} - \hat d_k,
+G u_s = y_{\mathrm{sp},k}-\hat d_k,
 \qquad
-G := C (I-A)^{-1} B.
+G := C(I-A)^{-1}B.
+\label{eq:reduced_target}
 \end{equation}
+The code uses this reduced form for diagnostics and optionally for bounded
+least-squares calculations.
 
-This reduced representation is used for diagnostics and can also guide bounded least-squares solves when it is numerically attractive.
+\subsection{Bounded Target}
 
-\subsection{Bounded Variant}
-
-For bounded targets the same physics are preserved, but the steady input is constrained:
+The bounded mode keeps the same physics but enforces the input box:
 \begin{equation}
 u_{\min} \le u_s \le u_{\max}.
 \end{equation}
-
-The clean version deliberately avoids artificial anchors such as
-\[
-\|x_s - \hat x_k\|^2,\qquad
-\|x_s - x_{s,\mathrm{prev}}\|^2,\qquad
-\|u_s - u_{s,\mathrm{prev}}\|^2.
-\]
-
-Instead, the bounded solve minimizes only dynamic and output residuals:
+If the exact target is outside the box, the bounded solve minimizes a residual
+objective:
 \begin{equation}
-\min_{x_s, u_s}
-\left\|(I-A)x_s - B u_s\right\|_{Q_{\mathrm{dyn}}}^2
+\min_{x_s,u_s}
+\left\|(I-A)x_s-Bu_s\right\|_{Q_{\mathrm{dyn}}}^2
 +
-\left\|C x_s - (y_{sp,k} - \hat d_k)\right\|_{Q_y}^2
+\left\|Cx_s-(y_{\mathrm{sp},k}-\hat d_k)\right\|_{Q_y}^2
 \end{equation}
-subject to the input box constraints above.
-
-This makes the bounded target interpretable: when the exact steady target is outside the admissible input box, the solver finds the closest admissible steady-state compromise and reports the remaining residual.
+subject to the input bounds. This is the natural next target mode because the
+first unbounded run showed exact target residuals but inadmissible steady
+inputs.
 
 \section{Direct Lyapunov MPC Formulation}
 
 \subsection{Prediction Model}
 
-The direct controller freezes the disturbance within each online solve:
+Inside the MPC problem, the disturbance is frozen over the prediction horizon:
 \begin{align}
-x_{i+1|k} &= A x_{i|k} + B u_{i|k}, \\
-y_{i|k} &= C x_{i|k} + \hat d_k,
+x_{i+1|k} &= A x_{i|k}+B u_{i|k},\\
+y_{i|k} &= Cx_{i|k}+\hat d_k,\\
+x_{0|k} &= \hat x_k.
 \end{align}
-with initial condition
-\begin{equation}
-x_{0|k} = \hat x_k.
-\end{equation}
 
-The steady target $(x_s, u_s, d_s)$ is produced first and then held fixed while the MPC optimization is solved.
+The steady target \((x_s,u_s,d_s,y_s)\) is computed first and then held fixed
+while the online MPC is solved.
 
 \subsection{Objective}
 
-The implementation uses a practical tracking objective:
-\begin{equation}
+The direct controller minimizes
+\begin{align}
 J_k =
-\sum_{i=0}^{N_p-1} \|y_{i|k} - y_{k}^{\mathrm{track}}\|_Q^2
+&\sum_{i=0}^{N_p-1}
+\|y_{i|k}-y_k^{\mathrm{track}}\|_Q^2
 +
-\sum_{i=0}^{N_c-1} \|u_{i|k} - u_s\|_S^2
+\sum_{i=0}^{N_c-1}
+\|u_{i|k}-u_s\|_S^2 \nonumber\\
+&+
+\sum_{i=0}^{N_c-1}
+\|\Delta u_{i|k}\|_R^2
 +
-\sum_{i=0}^{N_c-1} \|\Delta u_{i|k}\|_R^2
-+
-\|x_{N_p|k} - x_s\|_{P_x}^2.
-\end{equation}
+\|x_{N_p|k}-x_s\|_{P_x}^2.
+\label{eq:direct_objective}
+\end{align}
 
-In the current notebook and rollout path, $y_{k}^{\mathrm{track}}$ defaults to the raw setpoint $y_{sp,k}$, while $(x_s, u_s)$ define the steady target used by the terminal and Lyapunov terms.
+In the saved run, \texttt{use\_target\_output\_for\_tracking=False}, so
+\(y_k^{\mathrm{track}}\) is the scheduled setpoint, not the admissible target
+output. The target still enters through \(u_s\), the terminal cost, terminal
+set, and Lyapunov contraction.
 
-\subsection{Input and Terminal Constraints}
+\subsection{Terminal Ingredients}
 
-The online problem enforces the standard input box constraints
+The matrix \(P_x\) and local feedback \(K_x\) are inherited from the standard
+tracking Lyapunov core. The terminal set condition is
 \begin{equation}
-u_{\min} \le u_{i|k} \le u_{\max},
+(x_{N_p|k}-x_s)^\top P_x (x_{N_p|k}-x_s)
+\le \alpha_k,
 \end{equation}
-and it optionally enforces the terminal set condition
+where \(\alpha_k\) is computed from the terminal input-admissibility logic.
+
+\subsection{Hard Lyapunov Contraction}
+
+The tracking error is
 \begin{equation}
-(x_{N_p|k} - x_s)^\top P_x (x_{N_p|k} - x_s) \le \alpha_k.
-\end{equation}
-
-The scalar $\alpha_k$ is computed from the existing terminal-input admissibility logic already present in the Lyapunov core.
-
-\subsection{Lyapunov Function and First-Step Contraction}
-
-The physical-state tracking error is
-\begin{equation}
-e_{x,k} = \hat x_k - x_s,
+e_{x,k}=\hat x_k-x_s,
 \end{equation}
 and the Lyapunov function is
 \begin{equation}
 V_k = e_{x,k}^\top P_x e_{x,k}.
 \end{equation}
-
-The direct controller enforces first-step contraction inside the MPC problem:
+Hard mode enforces the one-step contraction inequality
 \begin{equation}
-(x_{1|k} - x_s)^\top P_x (x_{1|k} - x_s)
+(x_{1|k}-x_s)^\top P_x (x_{1|k}-x_s)
 \le
 \rho V_k + \varepsilon_{\mathrm{lyap}}.
+\label{eq:hard_contraction}
 \end{equation}
 
-This is the hard mode.
+The saved run used \(\rho=0.98\) and
+\(\varepsilon_{\mathrm{lyap}}=10^{-9}\). Since the target was outside the
+admissible input box, \eqref{eq:hard_contraction} made the online problem
+infeasible for every step.
 
-\subsection{Soft Lyapunov Mode}
+\subsection{Soft Lyapunov Contraction}
 
-To avoid falling back to the old candidate-and-replacement structure, the rewrite also provides a soft mode with one nonnegative slack:
+Soft mode introduces one nonnegative slack:
 \begin{align}
-(x_{1|k} - x_s)^\top P_x (x_{1|k} - x_s)
+(x_{1|k}-x_s)^\top P_x (x_{1|k}-x_s)
 &\le
-\rho V_k + \varepsilon_{\mathrm{lyap}} + \sigma_k, \\
+\rho V_k + \varepsilon_{\mathrm{lyap}}+\sigma_k,\\
 \sigma_k &\ge 0.
 \end{align}
-
-The slack is penalized directly in the objective:
+The objective becomes
 \begin{equation}
-J_k^{\mathrm{soft}} = J_k + \lambda_\sigma \sigma_k,
+J_k^{\mathrm{soft}} = J_k + \lambda_\sigma \sigma_k.
 \end{equation}
-where $\lambda_\sigma$ is a large user-visible penalty. This preserves a single direct MPC solve even when the hard contraction inequality would be infeasible.
-
-\section{Algorithmic Procedure}
-
-At each control step $k$, the implementation executes:
-\begin{enumerate}[leftmargin=1.5em]
-\item read the current plant output and previous input,
-\item update the observer residual and current augmented estimate,
-\item freeze the disturbance estimate $d_s = \hat d_k$,
-\item solve the steady target in either unbounded or bounded mode,
-\item compute the terminal admissibility scalar $\alpha_k$,
-\item solve the direct Lyapunov MPC in hard or soft mode,
-\item apply the first move,
-\item propagate the observer and plant,
-\item log target diagnostics, solver status, Lyapunov values, contraction margins, and slack usage.
-\end{enumerate}
-
-The important difference from the retired notebook is that there is no upstream candidate controller whose solution is later replaced by another MPC solve. The single direct controller is the online policy.
+The notebook exposes \(\lambda_\sigma=10^6\). Soft mode is not a way to hide a
+bad target; it is a diagnostic and feasibility-relief mechanism that tells us
+how much contraction must be relaxed.
 
 \section{Implementation Mapping}
 
-The current repository mapping is:
+The current implementation is split cleanly:
 \begin{itemize}[leftmargin=1.5em]
-\item \texttt{Lyapunov/frozen\_output\_disturbance\_target.py}
-
-Provides the clean output-disturbance-only target APIs:
-\begin{itemize}[leftmargin=1.5em]
-\item \texttt{solve\_target\_unbounded\_output\_disturbance(...)},
-\item \texttt{solve\_target\_bounded\_output\_disturbance(...)},
-\item \texttt{solve\_output\_disturbance\_target(...)}.
+\item \texttt{DirectLyapunovMPC\_FrozenOutputDisturbance.ipynb}: experiment
+entrypoint and visible configuration.
+\item \texttt{Lyapunov/frozen\_output\_disturbance\_target.py}: unbounded and
+bounded frozen-output-disturbance target solves.
+\item \texttt{Lyapunov/direct\_lyapunov\_mpc.py}: direct Lyapunov MPC solver,
+closed-loop rollout, bundle builder, summary table, and plot export.
+\item \texttt{Lyapunov/lyapunov\_core.py}: terminal ingredients, Lyapunov
+values, and first-step contraction metrics.
+\item \texttt{Plotting\_fns/mpc\_plot\_fns.py}: shared CSTR input/output plots
+used by the direct exporter.
 \end{itemize}
 
-\item \texttt{Lyapunov/direct\_lyapunov\_mpc.py}
+\section{Saved Run: April 23, 2026}
 
-Provides:
-\begin{itemize}[leftmargin=1.5em]
-\item the direct MPC solver class built on top of the existing Lyapunov core,
-\item hard and soft first-step contraction modes,
-\item the closed-loop rollout function,
-\item debug-bundle, summary-table, plotting, and artifact-export helpers.
-\end{itemize}
+The saved artifact used for this report is:
+\begin{quote}
+\texttt{Data/debug\_exports/direct\_lyapunov\_mpc\_unbounded\_hard/20260423\_181204}
+\end{quote}
+The report copies selected plots into:
+\begin{quote}
+\texttt{report/figures/direct\_lyapunov\_mpc\_frozen\_output\_disturbance/}
+\end{quote}
+so the PDF remains self-contained.
 
-\item \texttt{DirectLyapunovMPC\_FrozenOutputDisturbance.ipynb}
+\subsection{Configuration}
 
-This is the experiment entrypoint for configuring and running the method.
+\begin{table}[H]
+\centering
+\caption{Notebook configuration for the saved direct run.}
+\begin{tabular}{ll}
+\toprule
+Quantity & Value \\
+\midrule
+Target mode & \texttt{unbounded} \\
+Lyapunov mode & \texttt{hard} \\
+Prediction horizon \(N_p\) & 9 \\
+Control horizon \(N_c\) & 3 \\
+Contraction factor \(\rho\) & 0.98 \\
+Lyapunov tolerance \(\varepsilon_{\mathrm{lyap}}\) & \(10^{-9}\) \\
+Soft slack penalty \(\lambda_\sigma\) & \(10^6\) \\
+Tests & 2 \\
+Setpoint segment length & 400 \\
+Total logged steps & 1600 \\
+Terminal set & enabled \\
+Tracking target policy & raw setpoint, not \(y_s\) \\
+Disturbance scenario & \(q_i=0.95q_i^0\), \(q_s=1.05q_s^0\), \(hA=0.92hA^0\) \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\item \texttt{Simulation/run\_mpc\_first\_step\_contraction.py}
+\subsection{Summary Metrics}
 
-The transitional frozen-target mode plumbing has been removed from this older runner so that the new direct path is the only frozen-output-disturbance implementation.
-\end{itemize}
+\begin{table}[H]
+\centering
+\caption{Saved-run summary. The target problem succeeds, but the hard direct MPC solve fails at every step.}
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+Mean reward & \(-40.1350\) \\
+Reward sum & \(-64216.0708\) \\
+Target success rate & \(1.0\) \\
+Solver success rate & \(0.0\) \\
+Hard contraction success rate & \(0.0\) \\
+Relaxed contraction success rate & \(0.0\) \\
+Maximum target residual norm & \(4.58\times 10^{-15}\) \\
+Maximum target matrix condition number & \(1205.83\) \\
+Bounded target solution used & \(0\) steps \\
+Exact target within input bounds & \(0/1600\) steps \\
+Solver method count & \texttt{solver\_fail\_hold\_prev}: 1600 \\
+Solver status count & \texttt{infeasible}: 1600 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\section{Diagnostics and Interpretation}
+\subsection{Interpretation}
 
-The new workflow is designed to support two orthogonal comparisons:
+The target solver is doing what it was asked to do. It finds an exact
+unbounded steady target for every step. The problem is that the target is not
+admissible for the constrained MPC. The step table records
+\texttt{target\_exact\_within\_bounds=False} for all 1600 steps. For half the
+steps both input-target components are beyond the upper side of the box; for
+the other half both are beyond the lower side. In this situation the Lyapunov
+center is physically unreachable under the online input constraints, so a hard
+one-step contraction to that center is too strong.
+
+The correct conclusion is not that direct Lyapunov MPC should be discarded. The
+correct conclusion is that the next direct experiment must make the target
+admissible or make contraction diagnostic rather than absolute:
 \begin{enumerate}[leftmargin=1.5em]
-\item \textbf{Unbounded vs bounded target mode.}
-
-This comparison isolates whether the steady target is naturally admissible or must be projected into the input box. The key diagnostics are residual norms, active bound indicators, and the fraction of steps that require the bounded fallback.
-
-\item \textbf{Hard vs soft Lyapunov mode.}
-
-This comparison isolates feasibility pressure in the direct controller. The key diagnostics are the contraction margin, the fraction of steps satisfying the hard inequality, and the size and frequency of the soft slack.
+\item run \texttt{target\_mode="bounded"} with \texttt{lyapunov\_mode="hard"},
+\item run \texttt{target\_mode="bounded"} with \texttt{lyapunov\_mode="soft"},
+\item inspect slack, residuals, and active input bounds,
+\item only then decide whether a minimal input-anchor or previous-target
+regularizer should be reintroduced.
 \end{enumerate}
 
-The direct bundle therefore records:
+\subsection{Figures}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/direct_lyapunov_mpc_frozen_output_disturbance/fig_mpc_outputs_full.png}
+\caption{Shared CSTR output plot from the saved direct run. Because every online MPC solve is infeasible, this figure mostly reflects the open-loop/held-input response under the disturbance and setpoint schedule.}
+\label{fig:direct_outputs}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/direct_lyapunov_mpc_frozen_output_disturbance/fig_mpc_inputs_full.png}
+\caption{Shared CSTR input plot. The run holds the previous input because all direct hard MPC solves return infeasible status.}
+\label{fig:direct_inputs}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/direct_lyapunov_mpc_frozen_output_disturbance/03_state_target_error.png}
+\caption{State-target error diagnostics. The large and persistent errors are consistent with an unbounded steady target that is outside the admissible input box.}
+\label{fig:state_target_error}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/direct_lyapunov_mpc_frozen_output_disturbance/04_lyapunov_diagnostics.png}
+\caption{Lyapunov diagnostics. The contraction traces are not populated with successful values because the hard MPC problem is infeasible before an accepted trajectory is obtained.}
+\label{fig:lyapunov_diagnostics}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/direct_lyapunov_mpc_frozen_output_disturbance/05_target_diagnostics.png}
+\caption{Target diagnostics. The target residual is essentially zero, while the target conditioning and disturbance traces show that the target calculator is numerically well-defined but not necessarily admissible.}
+\label{fig:target_diagnostics}
+\end{figure}
+
+\section{Comparison With the Stronger Ablation Path}
+
+The best current behavior has come from the safety-filter target-selector
+ablation workflow, not from this first direct run. That is not surprising. The
+ablation selector includes terms that act like practical guardrails:
 \begin{itemize}[leftmargin=1.5em]
-\item steady targets $(x_s, u_s, d_s, y_s)$,
-\item target rank and conditioning diagnostics,
-\item exact-vs-least-squares flags,
-\item Lyapunov values $V_k$, $V_{1|k}$, and the contraction bound,
-\item hard and relaxed contraction satisfaction flags,
-\item soft slack magnitude when applicable,
-\item stable step tables, summaries, and timestamped plot directories.
+\item \textbf{Output target term}: keeps \(r_s\) or \(y_s\) near the scheduled
+setpoint.
+\item \textbf{Applied-input anchor}: discourages a target \(u_s\) that is far
+from the current operating region.
+\item \textbf{Previous-input smoothing}: suppresses target-input jumps.
+\item \textbf{Previous-state smoothing}: suppresses target-state jumps.
+\item \textbf{Weak \(\hat x_k\) anchor}: lets the target drift toward the
+current estimated operating point without chasing every transient.
 \end{itemize}
+
+The direct path removes those terms so that the target is a pure frozen
+output-disturbance steady solve. The first run shows the cost of that
+simplification: exact output matching can choose a steady input outside the
+admissible box. In other words, the ablation path's ``too many objective terms''
+were not just decorative. At least one of them, especially the applied-input
+anchor or the bounded/admissible-target logic, was helping keep the Lyapunov
+center usable.
+
+The useful research direction is therefore not to copy the whole five-term
+objective into the direct path. A cleaner sequence is:
+\begin{enumerate}[leftmargin=1.5em]
+\item first enforce admissibility with the bounded target mode,
+\item then use soft Lyapunov mode to measure contraction pressure,
+\item then add at most one or two target regularizers if the bounded target is
+admissible but still too discontinuous or too far from the operating region.
+\end{enumerate}
+
+This would keep the direct controller reportable while preserving the empirical
+lesson from the ablation notebook.
+
+\section{Literature Context}
+
+\subsection{Offset-Free MPC and Disturbance Models}
+
+The output-disturbance augmentation used here is aligned with the offset-free
+MPC literature. Muske and Badgwell describe the use of step disturbance models
+and a steady-state target calculation to remove estimated disturbance effects in
+linear MPC \cite{muske2002}. Pannocchia and Rawlings show that integrating
+disturbances can deliver zero steady-state offset under general conditions and
+that the disturbance dimension needed for offset-free behavior is tied to the
+number of measured variables, not simply to the number of controlled variables
+\cite{pannocchia2003}.
+
+The present controller uses the simple output disturbance model
+\[
+y=Cx+d,\qquad d^+=d,
+\]
+and freezes \(d_s=\hat d_k\) inside the target calculation. That is a deliberate
+research simplification. It lets the run answer whether the direct Lyapunov MPC
+can work with the cleanest output-offset target before considering richer
+disturbance models.
+
+\subsection{Constrained MPC Stability}
+
+The terminal cost, terminal set, and receding-horizon structure follow the
+standard stability logic of constrained MPC. Mayne, Rawlings, Rao, and Scokaert
+summarize how terminal penalties, terminal constraints, and local stabilizing
+controllers provide stability and feasibility structure for constrained MPC
+\cite{mayne2000}. In this project, those ingredients are implemented through
+\texttt{Lyapunov/lyapunov\_core.py}.
+
+\subsection{Tracking MPC and Artificial Steady States}
+
+The first direct run also points to a tracking-MPC issue: exact target matching
+is not enough when the target is inadmissible. Limon, Alvarado, Alamo, and
+Camacho propose tracking MPC for constrained linear systems with artificial
+steady states and inputs; if the requested target is not admissible, the
+controller can steer toward the closest admissible steady state \cite{limon2008}.
+That idea is close in spirit to the next step for this repository: use bounded
+target mode first, then consider whether a small artificial-reference penalty is
+needed.
+
+\subsection{Lyapunov MPC for Process Systems}
+
+Lyapunov-based MPC has a long process-control motivation because chemical
+plants combine nonlinear dynamics, input limits, state constraints, and
+disturbances. Mhaskar, El-Farra, and Christofides develop Lyapunov-based
+predictive control for nonlinear systems with state and input constraints,
+including hard and soft constraint interpretations and chemical process examples
+\cite{mhaskar2006}. The current direct path is simpler and linearized, but it
+uses the same conceptual move: impose a Lyapunov decrease condition inside the
+predictive controller.
+
+\subsection{Predictive Safety Filters}
+
+The older repository path is closer to predictive safety filtering: an upstream
+controller proposes an input and a filter modifies it only if needed.
+Wabersich and Zeilinger formalize predictive safety filters for learning-based
+control, using MPC-style backup trajectories to ensure constraint satisfaction
+for systems controlled by otherwise unconstrained learning policies
+\cite{wabersich2021}. That literature supports the existing safety-filter
+architecture. The direct path in this report is different: it is not a filter
+around another policy, but a standalone Lyapunov MPC controller.
+
+\section{Recommended Next Stage}
+
+The next stage should be a four-case grid using the notebook's existing
+\texttt{comparison\_modes} list:
+\begin{align}
+&(\texttt{unbounded},\texttt{hard}),\quad
+(\texttt{bounded},\texttt{hard}),\\
+&(\texttt{unbounded},\texttt{soft}),\quad
+(\texttt{bounded},\texttt{soft}).
+\end{align}
+
+The main success criteria should be:
+\begin{itemize}[leftmargin=1.5em]
+\item solver success rate,
+\item target success rate,
+\item exact and bounded target residuals,
+\item active input-bound counts,
+\item hard contraction rate,
+\item soft slack mean, maximum, and active-step count,
+\item output RMSE in physical units,
+\item whether the controller uses target output or raw setpoint as the stage
+tracking target.
+\end{itemize}
+
+The preferred next run is:
+\begin{quote}
+\texttt{target\_mode="bounded"}, \texttt{lyapunov\_mode="soft"}
+\end{quote}
+with the same horizons and disturbance scenario. This case should answer the
+most important immediate question: after target admissibility is enforced, how
+much Lyapunov slack is required to keep the problem feasible?
+
+If bounded-soft succeeds but has large or frequent slack, the next tuning knobs
+should be:
+\begin{enumerate}[leftmargin=1.5em]
+\item relax \(\rho\) slightly, for example from \(0.98\) toward \(0.995\),
+\item increase horizon or reduce terminal aggressiveness,
+\item test \texttt{use\_target\_output\_for\_tracking=True},
+\item add only a minimal target regularizer, preferably an applied-input anchor
+or previous-target smoothing, rather than restoring all five ablation terms.
+\end{enumerate}
 
 \section{Conclusion}
 
-This rewrite establishes a cleaner baseline for the polymer CSTR Lyapunov experiments:
-\begin{itemize}[leftmargin=1.5em]
-\item frozen output-disturbance target generation with no extra target regularizers,
-\item a single direct Lyapunov MPC solve at every time step,
-\item explicit hard and soft contraction variants,
-\item notebook-level switching between bounded/unbounded targets and hard/soft Lyapunov modes,
-\item diagnostics and exports aligned with later comparison studies.
-\end{itemize}
+The direct frozen-output-disturbance Lyapunov MPC path is the right structure
+for a clean mathematical report: one disturbance model, one target calculation,
+one Lyapunov-constrained controller, and one debug/export schema. The first run
+does not yet demonstrate closed-loop control performance, but it does clearly
+identify the next technical bottleneck. The unbounded target calculation is
+exact but inadmissible, and the hard Lyapunov contraction makes the online MPC
+infeasible at every step.
 
-This should be the default path for future frozen-output-disturbance Lyapunov experiments and the reference implementation for subsequent tuning or analysis work.
+The next state should therefore be a bounded-target and soft-contraction study.
+That will tell us whether the direct architecture can become competitive with
+the stronger safety-filter ablation path without inheriting all of its target
+selector objective complexity.
+
+\begin{thebibliography}{9}
+
+\bibitem{mayne2000}
+D. Q. Mayne, J. B. Rawlings, C. V. Rao, and P. O. M. Scokaert.
+\newblock Constrained model predictive control: Stability and optimality.
+\newblock \emph{Automatica}, 36(6):789--814, 2000.
+\newblock \href{https://doi.org/10.1016/S0005-1098(99)00214-9}{doi:10.1016/S0005-1098(99)00214-9}.
+
+\bibitem{muske2002}
+K. R. Muske and T. A. Badgwell.
+\newblock Disturbance modeling for offset-free linear model predictive control.
+\newblock \emph{Journal of Process Control}, 12(5):617--632, 2002.
+\newblock \href{https://doi.org/10.1016/S0959-1524(01)00051-8}{doi:10.1016/S0959-1524(01)00051-8}.
+
+\bibitem{pannocchia2003}
+G. Pannocchia and J. B. Rawlings.
+\newblock Disturbance models for offset-free model-predictive control.
+\newblock \emph{AIChE Journal}, 49(2):426--437, 2003.
+\newblock \href{https://doi.org/10.1002/aic.690490213}{doi:10.1002/aic.690490213}.
+
+\bibitem{limon2008}
+D. Limon, I. Alvarado, T. Alamo, and E. F. Camacho.
+\newblock MPC for tracking piecewise constant references for constrained linear systems.
+\newblock \emph{Automatica}, 44(9):2382--2387, 2008.
+\newblock \href{https://doi.org/10.1016/j.automatica.2008.01.023}{doi:10.1016/j.automatica.2008.01.023}.
+
+\bibitem{mhaskar2006}
+P. Mhaskar, N. H. El-Farra, and P. D. Christofides.
+\newblock Stabilization of nonlinear systems with state and control constraints using Lyapunov-based predictive control.
+\newblock \emph{Systems \& Control Letters}, 55(8):650--659, 2006.
+\newblock \href{https://doi.org/10.1016/j.sysconle.2005.09.014}{doi:10.1016/j.sysconle.2005.09.014}.
+
+\bibitem{wabersich2021}
+K. P. Wabersich and M. N. Zeilinger.
+\newblock A predictive safety filter for learning-based control of constrained nonlinear dynamical systems.
+\newblock \emph{Automatica}, 129:109597, 2021.
+\newblock \href{https://doi.org/10.1016/j.automatica.2021.109597}{doi:10.1016/j.automatica.2021.109597}.
+
+\end{thebibliography}
 
 \end{document}

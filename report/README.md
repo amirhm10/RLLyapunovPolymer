@@ -1,8 +1,10 @@
 # Report Directory
 
 ## Canonical Current Documents
+- `direct_lyapunov_mpc_frozen_output_disturbance_run_report.md`
+  Browsable report for the direct frozen-output-disturbance Lyapunov MPC notebook, including the April 23, 2026 run interpretation, copied figures, ablation comparison, and literature context.
 - `direct_lyapunov_mpc_frozen_output_disturbance.tex`
-  Technical note for the direct frozen-output-disturbance Lyapunov MPC rewrite.
+  LaTeX source for the direct frozen-output-disturbance Lyapunov MPC report.
 - `refined_step_a_selector_method.tex`
   Main paper-style description of the current selector implementation.
 - `refined_step_a_selector_parameters.md`
