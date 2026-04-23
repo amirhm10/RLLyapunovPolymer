@@ -244,26 +244,24 @@ while the online MPC is solved.
 
 \subsection{Objective}
 
-The direct controller minimizes
+The direct controller now uses the normal output-tracking MPC objective:
 \begin{align}
 J_k =
 &\sum_{i=0}^{N_p-1}
 \|y_{i|k}-y_k^{\mathrm{track}}\|_Q^2
-+
-\sum_{i=0}^{N_c-1}
-\|u_{i|k}-u_s\|_S^2 \nonumber\\
+\nonumber\\
 &+
 \sum_{i=0}^{N_c-1}
-\|\Delta u_{i|k}\|_R^2
-+
-\|x_{N_p|k}-x_s\|_{P_x}^2.
+\|\Delta u_{i|k}\|_R^2.
 \label{eq:direct_objective}
 \end{align}
 
-In the saved run, \texttt{use\_target\_output\_for\_tracking=False}, so
-\(y_k^{\mathrm{track}}\) is the scheduled setpoint, not the admissible target
-output. The target still enters through \(u_s\), the terminal cost, terminal
-set, and Lyapunov contraction.
+With the default setting \texttt{use\_target\_output\_for\_tracking=False},
+\(y_k^{\mathrm{track}}\) is the scheduled setpoint \(y_{\mathrm{sp},k}\), not
+the admissible target output \(y_s\). The steady target variables \(x_s\) and
+\(u_s\) are not objective anchors. They remain in the direct method only because
+the Lyapunov contraction and terminal admissibility checks need a steady target
+center.
 
 \subsection{Terminal Ingredients}
 
@@ -360,7 +358,10 @@ Case & Target mode & Lyapunov mode \\
 The default policy remains:
 \begin{align}
 \texttt{use\_target\_output\_for\_tracking} &= \texttt{False},\\
-\texttt{use\_target\_on\_solver\_fail} &= \texttt{False}.
+\texttt{use\_target\_on\_solver\_fail} &= \texttt{False},\\
+\texttt{objective\_steady\_input\_cost} &= \texttt{False},\\
+\texttt{objective\_terminal\_cost} &= \texttt{False},\\
+\texttt{terminal\_cost\_scale} &= 0.
 \end{align}
 Thus the stage objective tracks the scheduled setpoint, while solver failures
 hold the previous input and are logged through the method and solver-status
@@ -559,10 +560,11 @@ disturbance models.
 
 \subsection{Constrained MPC Stability}
 
-The terminal cost, terminal set, and receding-horizon structure follow the
-standard stability logic of constrained MPC. Mayne, Rawlings, Rao, and Scokaert
-summarize how terminal penalties, terminal constraints, and local stabilizing
-controllers provide stability and feasibility structure for constrained MPC
+The terminal admissibility constraint, Lyapunov function, and receding-horizon
+structure follow the standard stability logic of constrained MPC. Mayne,
+Rawlings, Rao, and Scokaert summarize how terminal penalties, terminal
+constraints, and local stabilizing controllers provide stability and feasibility
+structure for constrained MPC
 \cite{mayne2000}. In this project, those ingredients are implemented through
 \texttt{Lyapunov/lyapunov\_core.py}.
 

@@ -114,17 +114,19 @@ y_{i|k}=Cx_{i|k}+\hat{d}_k,\qquad
 x_{0|k}=\hat{x}_k .
 ```
 
-The tracking objective is
+The direct MPC objective is now the normal output-tracking MPC objective:
 
 ```math
 J_k =
 \sum_{i=0}^{N_p-1}\|y_{i|k}-y_k^{\mathrm{track}}\|_Q^2
-+\sum_{i=0}^{N_c-1}\|u_{i|k}-u_s\|_S^2
-+\sum_{i=0}^{N_c-1}\|\Delta u_{i|k}\|_R^2
-+\|x_{N_p|k}-x_s\|_{P_x}^2 .
++\sum_{i=0}^{N_c-1}\|\Delta u_{i|k}\|_R^2 .
 ```
 
-The saved run used the raw scheduled setpoint as `y_track`, not the target output `y_s`.
+With the default notebook setting `use_target_output_for_tracking=False`,
+`y_target` in the solver is the scheduled setpoint `y_sp`, not the steady target
+output `y_s`. The variables `x_s` and `u_s` are therefore not objective anchors.
+They remain in the direct method only because the Lyapunov contraction and
+terminal admissibility checks need a steady target center.
 
 The Lyapunov function is
 
@@ -176,6 +178,9 @@ All four cases share the same plant, disturbance schedule, setpoint schedule, ho
 
 - `use_target_output_for_tracking=False`
 - `use_target_on_solver_fail=False`
+- `objective_steady_input_cost=False`
+- `objective_terminal_cost=False`
+- `terminal_cost_scale=0.0`
 
 Therefore solver failures hold the previous input and are logged through the `method_counts` and `solver_status_counts` fields. The comparison artifacts saved at the timestamped study root are:
 
@@ -284,7 +289,7 @@ The most likely minimal regularizers, if needed, are the applied-input anchor an
 
 Offset-free MPC commonly uses integrating disturbance models plus a steady-state target calculation. Muske and Badgwell describe disturbance modeling and target calculation for offset-free linear MPC, while Pannocchia and Rawlings give general zero-offset conditions for disturbance-augmented MPC.
 
-The direct path's terminal set, terminal cost, and receding-horizon structure follow the standard constrained MPC stability logic summarized by Mayne, Rawlings, Rao, and Scokaert.
+The direct path's terminal admissibility constraint, Lyapunov function, and receding-horizon structure follow the standard constrained MPC stability logic summarized by Mayne, Rawlings, Rao, and Scokaert.
 
 The prior run's failure mode is close to a tracking-MPC target admissibility issue. Limon, Alvarado, Alamo, and Camacho show why constrained tracking MPC benefits from artificial steady states and from steering toward the closest admissible target when the requested one cannot be reached.
 
@@ -320,14 +325,13 @@ because it answers whether target admissibility plus one Lyapunov slack is enoug
 - hard contraction rate,
 - soft slack mean, max, and active-step count,
 - output RMSE in physical units,
-- whether `use_target_output_for_tracking=True` improves feasibility or tracking.
+- confirmation that the stage target is the scheduled setpoint.
 
 If bounded-soft succeeds but needs large slack, tune in this order:
 
 1. relax `rho_lyap` slightly, for example from `0.98` toward `0.995`,
 2. increase horizon or reduce terminal aggressiveness,
-3. test `use_target_output_for_tracking=True`,
-4. add a minimal applied-input anchor or previous-target smoother.
+3. only then consider whether any target regularizer is needed outside the MPC objective.
 
 ## References
 
