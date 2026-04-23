@@ -22,17 +22,20 @@ This report documents the direct Lyapunov MPC experiment in
 \texttt{DirectLyapunovMPC\_FrozenOutputDisturbance.ipynb}. The method replaces
 the earlier candidate-and-filter workflow with one controller solve at every
 time step: freeze the output disturbance estimate, compute a steady target, and
-solve a Lyapunov-constrained tracking MPC problem around that target. The report
-also records the first saved run from April 23, 2026, compares the idea with the
+solve a Lyapunov-constrained tracking MPC problem around that target. The
+notebook has now been rewritten as a four-scenario study runner covering
+\texttt{unbounded\_hard}, \texttt{bounded\_hard},
+\texttt{unbounded\_soft}, and \texttt{bounded\_soft}. The report also records
+the earlier diagnostic run from April 23, 2026, compares the idea with the
 stronger but more heavily regularized
 \texttt{LyapunovSafetyFilterMPCTargetSelectorTermAblation.ipynb} path, and
 places the current design against offset-free MPC, tracking MPC, Lyapunov MPC,
-and predictive safety-filter literature. The first run is diagnostically useful:
+and predictive safety-filter literature. The prior run is diagnostically useful:
 the frozen target calculation succeeds exactly, but the \texttt{unbounded} target
 combined with \texttt{hard} Lyapunov contraction makes the direct MPC infeasible
 at all 1600 steps. The next experimental stage should therefore test bounded
-targets and soft Lyapunov contraction before adding any of the richer selector
-regularization terms back into the direct path.
+targets and soft Lyapunov contraction in the four-scenario comparison before
+adding any of the richer selector regularization terms back into the direct path.
 \end{abstract}
 
 \section{Executive Summary}
@@ -62,9 +65,10 @@ Lyapunov contraction constraint,
 diagnostics.
 \end{enumerate}
 
-The first saved run used \texttt{target\_mode="unbounded"} and
-\texttt{lyapunov\_mode="hard"}. It showed a sharp separation between the two
-pieces of the method:
+The notebook now runs all four target/Lyapunov combinations by default and saves
+per-case bundles plus a study-level comparison table. The earlier saved run used
+\texttt{target\_mode="unbounded"} and \texttt{lyapunov\_mode="hard"}. It showed
+a sharp separation between the two pieces of the method:
 \begin{itemize}[leftmargin=1.5em]
 \item the target solve is numerically successful, with maximum total residual
 \(4.58\times 10^{-15}\),
@@ -316,18 +320,64 @@ how much contraction must be relaxed.
 The current implementation is split cleanly:
 \begin{itemize}[leftmargin=1.5em]
 \item \texttt{DirectLyapunovMPC\_FrozenOutputDisturbance.ipynb}: experiment
-entrypoint and visible configuration.
+entrypoint, visible configuration, four-scenario loop, report-figure copy, and
+artifact preview.
 \item \texttt{Lyapunov/frozen\_output\_disturbance\_target.py}: unbounded and
 bounded frozen-output-disturbance target solves.
 \item \texttt{Lyapunov/direct\_lyapunov\_mpc.py}: direct Lyapunov MPC solver,
-closed-loop rollout, bundle builder, summary table, and plot export.
+closed-loop rollout, bundle builder, per-case export, comparison records,
+comparison tables, and comparison plots.
 \item \texttt{Lyapunov/lyapunov\_core.py}: terminal ingredients, Lyapunov
 values, and first-step contraction metrics.
 \item \texttt{Plotting\_fns/mpc\_plot\_fns.py}: shared CSTR input/output plots
 used by the direct exporter.
 \end{itemize}
 
-\section{Saved Run: April 23, 2026}
+\section{Four-Scenario Study Workflow}
+
+The current notebook runs the fixed scenario matrix shown in
+Table~\ref{tab:four_scenario_matrix}. All four cases share the same plant,
+disturbance schedule, setpoint schedule, horizons, weights, terminal policy, and
+solver-failure policy. Only \texttt{target\_mode} and \texttt{lyapunov\_mode}
+change.
+
+\begin{table}[H]
+\centering
+\caption{Direct Lyapunov four-scenario matrix.}
+\label{tab:four_scenario_matrix}
+\begin{tabular}{lll}
+\toprule
+Case & Target mode & Lyapunov mode \\
+\midrule
+\texttt{unbounded\_hard} & \texttt{unbounded} & \texttt{hard} \\
+\texttt{bounded\_hard} & \texttt{bounded} & \texttt{hard} \\
+\texttt{unbounded\_soft} & \texttt{unbounded} & \texttt{soft} \\
+\texttt{bounded\_soft} & \texttt{bounded} & \texttt{soft} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The default policy remains:
+\begin{align}
+\texttt{use\_target\_output\_for\_tracking} &= \texttt{False},\\
+\texttt{use\_target\_on\_solver\_fail} &= \texttt{False}.
+\end{align}
+Thus the stage objective tracks the scheduled setpoint, while solver failures
+hold the previous input and are logged through the method and solver-status
+counts.
+
+The timestamped study root stores:
+\begin{itemize}[leftmargin=1.5em]
+\item per-case \texttt{bundle.pkl}, \texttt{summary.json}, \texttt{summary.csv},
+\texttt{step\_table.csv}, \texttt{step\_table.pkl}, \texttt{arrays.npz},
+\texttt{plots/}, and \texttt{paper\_plots/},
+\item study-level \texttt{comparison\_table.csv},
+\texttt{comparison\_table.pkl}, and \texttt{comparison\_summary.json},
+\item comparison plots for reward, output RMSE, solver/contraction rates, slack,
+target diagnostics, output overlays, and input overlays.
+\end{itemize}
+
+\section{Prior Diagnostic Run: April 23, 2026}
 
 The saved artifact used for this report is:
 \begin{quote}
@@ -466,7 +516,7 @@ current estimated operating point without chasing every transient.
 \end{itemize}
 
 The direct path removes those terms so that the target is a pure frozen
-output-disturbance steady solve. The first run shows the cost of that
+output-disturbance steady solve. The prior run shows the cost of that
 simplification: exact output matching can choose a steady input outside the
 admissible box. In other words, the ablation path's ``too many objective terms''
 were not just decorative. At least one of them, especially the applied-input
@@ -551,8 +601,8 @@ around another policy, but a standalone Lyapunov MPC controller.
 
 \section{Recommended Next Stage}
 
-The next stage should be a four-case grid using the notebook's existing
-\texttt{comparison\_modes} list:
+The next stage is to execute the rewritten notebook in the scientific Python
+environment and inspect the saved four-case grid:
 \begin{align}
 &(\texttt{unbounded},\texttt{hard}),\quad
 (\texttt{bounded},\texttt{hard}),\\
@@ -573,13 +623,13 @@ The main success criteria should be:
 tracking target.
 \end{itemize}
 
-The preferred next run is:
+The case to inspect first is:
 \begin{quote}
 \texttt{target\_mode="bounded"}, \texttt{lyapunov\_mode="soft"}
 \end{quote}
-with the same horizons and disturbance scenario. This case should answer the
-most important immediate question: after target admissibility is enforced, how
-much Lyapunov slack is required to keep the problem feasible?
+with the same horizons and disturbance scenario. This case answers the most
+important immediate question: after target admissibility is enforced, how much
+Lyapunov slack is required to keep the problem feasible?
 
 If bounded-soft succeeds but has large or frequent slack, the next tuning knobs
 should be:
@@ -595,7 +645,7 @@ or previous-target smoothing, rather than restoring all five ablation terms.
 
 The direct frozen-output-disturbance Lyapunov MPC path is the right structure
 for a clean mathematical report: one disturbance model, one target calculation,
-one Lyapunov-constrained controller, and one debug/export schema. The first run
+one Lyapunov-constrained controller, and one debug/export schema. The prior run
 does not yet demonstrate closed-loop control performance, but it does clearly
 identify the next technical bottleneck. The unbounded target calculation is
 exact but inadmissible, and the hard Lyapunov contraction makes the online MPC

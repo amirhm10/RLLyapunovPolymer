@@ -25,6 +25,13 @@ try:
 except Exception:
     HAS_MATPLOTLIB = False
 
+try:
+    import pandas as pd
+
+    HAS_PANDAS = True
+except Exception:
+    HAS_PANDAS = False
+
 from Plotting_fns.mpc_plot_fns import plot_mpc_results_cstr
 from Lyapunov.frozen_output_disturbance_target import solve_output_disturbance_target
 from Lyapunov.lyapunov_core import (
@@ -1049,6 +1056,371 @@ def summarize_direct_lyapunov_bundle(bundle):
     return summary
 
 
+def _safe_nanmean(values: Any) -> Optional[float]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.mean(finite))
+
+
+def _safe_nanmax(values: Any) -> Optional[float]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.max(finite))
+
+
+def _physical_setpoint_steps(bundle) -> np.ndarray:
+    y_sp = np.asarray(bundle.get("y_sp_steps", bundle.get("y_sp")), dtype=float)
+    if y_sp.ndim == 1:
+        y_sp = y_sp.reshape(1, -1)
+
+    steady_states = bundle.get("steady_states")
+    data_min = bundle.get("data_min")
+    data_max = bundle.get("data_max")
+    if steady_states is None or data_min is None or data_max is None:
+        return y_sp.copy()
+
+    n_u = int(np.asarray(bundle["u_applied_phys"]).shape[1])
+    y_ss_scaled = apply_min_max(
+        np.asarray(steady_states["y_ss"], dtype=float).reshape(-1),
+        np.asarray(data_min, dtype=float)[n_u:],
+        np.asarray(data_max, dtype=float)[n_u:],
+    )
+    return reverse_min_max(
+        y_sp + y_ss_scaled.reshape(1, -1),
+        np.asarray(data_min, dtype=float)[n_u:],
+        np.asarray(data_max, dtype=float)[n_u:],
+    )
+
+
+def direct_output_rmse_post_step(bundle) -> np.ndarray:
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + y_sp_phys.shape[0], :]
+    n_rows = min(y_post.shape[0], y_sp_phys.shape[0])
+    n_cols = min(y_post.shape[1], y_sp_phys.shape[1])
+    if n_rows <= 0 or n_cols <= 0:
+        return np.array([], dtype=float)
+    err = y_post[:n_rows, :n_cols] - y_sp_phys[:n_rows, :n_cols]
+    return np.sqrt(np.mean(err**2, axis=0))
+
+
+def _count_bool_step_values(step_info_storage, key: str, expected: bool) -> int:
+    count = 0
+    for info in step_info_storage:
+        value = info.get(key)
+        if value is None:
+            continue
+        if bool(value) is bool(expected):
+            count += 1
+    return int(count)
+
+
+def _max_mask_count(step_info_storage, key: str) -> Optional[float]:
+    counts = []
+    for info in step_info_storage:
+        value = info.get(key)
+        if value is None:
+            continue
+        counts.append(float(np.sum(np.asarray(value, dtype=bool))))
+    if not counts:
+        return None
+    return float(np.max(counts))
+
+
+def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
+    summary = dict(bundle.get("summary", {}))
+    step_info_storage = list(bundle.get("direct_info_storage", []))
+    rmse = direct_output_rmse_post_step(bundle)
+
+    record = {
+        "case_name": str(case_name),
+        "target_mode": summary.get("target_mode", bundle.get("target_mode")),
+        "lyapunov_mode": summary.get("lyapunov_mode", bundle.get("lyapunov_mode")),
+        "n_steps": summary.get("n_steps", bundle.get("nFE")),
+        "reward_mean": summary.get("reward_mean"),
+        "reward_sum": summary.get("reward_sum"),
+        "solver_success_rate": summary.get("solver_success_rate"),
+        "target_success_rate": summary.get("target_success_rate"),
+        "hard_contraction_rate": summary.get("hard_contraction_rate"),
+        "relaxed_contraction_rate": summary.get("relaxed_contraction_rate"),
+        "slack_lyap_mean": summary.get("slack_lyap_mean"),
+        "slack_lyap_max": summary.get("slack_lyap_max"),
+        "slack_lyap_active_steps": summary.get("slack_lyap_active_steps"),
+        "target_residual_total_norm_max": summary.get("target_residual_total_norm_max"),
+        "target_cond_M_max": summary.get("target_cond_M_max"),
+        "bounded_solution_used_steps": summary.get("bounded_solution_used_steps"),
+        "bounded_active_lower_count_max": summary.get("bounded_active_lower_count_max"),
+        "bounded_active_upper_count_max": summary.get("bounded_active_upper_count_max"),
+        "exact_target_within_bounds_steps": _count_bool_step_values(
+            step_info_storage, "target_exact_within_bounds", True
+        ),
+        "exact_target_out_of_bounds_steps": _count_bool_step_values(
+            step_info_storage, "target_exact_within_bounds", False
+        ),
+        "exact_active_lower_count_max": _max_mask_count(
+            step_info_storage, "target_exact_active_lower_mask"
+        ),
+        "exact_active_upper_count_max": _max_mask_count(
+            step_info_storage, "target_exact_active_upper_mask"
+        ),
+        "state_target_error_inf_mean": _safe_nanmean(bundle.get("state_target_error_inf", [])),
+        "state_target_error_inf_max": _safe_nanmax(bundle.get("state_target_error_inf", [])),
+        "disturbance_target_error_inf_mean": _safe_nanmean(
+            bundle.get("disturbance_target_error_inf", [])
+        ),
+        "disturbance_target_error_inf_max": _safe_nanmax(
+            bundle.get("disturbance_target_error_inf", [])
+        ),
+        "method_counts": json.dumps(_jsonable(summary.get("method_counts", {}))),
+        "solver_status_counts": json.dumps(_jsonable(summary.get("solver_status_counts", {}))),
+        "target_stage_counts": json.dumps(_jsonable(summary.get("target_stage_counts", {}))),
+        "debug_dir": None if debug_dir is None else str(debug_dir),
+    }
+    for idx, value in enumerate(rmse):
+        record[f"output{idx}_rmse"] = float(value)
+    record["output_rmse_mean"] = _safe_nanmean(rmse)
+    return record
+
+
+def _comparison_plot_path(output_dir: str, filename: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, filename)
+
+
+def _record_series(records, key: str) -> np.ndarray:
+    out = []
+    for record in records:
+        value = record.get(key)
+        if value is None:
+            out.append(np.nan)
+        else:
+            try:
+                out.append(float(value))
+            except Exception:
+                out.append(np.nan)
+    return np.asarray(out, dtype=float)
+
+
+def _save_comparison_bar(records, keys, labels, ylabel, title, path):
+    x = np.arange(len(records))
+    case_labels = [str(record["case_name"]) for record in records]
+    width = min(0.8 / max(len(keys), 1), 0.35)
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    for idx, key in enumerate(keys):
+        offset = (idx - (len(keys) - 1) / 2.0) * width
+        ax.bar(x + offset, _record_series(records, key), width=width, label=labels[idx])
+    ax.set_xticks(x)
+    ax.set_xticklabels(case_labels, rotation=25, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _save_target_diagnostics_comparison(records, path):
+    x = np.arange(len(records))
+    case_labels = [str(record["case_name"]) for record in records]
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+
+    residual = _record_series(records, "target_residual_total_norm_max")
+    axes[0].bar(x, residual, width=0.55, color="tab:purple", label="target residual max")
+    finite_positive = residual[np.isfinite(residual) & (residual > 0.0)]
+    if finite_positive.size:
+        axes[0].set_yscale("log")
+    axes[0].set_ylabel("residual")
+    axes[0].grid(True, axis="y", linestyle="--", alpha=0.35)
+    axes[0].legend(loc="best")
+
+    keys = [
+        "bounded_solution_used_steps",
+        "bounded_active_lower_count_max",
+        "bounded_active_upper_count_max",
+    ]
+    labels = ["bounded used steps", "active lower max", "active upper max"]
+    width = 0.24
+    for idx, key in enumerate(keys):
+        axes[1].bar(
+            x + (idx - 1) * width,
+            _record_series(records, key),
+            width=width,
+            label=labels[idx],
+        )
+    axes[1].set_ylabel("count")
+    axes[1].grid(True, axis="y", linestyle="--", alpha=0.35)
+    axes[1].legend(loc="best")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(case_labels, rotation=25, ha="right")
+    axes[0].set_title("Direct Lyapunov Four-Scenario Target Diagnostics")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _save_comparison_overlay_plots(bundles_by_case, output_dir):
+    if not bundles_by_case:
+        return {}
+
+    first_bundle = next(iter(bundles_by_case.values()))
+    n_y = int(np.asarray(first_bundle["y_system"]).shape[1])
+    n_u = int(np.asarray(first_bundle["u_applied_phys"]).shape[1])
+    paths = {}
+
+    fig, axes = plt.subplots(n_y, 1, figsize=(11, 3.2 * n_y), sharex=True)
+    axes = np.atleast_1d(axes)
+    for case_name, bundle in bundles_by_case.items():
+        y_system = np.asarray(bundle["y_system"], dtype=float)
+        time_y = np.arange(y_system.shape[0])
+        for idx, ax in enumerate(axes):
+            ax.plot(time_y, y_system[:, idx], linewidth=1.8, label=str(case_name))
+    y_sp_phys = _physical_setpoint_steps(first_bundle)
+    time_sp = np.arange(y_sp_phys.shape[0])
+    for idx, ax in enumerate(axes):
+        if idx < y_sp_phys.shape[1]:
+            ax.step(
+                time_sp,
+                y_sp_phys[:, idx],
+                where="post",
+                color="black",
+                linewidth=1.2,
+                linestyle="--",
+                label="setpoint",
+            )
+        ax.set_ylabel(f"y[{idx}]")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("step")
+    fig.tight_layout()
+    paths["outputs_overlay"] = _comparison_plot_path(output_dir, "comparison_outputs_overlay.png")
+    fig.savefig(paths["outputs_overlay"], dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(n_u, 1, figsize=(11, 3.0 * n_u), sharex=True)
+    axes = np.atleast_1d(axes)
+    for case_name, bundle in bundles_by_case.items():
+        u_applied = np.asarray(bundle["u_applied_phys"], dtype=float)
+        time_u = np.arange(u_applied.shape[0])
+        for idx, ax in enumerate(axes):
+            ax.step(time_u, u_applied[:, idx], where="post", linewidth=1.8, label=str(case_name))
+    u_bounds = first_bundle.get("u_bounds_phys")
+    for idx, ax in enumerate(axes):
+        if u_bounds is not None:
+            lower, upper = u_bounds
+            ax.axhline(lower[idx], color="tab:red", linewidth=1.0, linestyle=":")
+            ax.axhline(upper[idx], color="tab:brown", linewidth=1.0, linestyle=":")
+        ax.set_ylabel(f"u[{idx}]")
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("step")
+    fig.tight_layout()
+    paths["inputs_overlay"] = _comparison_plot_path(output_dir, "comparison_inputs_overlay.png")
+    fig.savefig(paths["inputs_overlay"], dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return paths
+
+
+def save_direct_lyapunov_comparison_artifacts(
+    records,
+    bundles_by_case,
+    study_root,
+    *,
+    save_plots=True,
+):
+    os.makedirs(study_root, exist_ok=True)
+    records = [dict(record) for record in records]
+
+    comparison_csv = os.path.join(study_root, "comparison_table.csv")
+    _write_csv(comparison_csv, records)
+
+    comparison_pkl = os.path.join(study_root, "comparison_table.pkl")
+    if HAS_PANDAS:
+        pd.DataFrame(records).to_pickle(comparison_pkl)
+    else:
+        with open(comparison_pkl, "wb") as f:
+            pickle.dump(records, f)
+
+    summary = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "n_cases": len(records),
+        "case_names": [str(record.get("case_name")) for record in records],
+        "comparison_table_csv": comparison_csv,
+        "comparison_table_pkl": comparison_pkl,
+        "case_debug_dirs": {
+            str(record.get("case_name")): record.get("debug_dir")
+            for record in records
+        },
+    }
+    comparison_summary_json = os.path.join(study_root, "comparison_summary.json")
+    with open(comparison_summary_json, "w", encoding="utf-8") as f:
+        json.dump(_jsonable(summary), f, indent=2)
+
+    plot_paths = {}
+    if save_plots:
+        if not HAS_MATPLOTLIB:
+            raise ImportError("matplotlib is required to save direct comparison plots.")
+        plot_dir = os.path.join(study_root, "comparison_plots")
+        plot_paths["reward_mean"] = _save_comparison_bar(
+            records,
+            ["reward_mean"],
+            ["reward mean"],
+            "reward_mean",
+            "Direct Lyapunov Four-Scenario Reward",
+            _comparison_plot_path(plot_dir, "comparison_reward_mean.png"),
+        )
+        output_rmse_keys = [
+            key for key in records[0].keys()
+            if key.startswith("output") and key.endswith("_rmse")
+        ] if records else []
+        if output_rmse_keys:
+            _save_comparison_bar(
+                records,
+                output_rmse_keys,
+                output_rmse_keys,
+                "RMSE (physical units)",
+                "Direct Lyapunov Four-Scenario Output RMSE",
+                _comparison_plot_path(plot_dir, "comparison_output_rmse.png"),
+            )
+            plot_paths["output_rmse"] = os.path.join(plot_dir, "comparison_output_rmse.png")
+        plot_paths["solver_contraction_rates"] = _save_comparison_bar(
+            records,
+            ["solver_success_rate", "hard_contraction_rate", "relaxed_contraction_rate"],
+            ["solver success", "hard contraction", "relaxed contraction"],
+            "rate",
+            "Direct Lyapunov Four-Scenario Solver And Contraction Rates",
+            _comparison_plot_path(plot_dir, "comparison_solver_contraction_rates.png"),
+        )
+        plot_paths["slack"] = _save_comparison_bar(
+            records,
+            ["slack_lyap_mean", "slack_lyap_max"],
+            ["slack mean", "slack max"],
+            "slack",
+            "Direct Lyapunov Four-Scenario Lyapunov Slack",
+            _comparison_plot_path(plot_dir, "comparison_slack.png"),
+        )
+        plot_paths["target_residual_bounded_activity"] = _save_target_diagnostics_comparison(
+            records,
+            _comparison_plot_path(plot_dir, "comparison_target_residual_bounded_activity.png"),
+        )
+        plot_paths.update(_save_comparison_overlay_plots(bundles_by_case, plot_dir))
+
+    summary["plot_paths"] = plot_paths
+    with open(comparison_summary_json, "w", encoding="utf-8") as f:
+        json.dump(_jsonable(summary), f, indent=2)
+    return {
+        "comparison_table_csv": comparison_csv,
+        "comparison_table_pkl": comparison_pkl,
+        "comparison_summary_json": comparison_summary_json,
+        "plot_paths": plot_paths,
+    }
+
+
 def build_direct_lyapunov_run_bundle(
     source,
     results,
@@ -1401,11 +1773,15 @@ def save_direct_lyapunov_debug_artifacts(
     prefix_name="direct_lyapunov_mpc",
     save_plots=True,
     save_paper_plots=True,
+    timestamp_subdir=True,
 ):
     if directory is None:
         directory = os.getcwd()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(directory, prefix_name, timestamp)
+    if timestamp_subdir:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = os.path.join(directory, prefix_name, timestamp)
+    else:
+        out_dir = os.path.join(directory, prefix_name)
     os.makedirs(out_dir, exist_ok=True)
 
     with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
@@ -1415,8 +1791,16 @@ def save_direct_lyapunov_debug_artifacts(
 
     summary_rows = [{"key": key, "value": json.dumps(_jsonable(value))} for key, value in bundle["summary"].items()]
     _write_csv(os.path.join(out_dir, "summary.csv"), summary_rows)
-    _write_csv(os.path.join(out_dir, "step_table.csv"), make_direct_lyapunov_step_records(bundle["direct_info_storage"]))
+    step_records = make_direct_lyapunov_step_records(bundle["direct_info_storage"])
+    _write_csv(os.path.join(out_dir, "step_table.csv"), step_records)
     _save_npz(os.path.join(out_dir, "arrays.npz"), bundle)
+
+    step_table_pkl = os.path.join(out_dir, "step_table.pkl")
+    if HAS_PANDAS:
+        pd.DataFrame(step_records).to_pickle(step_table_pkl)
+    else:
+        with open(step_table_pkl, "wb") as f:
+            pickle.dump(step_records, f)
 
     if save_plots:
         plot_direct_lyapunov_bundle(bundle, os.path.join(out_dir, "plots"), paper_style=False)

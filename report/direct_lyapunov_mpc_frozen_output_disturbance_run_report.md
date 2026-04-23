@@ -10,9 +10,14 @@
 4. solve a Lyapunov-constrained tracking MPC problem around that target,
 5. export the target, solver, contraction, and plotting diagnostics.
 
-The first saved run is diagnostically useful, but it is not yet a successful closed-loop controller run. With `target_mode="unbounded"` and `lyapunov_mode="hard"`, the frozen target solve succeeds exactly, but the target is outside the admissible input box at every step. The hard direct MPC problem is therefore infeasible for all 1600 logged steps, and the controller holds the previous input.
+The notebook has now been rewritten as a four-scenario study runner. It executes and saves:
 
-The next state should test `target_mode="bounded"` and `lyapunov_mode="soft"` before adding any of the richer target-selector terms back into the direct path.
+- `unbounded_hard`
+- `bounded_hard`
+- `unbounded_soft`
+- `bounded_soft`
+
+Success in this study means all four cases complete, save their bundles, and report their behavior honestly. A hard-mode infeasible result is therefore a valid diagnostic outcome, not a failed notebook. The first earlier saved run remains useful context: with `target_mode="unbounded"` and `lyapunov_mode="hard"`, the frozen target solve succeeded exactly, but the target was outside the admissible input box at every step, making the hard direct MPC infeasible for all 1600 logged steps.
 
 ## Why This Exists
 
@@ -30,7 +35,7 @@ Those terms help in practice, but they also make interpretation harder. The dire
 
 Can we freeze the output disturbance, compute a physically meaningful steady target, and make one direct Lyapunov MPC solve work without a separate upstream candidate or a heavily regularized selector objective?
 
-The first run says: not yet in `unbounded + hard` mode. It also tells us exactly why: the unbounded steady target is not admissible.
+The prior `unbounded + hard` run says: not yet in that mode. It also tells us exactly why: the unbounded steady target is not admissible.
 
 ## Model And Coordinates
 
@@ -150,13 +155,44 @@ J_k^{\mathrm{soft}}=J_k+\lambda_\sigma\sigma_k .
 
 ## Implementation Map
 
-- `DirectLyapunovMPC_FrozenOutputDisturbance.ipynb`: visible experiment switches and saved-run display.
+- `DirectLyapunovMPC_FrozenOutputDisturbance.ipynb`: four-scenario study runner with visible experiment switches, per-case exports, comparison tables, and comparison plots.
 - `Lyapunov/frozen_output_disturbance_target.py`: unbounded and bounded frozen-output-disturbance target solvers.
-- `Lyapunov/direct_lyapunov_mpc.py`: direct solver, rollout, bundle, summary, and plotting helpers.
+- `Lyapunov/direct_lyapunov_mpc.py`: direct solver, rollout, bundle, summary, per-case export, comparison-record, comparison-table, and comparison-plot helpers.
 - `Lyapunov/lyapunov_core.py`: terminal ingredients and Lyapunov diagnostics.
 - `Plotting_fns/mpc_plot_fns.py`: shared CSTR output/input figures reused by the direct exporter.
 
-## Saved Run
+## Four-Scenario Study Workflow
+
+The current notebook runs the fixed scenario matrix:
+
+| Case | Target mode | Lyapunov mode | Meaning |
+| --- | --- | --- | --- |
+| `unbounded_hard` | `unbounded` | `hard` | Exact target, no Lyapunov slack |
+| `bounded_hard` | `bounded` | `hard` | Admissible target projection, no Lyapunov slack |
+| `unbounded_soft` | `unbounded` | `soft` | Exact target with Lyapunov slack |
+| `bounded_soft` | `bounded` | `soft` | Admissible target projection with Lyapunov slack |
+
+All four cases share the same plant, disturbance schedule, setpoint schedule, horizons, weights, and failure policy. The defaults intentionally keep:
+
+- `use_target_output_for_tracking=False`
+- `use_target_on_solver_fail=False`
+
+Therefore solver failures hold the previous input and are logged through the `method_counts` and `solver_status_counts` fields. The comparison artifacts saved at the timestamped study root are:
+
+- `comparison_table.csv`
+- `comparison_table.pkl`
+- `comparison_summary.json`
+- `comparison_plots/comparison_reward_mean.png`
+- `comparison_plots/comparison_output_rmse.png`
+- `comparison_plots/comparison_solver_contraction_rates.png`
+- `comparison_plots/comparison_slack.png`
+- `comparison_plots/comparison_target_residual_bounded_activity.png`
+- `comparison_plots/comparison_outputs_overlay.png`
+- `comparison_plots/comparison_inputs_overlay.png`
+
+Each case folder also saves `bundle.pkl`, `summary.json`, `summary.csv`, `step_table.csv`, `step_table.pkl`, `arrays.npz`, `plots/`, and `paper_plots/` when plotting is enabled.
+
+## Prior Diagnostic Run
 
 Source artifact:
 
@@ -234,7 +270,7 @@ The ablation path performed better because its target selector included practica
 - previous-state smoothing suppresses target-state jumps,
 - the weak `xhat` anchor nudges the target toward the current estimated operating point.
 
-The direct path intentionally removes these terms to clarify the mathematics. The first saved run shows that a pure unbounded exact target can be too clean mathematically and too aggressive physically.
+The direct path intentionally removes these terms to clarify the mathematics. The prior saved run shows that a pure unbounded exact target can be too clean mathematically and too aggressive physically.
 
 The next direct design should not immediately copy the whole five-term selector. A cleaner sequence is:
 
@@ -250,7 +286,7 @@ Offset-free MPC commonly uses integrating disturbance models plus a steady-state
 
 The direct path's terminal set, terminal cost, and receding-horizon structure follow the standard constrained MPC stability logic summarized by Mayne, Rawlings, Rao, and Scokaert.
 
-The first run's failure mode is close to a tracking-MPC target admissibility issue. Limon, Alvarado, Alamo, and Camacho show why constrained tracking MPC benefits from artificial steady states and from steering toward the closest admissible target when the requested one cannot be reached.
+The prior run's failure mode is close to a tracking-MPC target admissibility issue. Limon, Alvarado, Alamo, and Camacho show why constrained tracking MPC benefits from artificial steady states and from steering toward the closest admissible target when the requested one cannot be reached.
 
 The Lyapunov inequality in the direct solver is in the spirit of Lyapunov MPC for process systems. Mhaskar, El-Farra, and Christofides develop Lyapunov-based predictive control for nonlinear systems with state and input constraints, including hard and soft constraint interpretations.
 
@@ -258,25 +294,25 @@ The older safety-filter workflow is closer to predictive safety filtering. Waber
 
 ## Recommended Next Stage
 
-Run the existing comparison grid:
+Run the rewritten notebook in the scientific Python environment and use the generated comparison table as the next decision point. The default matrix is already:
 
 ```python
-comparison_modes = [
-    ("unbounded", "hard"),
-    ("bounded", "hard"),
-    ("unbounded", "soft"),
-    ("bounded", "soft"),
+scenario_matrix = [
+    {"case_name": "unbounded_hard", "target_mode": "unbounded", "lyapunov_mode": "hard"},
+    {"case_name": "bounded_hard", "target_mode": "bounded", "lyapunov_mode": "hard"},
+    {"case_name": "unbounded_soft", "target_mode": "unbounded", "lyapunov_mode": "soft"},
+    {"case_name": "bounded_soft", "target_mode": "bounded", "lyapunov_mode": "soft"},
 ]
 ```
 
-The preferred next single run is:
+The first case to inspect closely is:
 
 ```python
 target_mode = "bounded"
 lyapunov_mode = "soft"
 ```
 
-Track these metrics:
+because it answers whether target admissibility plus one Lyapunov slack is enough to recover feasible direct MPC behavior. Track these metrics:
 
 - solver success rate,
 - target success rate,
