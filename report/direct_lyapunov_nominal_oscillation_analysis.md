@@ -390,6 +390,147 @@ current two-stage target selector:
 3. The target regularization becomes an explicit design term, not a patch
    hiding in a pre-solve selector.
 
+## Why One-Stage Is Better For The RL Safety Layer
+
+The final project goal is not simply to make a standalone MPC controller. The
+goal is an RL controller with a safety layer that can guarantee stability or
+certify when an RL action is safe. That changes the interpretation of the
+one-stage proposal.
+
+The one-stage artificial-target MPC is not meant to replace RL. It is a better
+form for the safety layer. The RL actor should still propose the preferred
+input `u_{\mathrm{RL}}`; the safety layer should then solve the smallest
+necessary correction while choosing the admissible target and Lyapunov center
+consistently.
+
+The current two-stage safety architecture is:
+
+```text
+target selector computes x_s,u_s
+        ↓
+RL or MPC proposes u_cand
+        ↓
+safety filter checks/corrects u_cand around the preselected x_s,u_s
+```
+
+That structure is simple and useful for diagnosis, but the oscillation study
+shows its main weakness. The target selector can choose a target that is
+mathematically admissible as a steady state but poor for the current state,
+current input, RL proposal, terminal set, or first-step Lyapunov contraction.
+The safety filter then inherits that target. If the target moves sharply, the
+filter is forced to either:
+
+- reject or heavily modify the RL action;
+- accept slack;
+- hold the previous input;
+- fall back to another controller;
+- certify stability around a center that may move again at the next step.
+
+That is not the cleanest guarantee. It is a conditional guarantee around an
+externally selected target.
+
+For the RL safety layer, the one-stage structure should instead be:
+
+```text
+RL proposes u_RL
+        ↓
+one optimization chooses u_safe and the artificial target x_a,u_a together
+        ↓
+return u_safe closest to u_RL subject to admissibility and Lyapunov conditions
+```
+
+A safety-layer version can be written as:
+
+```math
+\min_{u_0,\ldots,u_{N_c-1},x_a,u_a}
+\left\|u_0-u_{\mathrm{RL}}\right\|_{R_{\mathrm{RL}}}^2
++
+\sum_{i=0}^{N_c-1}\left\|\Delta u_i\right\|_R^2
++
+\sum_{i=1}^{N_p}\left\|y_{i|k}-y_a\right\|_Q^2
++
+\left\|y_a-y_{\mathrm{sp}}\right\|_{Q_o}^2
++
+\lambda_a\left\|u_a-u_{k-1}\right\|^2 .
+```
+
+subject to the plant prediction model, input limits, artificial steady-state
+equations, and the Lyapunov safety condition:
+
+```math
+(x_{1|k}-x_a)^TP(x_{1|k}-x_a)
+\le
+\rho(\hat x_k-x_a)^TP(\hat x_k-x_a)+\epsilon+s_k .
+```
+
+The key difference is that `u_RL` is in the objective, while admissibility,
+input limits, and Lyapunov contraction are in the constraints. That is exactly
+what a safety layer should do: preserve the learned policy whenever possible,
+but override it when the stability certificate requires a correction.
+
+This is better than the two-stage method for six reasons.
+
+1. The target and action corrections are no longer competing projections.
+   In the two-stage method, the target selector first projects the setpoint to
+   an admissible steady target, and the safety filter then projects the RL
+   action onto the safe set around that target. These two projections do not
+   commute. A target that minimizes output residual can require a large action
+   correction, while a nearby target with slightly worse output residual could
+   allow a much smaller, stable correction. One-stage optimization sees that
+   tradeoff directly.
+
+2. The Lyapunov certificate uses the same target that the optimizer selected.
+   Stability claims are only meaningful relative to the Lyapunov center. If
+   `x_s` is chosen outside the correction problem, the safety layer can be
+   forced to certify an RL action around a center that was not chosen with
+   current feasibility in mind. In the one-stage design, the certificate,
+   terminal ingredients, artificial target, and corrected action are one
+   consistent object.
+
+3. The safety layer becomes minimally invasive to RL.
+   The current filter can accept `u_cand`, solve a correction, or fall back,
+   but it cannot ask whether a slightly different artificial target would allow
+   a smaller change to the RL action. A one-stage safety layer can directly
+   minimize `||u_safe-u_RL||` while still enforcing contraction. That is the
+   right behavior for an RL supervisor: intervene only as much as needed.
+
+4. It reduces target-induced chattering.
+   The oscillation study showed that the two-stage bounded target can jump
+   between active-set faces. Adding `u_s-u_prev` regularization helped because
+   it gave the target selector memory. In a one-stage safety layer, that memory
+   can be formalized with penalties on `u_a-u_{k-1}` and
+   `u_a-u_{a,k-1}`, and with optional target-rate constraints. These terms
+   become part of the certificate-producing optimization rather than a
+   pre-filter patch.
+
+5. It handles infeasible setpoints more honestly.
+   If `y_sp` is not exactly reachable under input constraints and the current
+   disturbance estimate, the two-stage method must decide on a target before
+   seeing the safety correction problem. The one-stage method can say:
+   "this is the closest admissible target that also lets me keep the RL action
+   as much as possible and satisfy Lyapunov contraction." That is closer to the
+   constrained tracking MPC literature and closer to what a supervisor should
+   do in deployment.
+
+6. It gives cleaner diagnostics.
+   If the one-stage problem fails, the failure has a precise meaning: no
+   combination of admissible artificial target and near-RL action satisfied the
+   chosen constraints and slack policy. In the two-stage method, failure can
+   come from the target selector, target/action mismatch, terminal-set mismatch,
+   Lyapunov infeasibility, or fallback policy. The current logs are useful, but
+   the guarantee is harder to explain.
+
+The practical implication is:
+
+- keep the current two-stage safety filter as a diagnostic baseline;
+- keep `bounded_soft_u_prev_1p0` as the best current nominal reference case;
+- build the next safety layer as a one-stage artificial-target correction MPC
+  that takes `u_RL` as an input and returns `u_safe`;
+- report both the intervention size `||u_safe-u_RL||` and the Lyapunov margin.
+
+This preserves the project direction. The RL policy remains the performance
+controller. The MPC layer becomes the certificate-producing shield.
+
 ## Engineering Plan
 
 Use the current best case as the baseline while building the structural fix.
@@ -442,7 +583,9 @@ Track:
 
 Add a new direct-controller variant rather than replacing the current one
 immediately. The purpose is to test the literature-recommended structure while
-keeping the existing two-stage controller as a comparison.
+keeping the existing two-stage controller as a comparison. For the final RL
+project, this variant should be implemented as a safety-layer projection that
+takes an RL action as the preferred input.
 
 Suggested name:
 
@@ -452,11 +595,21 @@ Core design:
 
 - decision variables include `x_a,u_a` or equivalent reduced steady-input
   variables;
+- objective penalizes `u_0-u_RL` when an RL candidate is supplied;
 - objective tracks `y_a` over the horizon and penalizes `y_a-y_sp`;
 - include `u_a-u_prev` and optionally `u_a-u_{a,prev}` penalties;
 - keep the frozen `d_hat` target equation for offset-free behavior;
 - center the Lyapunov or terminal constraint on the same artificial target
   chosen inside the MPC solve.
+
+The report metrics for the RL safety-layer version should include:
+
+- accepted RL action rate;
+- mean and max intervention `||u_safe-u_RL||`;
+- Lyapunov margin after the returned action;
+- active slack count and slack magnitude;
+- artificial target motion `||u_a-u_{a,k-1}||`;
+- output RMSE and reward, so safety and performance are not conflated.
 
 ### Step 5: Revisit The Disturbance Model After The Target Fix
 
