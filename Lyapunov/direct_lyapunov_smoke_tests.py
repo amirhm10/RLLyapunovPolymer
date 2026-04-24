@@ -76,12 +76,45 @@ def target_solver_smoke_tests():
     if not bool(np.asarray(bounded["bounded_active_upper_mask"], dtype=bool).item()):
         raise AssertionError("expected active upper bound in bounded solve")
 
+    bounded_off = solve_target_bounded_output_disturbance(
+        A_aug=A_aug,
+        B_aug=B_aug,
+        C_aug=C_aug,
+        xhat_aug=xhat_aug,
+        y_sp=y_sp,
+        u_min=np.array([0.0], dtype=float),
+        u_max=np.array([0.49], dtype=float),
+        u_ref=np.array([0.0], dtype=float),
+        config={"u_ref_weight": 0.0},
+    )
+    bounded_reg = solve_target_bounded_output_disturbance(
+        A_aug=A_aug,
+        B_aug=B_aug,
+        C_aug=C_aug,
+        xhat_aug=xhat_aug,
+        y_sp=y_sp,
+        u_min=np.array([0.0], dtype=float),
+        u_max=np.array([0.49], dtype=float),
+        u_ref=np.array([0.0], dtype=float),
+        config={"u_ref_weight": 0.1},
+    )
+    if not bounded_off["success"] or not bounded_reg["success"]:
+        raise AssertionError("bounded regularization target solve failed")
+    if not bool(bounded_reg["u_ref_active"]):
+        raise AssertionError("expected active u_ref regularization diagnostic")
+    if not float(bounded_reg["u_s"][0]) < float(bounded_off["u_s"][0]):
+        raise AssertionError("expected u_ref regularization to move u_s toward u_ref")
+    if not float(bounded_reg["us_u_ref_inf"]) < float(bounded_off["us_u_ref_inf"]):
+        raise AssertionError("expected regularized target to reduce ||u_s-u_ref||_inf")
+
     return {
         "exact_solver_mode": exact["solver_mode_used"],
         "exact_cond_M": exact["cond_M"],
         "lsq_used_lstsq": bool(lsq["used_lstsq"]),
         "bounded_solution_used": bool(bounded["bounded_solution_used"]),
         "bounded_residual_norm": bounded["bounded_residual_norm"],
+        "bounded_u_ref_off": float(bounded_off["u_s"][0]),
+        "bounded_u_ref_on": float(bounded_reg["u_s"][0]),
     }
 
 
