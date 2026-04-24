@@ -560,12 +560,16 @@ together. Therefore the one-stage design can still be minimally invasive: it
 should intervene only when preserving `u_RL` would violate constraints,
 Lyapunov contraction, or the chosen slack policy.
 
-A practical implementation can use a two-level computational workflow:
+A practical implementation can use a two-level computational workflow, but the
+first level must be defined carefully:
 
-1. Fast certification: test whether `u_RL` is safe with the current/best
-   artificial target and Lyapunov ingredients.
-2. One-stage correction: only if the fast test fails, solve the full
-   artificial-target safety projection for `u_safe`.
+1. Optional cheap screen: test `u_RL` against the previously certified
+   artificial target if one is available.
+2. Fixed-action certificate: if no trusted artificial target is available, or
+   if the cheap screen fails, solve a feasibility problem with `u_0 = u_RL`
+   fixed and `x_a,u_a` as decision variables.
+3. One-stage correction: only if the fixed-action certificate fails, solve the
+   full artificial-target safety projection with `u_0` free.
 
 The guarantee still requires a safety certificate every step. The intervention
 rate should be measured separately from the certification rate.
@@ -590,6 +594,20 @@ first applied input is fixed:
 
 ```math
 u_{0|k}=u_{\mathrm{RL}} .
+```
+
+This answers an important objection: if `x_a` is not already known, we cannot
+compute the Lyapunov contraction as a simple numerical check. The certificate
+must find `x_a` and `u_a`. The fixed-action certificate is therefore not:
+
+```text
+plug u_RL into V(x-x_a) using an unknown x_a
+```
+
+It is:
+
+```text
+does there exist an admissible x_a,u_a that certifies u_RL?
 ```
 
 Then the safety layer asks whether there exists an admissible artificial target
