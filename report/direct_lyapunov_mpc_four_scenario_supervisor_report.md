@@ -255,10 +255,11 @@ The terminal constraint, when active, requires
 x_{N_p|k}\in \mathcal{X}_f(x_s).
 ```
 
-For this direct study, the terminal cost scale is set to zero:
+For this direct study, the terminal cost scale, denoted here by
+`\lambda_f`, is set to zero:
 
 ```math
-\texttt{terminal_cost_scale}=0.
+\lambda_f=0.
 ```
 
 Therefore, the terminal ingredients act as admissibility and stability diagnostics, not as an added terminal penalty in the cost. This keeps the MPC objective focused on `y-y_sp` and `Delta u`.
