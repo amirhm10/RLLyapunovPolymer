@@ -570,6 +570,77 @@ A practical implementation can use a two-level computational workflow:
 The guarantee still requires a safety certificate every step. The intervention
 rate should be measured separately from the certification rate.
 
+To avoid confusion, the RL safety-layer implementation should not be:
+
+```text
+always solve a free MPC and apply its first input
+```
+
+because that would indeed turn the safety layer into the controller and would
+intervene at every step. The RL-compatible implementation should be:
+
+```text
+first try to certify u_0 = u_RL
+if certified, apply u_RL unchanged
+if not certified, solve the correction problem with u_0 free
+```
+
+The first problem can still choose or verify an artificial target, but the
+first applied input is fixed:
+
+```math
+u_{0|k}=u_{\mathrm{RL}} .
+```
+
+Then the safety layer asks whether there exists an admissible artificial target
+`(x_a,u_a)` and future input sequence such that the fixed RL action satisfies
+the input constraints, prediction model, terminal/continuation conditions, and
+Lyapunov decrease. In feasibility form:
+
+```math
+\text{find } x_a,u_a,u_{1|k},\ldots,u_{N_c-1|k}
+```
+
+subject to:
+
+```math
+u_{0|k}=u_{\mathrm{RL}},
+\qquad
+(I-A)x_a-Bu_a=0,
+\qquad
+u_{\min}\le u_a\le u_{\max},
+```
+
+and:
+
+```math
+(x_{1|k}-x_a)^TP(x_{1|k}-x_a)
+\le
+\rho(\hat x_k-x_a)^TP(\hat x_k-x_a)+\epsilon .
+```
+
+If this feasibility/certification problem succeeds, the safety layer returns
+the RL action exactly:
+
+```math
+u_{\mathrm{safe}}=u_{\mathrm{RL}} .
+```
+
+Only if this fixed-action certificate fails should the correction problem be
+solved:
+
+```math
+\min
+\left\|u_{0|k}-u_{\mathrm{RL}}\right\|^2
++ \text{tracking, move, slack, and target-continuity terms}
+```
+
+with `u_{0|k}` free but constrained by admissibility and Lyapunov conditions.
+That second problem is the actual intervention. Therefore the proposed method
+does not mean intervention at every step; it means integrated target/action
+certification every step, and integrated correction only when certification of
+the RL action fails.
+
 ## Engineering Plan
 
 Use the current best case as the baseline while building the structural fix.
