@@ -45,6 +45,13 @@ Newly referenced figures include:
 - per-case Lyapunov diagnostics,
 - per-case target diagnostics.
 
+Follow-up update:
+
+- added per-case Lyapunov delta SVG diagnostics for `V_1|k - V_k` and `V_k - V_{k-1}`,
+- added a comparison Lyapunov delta SVG plot,
+- added `lyapunov_delta_summary.csv` for the report-ready delta statistics,
+- updated the report interpretation to distinguish first-step predicted decrease from logged step-to-step decrease under moving targets.
+
 ## Validation
 
 Performed lightweight validation:

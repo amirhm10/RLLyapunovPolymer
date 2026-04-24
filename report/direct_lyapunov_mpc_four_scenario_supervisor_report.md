@@ -421,6 +421,35 @@ The output RMSE plot highlights the tradeoff: unbounded-soft tracks the schedule
 
 `unbounded_hard` is infeasible for every MPC step. `bounded_hard` recovers strict Lyapunov behavior on all successful solves. `bounded_soft` almost never needs meaningful relaxation: its hard contraction rate is 97.75% and its relaxed contraction rate is 99.88%.
 
+The next diagnostic looks directly at the Lyapunov function decrease. Two
+differences are useful:
+
+```math
+\Delta V_{\mathrm{pred},k}=V_{1|k}-V_k,
+\qquad
+\Delta V_{\mathrm{logged},k}=V_k-V_{k-1}.
+```
+
+The first-step predicted delta is the cleaner contraction diagnostic because it
+uses the current target `x_s(k)` and the first predicted state from the current
+MPC solve. The logged step-to-step delta is still useful, but it can jump when
+the target selector moves `x_s` between time steps.
+
+| Case | First-step finite | First-step `Delta V <= 0` | First-step mean | Logged finite | Logged `Delta V <= 0` | Logged mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `unbounded_hard` | 0 | n/a | n/a | 0 | n/a | n/a |
+| `bounded_hard` | 1532 | 1532 / 1532 (100.00%) | -10.053 | 1510 | 1118 / 1510 (74.04%) | -0.112 |
+| `unbounded_soft` | 1556 | 611 / 1556 (39.27%) | 1.491 | 1514 | 813 / 1514 (53.70%) | -0.715 |
+| `bounded_soft` | 1598 | 1598 / 1598 (100.00%) | -13.767 | 1595 | 1121 / 1595 (70.28%) | -0.062 |
+
+![Lyapunov delta comparison across cases.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_lyapunov_delta.svg)
+
+This plot reinforces the main conclusion. The bounded cases decrease the
+Lyapunov function on every accepted first-step prediction. The unbounded-soft
+case solves often, but its first-step `Delta V` is positive more often than it
+is negative, which is why the slack-based result should be interpreted as a
+diagnostic rather than as the preferred stabilizing controller.
+
 ![Lyapunov slack by case.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_slack.png)
 
 The slack plot separates the two soft cases clearly. `unbounded_soft` uses large slack often, with a maximum of 70.784. `bounded_soft` uses small slack rarely, with a maximum of 1.708 and only 34 active slack steps.
@@ -463,6 +492,11 @@ The input-target plot is the key figure for this case: the requested `u_s` is no
 
 Because the MPC solve is infeasible at all steps, the Lyapunov contraction trace has no accepted successful contraction behavior to evaluate.
 
+![unbounded_hard Lyapunov delta diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_06_lyapunov_delta.svg)
+
+The delta diagnostic has no finite accepted values for this case. This is
+consistent with the all-step hard-MPC infeasibility result.
+
 ![unbounded_hard target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_05_target_diagnostics.png)
 
 The target diagnostics show the exact target residual near numerical zero while simultaneously showing persistent bound inadmissibility. This is the cleanest evidence that unbounded target selection is the wrong target selector for hard direct Lyapunov MPC in this experiment.
@@ -497,6 +531,13 @@ The state-target error is much smaller on average than in the unbounded cases, a
 ![bounded_hard Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_04_lyapunov_diagnostics.png)
 
 The Lyapunov diagnostics are strong when the solver succeeds: the hard contraction rate equals the solver success rate. The maximum contraction margin is essentially zero (`8.31e-11`), so accepted trajectories respect the contraction inequality up to numerical tolerance.
+
+![bounded_hard Lyapunov delta diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_06_lyapunov_delta.svg)
+
+The first-step predicted Lyapunov delta is negative for all 1532 finite
+accepted solves. The logged `V_k-V_{k-1}` value is negative on 74.04% of finite
+step-to-step comparisons; the positive spikes are expected because the target
+center `x_s(k)` can move between setpoint segments.
 
 ![bounded_hard target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_05_target_diagnostics.png)
 
@@ -534,6 +575,13 @@ The state-target error remains large on average. This is consistent with an unbo
 
 The Lyapunov plot is the main caution. The relaxed inequality is often feasible, but the hard contraction inequality is frequently violated. The slack magnitude is not just numerical noise.
 
+![unbounded_soft Lyapunov delta diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_06_lyapunov_delta.svg)
+
+Only 611 of 1556 finite first-step predicted deltas are nonpositive, and the
+mean first-step delta is positive. This makes the soft unbounded case the clearest
+example that solver feasibility alone is not enough: the controller often solves
+by relaxing the Lyapunov decrease.
+
 ![unbounded_soft target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_05_target_diagnostics.png)
 
 The target diagnostics show near-zero residual and almost no exact bounded admissibility. This confirms that the soft formulation masks target inadmissibility rather than resolving it.
@@ -569,6 +617,13 @@ The state-target error remains larger than `bounded_hard` on average in this run
 ![bounded_soft Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_04_lyapunov_diagnostics.png)
 
 The Lyapunov diagnostics are encouraging. Hard contraction already holds on 97.75% of all logged steps, and relaxed contraction holds on 99.88%. Slack is small and sparse compared with `unbounded_soft`.
+
+![bounded_soft Lyapunov delta diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_06_lyapunov_delta.svg)
+
+The bounded-soft first-step delta is negative for all 1598 finite accepted
+solves, with a more negative mean first-step delta than bounded-hard in this
+run. The logged step-to-step delta is negative on 70.28% of finite comparisons,
+again reflecting both controller action and target-center movement.
 
 ![bounded_soft target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_05_target_diagnostics.png)
 

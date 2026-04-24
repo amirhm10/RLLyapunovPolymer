@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="700" viewBox="0 0 1120 700">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="35" y="40" font-size="24" font-weight="700" fill="#1f2937">Lyapunov delta diagnostics: unbounded_hard</text>
+<text x="35" y="66" font-size="13" fill="#6b7280">Negative Delta V indicates decrease. Logged step-to-step delta is affected by moving targets x_s(k).</text>
+<rect x="95" y="145" width="945" height="330" fill="#f8fafc" stroke="#d0d7de"/>
+<text x="567" y="295" font-size="22" text-anchor="middle" fill="#6b7280">No finite Lyapunov values were accepted for this case.</text>
+<text x="567" y="325" font-size="15" text-anchor="middle" fill="#6b7280">This matches the all-step MPC infeasibility diagnosis.</text>
+<rect x="720" y="28" width="370" height="58" rx="4" fill="#f8fafc" stroke="#d0d7de"/>
+<text x="732" y="50" font-size="12" fill="#1f2937">first-step &lt;= 0: 0/0 (n/a%) | mean n/a</text>
+<text x="732" y="72" font-size="12" fill="#1f2937">logged &lt;= 0: 0/0 (n/a%) | mean n/a</text>
+</svg>
