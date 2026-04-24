@@ -144,6 +144,13 @@ def _as_mode(value: str, allowed: Iterable[str], name: str) -> str:
     return mode
 
 
+def _as_scalar_float(value: Any, name: str) -> float:
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size != 1:
+        raise ValueError(f"{name} must be scalar.")
+    return float(arr.item())
+
+
 class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapunovMpcSolver):
     def _objective_steady_input_cost_on(self) -> bool:
         return bool(getattr(self, "objective_steady_input_cost", False))
@@ -627,8 +634,20 @@ def run_direct_output_disturbance_lyapunov_mpc(
 ):
     target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
     lyapunov_mode = _as_mode(lyapunov_mode, ("hard", "soft"), "lyapunov_mode")
+    mode = _as_mode(mode, ("nominal", "disturb"), "mode")
+    disturbance_after_step = bool(disturbance_after_step)
+    nominal_qi_value = _as_scalar_float(nominal_qi, "nominal_qi")
+    nominal_qs_value = _as_scalar_float(nominal_qs, "nominal_qs")
+    nominal_ha_value = _as_scalar_float(nominal_ha, "nominal_ha")
+
+    system.Qi = nominal_qi_value
+    system.Qs = nominal_qs_value
+    system.hA = nominal_ha_value
     if reset_system_on_entry:
         _reset_system_on_entry(system)
+        system.Qi = nominal_qi_value
+        system.Qs = nominal_qs_value
+        system.hA = nominal_ha_value
 
     (
         y_sp,
@@ -720,6 +739,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
             "method": None,
             "target_mode": target_mode,
             "lyapunov_mode": lyapunov_mode,
+            "plant_mode": mode,
+            "disturbance_after_step": disturbance_after_step,
             "target_success": bool(target_info.get("success", False)),
             "target_stage": target_info.get("solve_stage"),
             "target_variant": target_info.get("target_variant"),
@@ -942,6 +963,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
                 "| avg. reward:", avg_rewards[-1],
                 "| target_mode:", target_mode,
                 "| lyapunov_mode:", lyapunov_mode,
+                "| plant_mode:", mode,
                 "| success:", last.get("success"),
                 "| target_stage:", last.get("target_stage"),
                 "| contraction_margin:", last.get("contraction_margin"),
@@ -968,6 +990,14 @@ def run_direct_output_disturbance_lyapunov_mpc(
         "ha": np.asarray(ha, float).copy(),
         "target_mode": target_mode,
         "lyapunov_mode": lyapunov_mode,
+        "plant_mode": mode,
+        "disturbance_after_step": disturbance_after_step,
+        "nominal_qi": nominal_qi_value,
+        "nominal_qs": nominal_qs_value,
+        "nominal_ha": nominal_ha_value,
+        "final_qi": float(system.Qi),
+        "final_qs": float(system.Qs),
+        "final_ha": float(system.hA),
         "rho_lyap": float(rho_lyap),
         "lyap_eps": float(lyap_eps),
         "slack_penalty": float(slack_penalty),
@@ -1000,6 +1030,8 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "method": info.get("method"),
             "target_mode": info.get("target_mode"),
             "lyapunov_mode": info.get("lyapunov_mode"),
+            "plant_mode": info.get("plant_mode"),
+            "disturbance_after_step": info.get("disturbance_after_step"),
             "target_success": bool(info.get("target_success", False)),
             "target_stage": info.get("target_stage"),
             "target_variant": info.get("target_variant"),
@@ -1080,6 +1112,14 @@ def summarize_direct_lyapunov_bundle(bundle):
         "n_steps": int(bundle["nFE"]),
         "target_mode": bundle.get("target_mode"),
         "lyapunov_mode": bundle.get("lyapunov_mode"),
+        "plant_mode": bundle.get("plant_mode"),
+        "disturbance_after_step": bundle.get("disturbance_after_step"),
+        "nominal_qi": bundle.get("nominal_qi"),
+        "nominal_qs": bundle.get("nominal_qs"),
+        "nominal_ha": bundle.get("nominal_ha"),
+        "final_qi": bundle.get("final_qi"),
+        "final_qs": bundle.get("final_qs"),
+        "final_ha": bundle.get("final_ha"),
         "reward_mean": float(np.mean(rewards)) if rewards.size else None,
         "reward_sum": float(np.sum(rewards)) if rewards.size else None,
         "target_success_rate": float(np.mean(target_success)) if target_success.size else None,
@@ -1218,6 +1258,14 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "case_name": str(case_name),
         "target_mode": summary.get("target_mode", bundle.get("target_mode")),
         "lyapunov_mode": summary.get("lyapunov_mode", bundle.get("lyapunov_mode")),
+        "plant_mode": summary.get("plant_mode", bundle.get("plant_mode")),
+        "disturbance_after_step": summary.get("disturbance_after_step", bundle.get("disturbance_after_step")),
+        "nominal_qi": summary.get("nominal_qi", bundle.get("nominal_qi")),
+        "nominal_qs": summary.get("nominal_qs", bundle.get("nominal_qs")),
+        "nominal_ha": summary.get("nominal_ha", bundle.get("nominal_ha")),
+        "final_qi": summary.get("final_qi", bundle.get("final_qi")),
+        "final_qs": summary.get("final_qs", bundle.get("final_qs")),
+        "final_ha": summary.get("final_ha", bundle.get("final_ha")),
         "n_steps": summary.get("n_steps", bundle.get("nFE")),
         "reward_mean": summary.get("reward_mean"),
         "reward_sum": summary.get("reward_sum"),
@@ -1561,6 +1609,14 @@ def build_direct_lyapunov_run_bundle(
         "target_info_storage": list(results["target_info_storage"]),
         "target_mode": results.get("target_mode"),
         "lyapunov_mode": results.get("lyapunov_mode"),
+        "plant_mode": results.get("plant_mode"),
+        "disturbance_after_step": results.get("disturbance_after_step"),
+        "nominal_qi": results.get("nominal_qi"),
+        "nominal_qs": results.get("nominal_qs"),
+        "nominal_ha": results.get("nominal_ha"),
+        "final_qi": results.get("final_qi"),
+        "final_qs": results.get("final_qs"),
+        "final_ha": results.get("final_ha"),
         "rho_lyap": results.get("rho_lyap"),
         "lyap_eps": results.get("lyap_eps"),
         "delta_t": float(results.get("delta_t", 1.0)),
