@@ -160,6 +160,37 @@ In reduced form, the projection is
 x_s=(I-A)^{-1}Bu_s .
 ```
 
+This changes the meaning of the target output. In unbounded exact mode, the
+target equations enforce `y_s = y_sp` when they are solvable. In bounded mode,
+that equality is guaranteed only if the exact target input is also admissible:
+
+```math
+\begin{aligned}
+y_s=y_{\mathrm{sp},k}
+\quad\Longleftrightarrow\quad
+&\exists (x_s,u_s)\ \text{such that}\\
+&(I-A)x_s-Bu_s=0,\\
+&Cx_s+\hat{d}_k=y_{\mathrm{sp},k},\\
+&u_{\min}\le u_s\le u_{\max}.
+\end{aligned}
+```
+
+If no such admissible steady target exists, the bounded solve keeps
+`u_s` inside the input box and accepts a nonzero output-target residual:
+
+```math
+y_s=Cx_s+\hat{d}_k
+=y_{\mathrm{sp},k}+r_{\mathrm{out},k},
+\qquad
+r_{\mathrm{out},k}=Cx_s-(y_{\mathrm{sp},k}-\hat{d}_k).
+```
+
+Therefore, after bounded projection, generally
+
+```math
+y_s\ne y_{\mathrm{sp},k}.
+```
+
 If the reduced form is unavailable, the implementation falls back to the full constrained least-squares problem:
 
 ```math
