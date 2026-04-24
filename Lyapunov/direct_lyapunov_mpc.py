@@ -135,6 +135,18 @@ def _inf_norm(value: Any) -> Optional[float]:
     return float(np.max(np.abs(arr)))
 
 
+def _row_inf_norms(values: Any) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    out = np.full(arr.shape[0], np.nan, dtype=float)
+    for idx, row in enumerate(arr):
+        finite = row[np.isfinite(row)]
+        if finite.size:
+            out[idx] = float(np.max(np.abs(finite)))
+    return out
+
+
 def _as_mode(value: str, allowed: Iterable[str], name: str) -> str:
     mode = str(value).strip().lower()
     allowed_tuple = tuple(str(item).strip().lower() for item in allowed)
@@ -748,6 +760,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
             "y_sp": y_sp_k.copy(),
             "yhat_now": yhat_now.copy(),
             "innovation": innovation.copy(),
+            "use_target_output_for_tracking": bool(use_target_output_for_tracking),
             "u_prev_dev": u_prev_dev.copy(),
             "x_s": None if target_info.get("x_s") is None else np.asarray(target_info.get("x_s"), float).copy(),
             "u_s": None if target_info.get("u_s") is None else np.asarray(target_info.get("u_s"), float).copy(),
@@ -755,6 +768,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
             "x_s_aug": None if target_info.get("x_s_aug") is None else np.asarray(target_info.get("x_s_aug"), float).copy(),
             "y_s": None if target_info.get("y_s") is None else np.asarray(target_info.get("y_s"), float).copy(),
             "y_target": None,
+            "y_s_minus_y_sp": None,
+            "y_target_minus_y_sp": None,
             "status": None,
             "message": None,
             "fun": None,
@@ -803,7 +818,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
             x_s = np.asarray(target_info["x_s"], float).reshape(n_x)
             u_s = np.asarray(target_info["u_s"], float).reshape(n_inputs)
             d_s = np.asarray(target_info["d_s"], float).reshape(n_outputs)
-            y_target = np.asarray(target_info["y_s"], float).reshape(n_outputs) if use_target_output_for_tracking else y_sp_k.copy()
+            y_s = np.asarray(target_info["y_s"], float).reshape(n_outputs)
+            y_target = y_s.copy() if use_target_output_for_tracking else y_sp_k.copy()
 
             alpha_terminal_raw = compute_terminal_alpha_input_only(
                 P_x=LMPC_obj.P_x,
@@ -862,6 +878,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
                     "alpha_terminal_used": None if alpha_for_solver is None else float(alpha_for_solver),
                     "terminal_constraint_skipped": terminal_constraint_skipped,
                     "y_target": y_target.copy(),
+                    "y_s_minus_y_sp": y_s - y_sp_k,
+                    "y_target_minus_y_sp": y_target - y_sp_k,
                 }
             )
 
@@ -929,6 +947,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
 
         y_current_scaled = apply_min_max(y_mpc[step_idx + 1, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
         delta_y = y_current_scaled - y_sp_k
+        y_target_step = step_info.get("y_target")
+        delta_y_target = None if y_target_step is None else y_current_scaled - np.asarray(y_target_step, dtype=float).reshape(n_outputs)
 
         yhat[:, step_idx] = yhat_now
         xhat_next_openloop = LMPC_obj.A @ x0_aug + LMPC_obj.B @ u_dev_apply
@@ -949,6 +969,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
                 "xhat_next": xhatdhat[:, step_idx + 1].copy(),
                 "reward": float(reward),
                 "delta_y": delta_y.copy(),
+                "y_minus_y_sp": delta_y.copy(),
+                "y_minus_y_target": None if delta_y_target is None else delta_y_target.copy(),
                 "delta_u": delta_u.copy(),
                 "slack_lyap": float(step_info.get("slack_lyap", 0.0) or 0.0),
             }
@@ -992,6 +1014,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
         "lyapunov_mode": lyapunov_mode,
         "plant_mode": mode,
         "disturbance_after_step": disturbance_after_step,
+        "use_target_output_for_tracking": bool(use_target_output_for_tracking),
         "nominal_qi": nominal_qi_value,
         "nominal_qs": nominal_qs_value,
         "nominal_ha": nominal_ha_value,
@@ -1079,6 +1102,7 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "relaxed_contraction_satisfied": info.get("relaxed_contraction_satisfied"),
             "relaxed_contraction_violation": info.get("relaxed_contraction_violation"),
             "reward": info.get("reward"),
+            "use_target_output_for_tracking": info.get("use_target_output_for_tracking"),
             "u_apply": json.dumps(_jsonable(info.get("u_apply"))),
             "u_prev_dev": json.dumps(_jsonable(info.get("u_prev_dev"))),
             "u_s": json.dumps(_jsonable(info.get("u_s"))),
@@ -1087,7 +1111,11 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "y_sp": json.dumps(_jsonable(info.get("y_sp"))),
             "y_s": json.dumps(_jsonable(info.get("y_s"))),
             "y_target": json.dumps(_jsonable(info.get("y_target"))),
+            "y_s_minus_y_sp": json.dumps(_jsonable(info.get("y_s_minus_y_sp"))),
+            "y_target_minus_y_sp": json.dumps(_jsonable(info.get("y_target_minus_y_sp"))),
             "delta_y": json.dumps(_jsonable(info.get("delta_y"))),
+            "y_minus_y_sp": json.dumps(_jsonable(info.get("y_minus_y_sp"))),
+            "y_minus_y_target": json.dumps(_jsonable(info.get("y_minus_y_target"))),
             "delta_u": json.dumps(_jsonable(info.get("delta_u"))),
         }
         records.append(row)
@@ -1114,6 +1142,7 @@ def summarize_direct_lyapunov_bundle(bundle):
         "lyapunov_mode": bundle.get("lyapunov_mode"),
         "plant_mode": bundle.get("plant_mode"),
         "disturbance_after_step": bundle.get("disturbance_after_step"),
+        "use_target_output_for_tracking": bundle.get("use_target_output_for_tracking"),
         "nominal_qi": bundle.get("nominal_qi"),
         "nominal_qs": bundle.get("nominal_qs"),
         "nominal_ha": bundle.get("nominal_ha"),
@@ -1132,6 +1161,14 @@ def summarize_direct_lyapunov_bundle(bundle):
         "contraction_margin_max": float(np.nanmax(bundle["contraction_margin"])) if bundle["contraction_margin"].size else None,
         "contraction_margin_min": float(np.nanmin(bundle["contraction_margin"])) if bundle["contraction_margin"].size else None,
         "target_residual_total_norm_max": float(np.nanmax(bundle["target_residual_total_norm"])) if bundle["target_residual_total_norm"].size else None,
+        "target_reference_error_inf_mean": _safe_nanmean(bundle.get("target_reference_error_inf", [])),
+        "target_reference_error_inf_max": _safe_nanmax(bundle.get("target_reference_error_inf", [])),
+        "tracking_reference_error_inf_mean": _safe_nanmean(bundle.get("tracking_reference_error_inf", [])),
+        "tracking_reference_error_inf_max": _safe_nanmax(bundle.get("tracking_reference_error_inf", [])),
+        "output_reference_error_inf_mean": _safe_nanmean(bundle.get("output_reference_error_inf", [])),
+        "output_reference_error_inf_max": _safe_nanmax(bundle.get("output_reference_error_inf", [])),
+        "output_tracking_error_inf_mean": _safe_nanmean(bundle.get("output_tracking_error_inf", [])),
+        "output_tracking_error_inf_max": _safe_nanmax(bundle.get("output_tracking_error_inf", [])),
         "target_u_ref_penalty_mean": _safe_nanmean(bundle.get("target_u_ref_penalty", [])),
         "target_u_ref_penalty_max": _safe_nanmax(bundle.get("target_u_ref_penalty", [])),
         "target_us_u_ref_inf_mean": _safe_nanmean(bundle.get("target_us_u_ref_inf", [])),
@@ -1260,6 +1297,9 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "lyapunov_mode": summary.get("lyapunov_mode", bundle.get("lyapunov_mode")),
         "plant_mode": summary.get("plant_mode", bundle.get("plant_mode")),
         "disturbance_after_step": summary.get("disturbance_after_step", bundle.get("disturbance_after_step")),
+        "use_target_output_for_tracking": summary.get(
+            "use_target_output_for_tracking", bundle.get("use_target_output_for_tracking")
+        ),
         "nominal_qi": summary.get("nominal_qi", bundle.get("nominal_qi")),
         "nominal_qs": summary.get("nominal_qs", bundle.get("nominal_qs")),
         "nominal_ha": summary.get("nominal_ha", bundle.get("nominal_ha")),
@@ -1277,6 +1317,14 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "slack_lyap_max": summary.get("slack_lyap_max"),
         "slack_lyap_active_steps": summary.get("slack_lyap_active_steps"),
         "target_residual_total_norm_max": summary.get("target_residual_total_norm_max"),
+        "target_reference_error_inf_mean": summary.get("target_reference_error_inf_mean"),
+        "target_reference_error_inf_max": summary.get("target_reference_error_inf_max"),
+        "tracking_reference_error_inf_mean": summary.get("tracking_reference_error_inf_mean"),
+        "tracking_reference_error_inf_max": summary.get("tracking_reference_error_inf_max"),
+        "output_reference_error_inf_mean": summary.get("output_reference_error_inf_mean"),
+        "output_reference_error_inf_max": summary.get("output_reference_error_inf_max"),
+        "output_tracking_error_inf_mean": summary.get("output_tracking_error_inf_mean"),
+        "output_tracking_error_inf_max": summary.get("output_tracking_error_inf_max"),
         "target_u_ref_penalty_mean": summary.get("target_u_ref_penalty_mean"),
         "target_u_ref_penalty_max": summary.get("target_u_ref_penalty_max"),
         "target_us_u_ref_inf_mean": summary.get("target_us_u_ref_inf_mean"),
@@ -1550,6 +1598,18 @@ def save_direct_lyapunov_comparison_artifacts(
             records,
             _comparison_plot_path(plot_dir, "comparison_target_residual_bounded_activity.png"),
         )
+        plot_paths["reference_errors"] = _save_comparison_bar(
+            records,
+            [
+                "target_reference_error_inf_mean",
+                "output_reference_error_inf_mean",
+                "output_tracking_error_inf_mean",
+            ],
+            ["mean |y_s-y_sp|_inf", "mean |y-y_sp|_inf", "mean |y-y_target|_inf"],
+            "scaled-deviation infinity norm",
+            "Direct Lyapunov Four-Scenario Reference Errors",
+            _comparison_plot_path(plot_dir, "comparison_reference_errors.png"),
+        )
         plot_paths.update(_save_comparison_overlay_plots(bundles_by_case, plot_dir))
 
     summary["plot_paths"] = plot_paths
@@ -1611,6 +1671,7 @@ def build_direct_lyapunov_run_bundle(
         "lyapunov_mode": results.get("lyapunov_mode"),
         "plant_mode": results.get("plant_mode"),
         "disturbance_after_step": results.get("disturbance_after_step"),
+        "use_target_output_for_tracking": results.get("use_target_output_for_tracking"),
         "nominal_qi": results.get("nominal_qi"),
         "nominal_qs": results.get("nominal_qs"),
         "nominal_ha": results.get("nominal_ha"),
@@ -1629,6 +1690,10 @@ def build_direct_lyapunov_run_bundle(
         "target_u_ref_weight_store": _stack_vectors(direct_info_storage, "target_u_ref_weight", n_u),
         "y_target_store": _stack_vectors(direct_info_storage, "y_s", n_y),
         "y_tracking_store": _stack_vectors(direct_info_storage, "y_target", n_y),
+        "y_s_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_s_minus_y_sp", n_y),
+        "y_target_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_target_minus_y_sp", n_y),
+        "y_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_minus_y_sp", n_y),
+        "y_minus_y_target_store": _stack_vectors(direct_info_storage, "y_minus_y_target", n_y),
         "u_prev_dev_store": _stack_vectors(direct_info_storage, "u_prev_dev", n_u),
         "u_apply_dev_store": _stack_vectors(direct_info_storage, "u_apply", n_u),
         "V_k": np.array([info.get("V_k", np.nan) for info in direct_info_storage], dtype=float),
@@ -1680,10 +1745,15 @@ def build_direct_lyapunov_run_bundle(
         ],
         dtype=float,
     )
+    bundle["target_reference_error_inf"] = _row_inf_norms(bundle["y_s_minus_y_sp_store"])
+    bundle["tracking_reference_error_inf"] = _row_inf_norms(bundle["y_target_minus_y_sp_store"])
+    bundle["output_reference_error_inf"] = _row_inf_norms(bundle["y_minus_y_sp_store"])
+    bundle["output_tracking_error_inf"] = _row_inf_norms(bundle["y_minus_y_target_store"])
 
     if steady_states is not None and data_min is not None and data_max is not None:
         ss_inputs = np.asarray(steady_states["ss_inputs"], dtype=float).reshape(-1)
         ss_scaled_inputs = apply_min_max(ss_inputs, data_min[:n_u], data_max[:n_u])
+        y_scale = np.asarray(data_max, dtype=float)[n_u:] - np.asarray(data_min, dtype=float)[n_u:]
         y_ss_scaled = apply_min_max(
             np.asarray(steady_states["y_ss"], dtype=float).reshape(-1),
             data_min[n_u:],
@@ -1709,6 +1779,10 @@ def build_direct_lyapunov_run_bundle(
             data_min[n_u:],
             data_max[n_u:],
         )
+        bundle["y_s_minus_y_sp_phys_store"] = bundle["y_s_minus_y_sp_store"] * y_scale.reshape(1, -1)
+        bundle["y_target_minus_y_sp_phys_store"] = bundle["y_target_minus_y_sp_store"] * y_scale.reshape(1, -1)
+        bundle["y_minus_y_sp_phys_store"] = bundle["y_minus_y_sp_store"] * y_scale.reshape(1, -1)
+        bundle["y_minus_y_target_phys_store"] = bundle["y_minus_y_target_store"] * y_scale.reshape(1, -1)
         if results.get("u_dev_min") is not None and results.get("u_dev_max") is not None:
             u_lower_dev = np.asarray(results["u_dev_min"], dtype=float).reshape(-1)
             u_upper_dev = np.asarray(results["u_dev_max"], dtype=float).reshape(-1)
@@ -1730,6 +1804,10 @@ def build_direct_lyapunov_run_bundle(
         bundle["u_target_phys_store"] = np.full_like(bundle["u_target_dev_store"], np.nan)
         bundle["y_target_phys_store"] = np.full_like(bundle["y_target_store"], np.nan)
         bundle["y_tracking_phys_store"] = np.full_like(bundle["y_tracking_store"], np.nan)
+        bundle["y_s_minus_y_sp_phys_store"] = np.full_like(bundle["y_s_minus_y_sp_store"], np.nan)
+        bundle["y_target_minus_y_sp_phys_store"] = np.full_like(bundle["y_target_minus_y_sp_store"], np.nan)
+        bundle["y_minus_y_sp_phys_store"] = np.full_like(bundle["y_minus_y_sp_store"], np.nan)
+        bundle["y_minus_y_target_phys_store"] = np.full_like(bundle["y_minus_y_target_store"], np.nan)
         bundle["u_bounds_phys"] = None
 
     bundle["summary"] = summarize_direct_lyapunov_bundle(bundle)
