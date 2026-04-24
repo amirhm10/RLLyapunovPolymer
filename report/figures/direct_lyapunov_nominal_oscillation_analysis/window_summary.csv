@@ -1,0 +1,9 @@
+case,window,tag,eta_range,T_range,ys_eta_range,ys_T_range,u_Qc_range,u_Qm_range,us_Qc_range,us_Qm_range,u_s_corner_toggles,unique_u_s_corners,solver_fail_steps,slack_active_steps,max_slack,target_residual_mean
+bounded_hard,80-120,near_t100,0.056,0.306,0.082,0.078,20.530,0.530,3.88e-08,359.007,1,UI UL,0,0,0.000,0.399
+bounded_hard,220-320,first_constant_sp_oscillation,1.600,9.125,1.358,16.506,656.983,551.694,798.400,592.000,10,II IU LU UI UL UU,1,0,0.000,5.961
+bounded_hard,450-560,near_t500,1.258,4.873,1.003,12.224,430.615,406.055,798.400,592.000,12,IL IU LI LL LU UI UL UU,7,0,0.000,3.079
+bounded_hard,580-700,later_low_sp_oscillation,1.756,6.597,1.427,14.292,318.460,592.000,798.400,592.000,13,IU LU UI UL UU,6,0,0.000,5.345
+bounded_soft,80-120,near_t100,0.056,0.306,0.082,0.078,20.530,0.530,3.88e-08,359.007,1,UI UL,0,0,1.01e-15,0.399
+bounded_soft,220-320,first_constant_sp_oscillation,2.208,12.317,1.666,30.707,798.400,592.000,798.400,592.000,8,II IU LU UI UL UU,0,5,0.988,8.550
+bounded_soft,450-560,near_t500,1.520,8.494,1.283,15.831,607.532,423.573,798.400,592.000,14,IL IU LI LL LU UI UL UU,0,0,2.20e-13,4.802
+bounded_soft,580-700,later_low_sp_oscillation,1.188,4.312,0.987,5.678,415.290,171.537,135.983,592.000,4,IU UI UL UU,0,0,2.85e-13,3.194
