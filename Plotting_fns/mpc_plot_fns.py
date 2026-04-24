@@ -76,7 +76,6 @@ def plot_mpc_results_cstr(
     os.makedirs(out_dir, exist_ok=True)
 
     def _savefig(name_base):
-        plt.tight_layout()
         png = os.path.join(out_dir, f"{name_base}.png")
         plt.savefig(png, bbox_inches="tight", dpi=300)
         plt.close()
@@ -142,6 +141,7 @@ def plot_mpc_results_cstr(
         # -------- Plot 1 (full horizon): outputs --------
         fig, axes = plt.subplots(n_outputs, 1, figsize=(7.6, 2.6 * n_outputs), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle("MPC Outputs, Setpoints, And Targets - Full Horizon", fontsize=13, fontweight="bold")
         for idx, ax in enumerate(axes):
             ax.plot(time_plot, y_mpc[:, idx], "-", lw=2.2, color=C_MPC, label="MPC", zorder=2)
             ax.step(
@@ -188,11 +188,13 @@ def plot_mpc_results_cstr(
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0, facecolor="white")
         axes[-1].set_xlabel("Time (h)")
         plt.gcf().subplots_adjust(right=0.80)
+        plt.tight_layout(rect=(0.0, 0.0, 0.80, 0.94))
         _savefig("fig_mpc_outputs_full")
 
         # -------- Plot 1b (last window): outputs --------
         fig, axes = plt.subplots(n_outputs, 1, figsize=(7.6, 2.6 * n_outputs), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle("MPC Outputs, Setpoints, And Targets - Last Window", fontsize=13, fontweight="bold")
         output_start = max(0, nFE - time_in_sub_episodes)
         for idx, ax in enumerate(axes):
             ax.plot(
@@ -245,11 +247,13 @@ def plot_mpc_results_cstr(
             ax.xaxis.set_major_formatter(mtick.FormatStrFormatter("%.1f"))
         axes[-1].set_xlabel("Time (h)")
         plt.gcf().subplots_adjust(right=0.80)
+        plt.tight_layout(rect=(0.0, 0.0, 0.80, 0.94))
         _savefig(f"fig_mpc_outputs_last{time_in_sub_episodes}")
 
         # -------- Plot 2 (full horizon): inputs --------
         fig, axes = plt.subplots(n_inputs, 1, figsize=(7.6, 2.6 * n_inputs), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle("MPC Inputs, Bounds, And Steady Targets - Full Horizon", fontsize=13, fontweight="bold")
         for idx, ax in enumerate(axes):
             ax.step(
                 time_plot[:-1],
@@ -281,11 +285,13 @@ def plot_mpc_results_cstr(
             ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0, facecolor="white")
         axes[-1].set_xlabel("Time (h)")
         plt.gcf().subplots_adjust(right=0.80)
+        plt.tight_layout(rect=(0.0, 0.0, 0.80, 0.94))
         _savefig("fig_mpc_inputs_full")
 
         # -------- Plot 2b (last window): inputs --------
         fig, axes = plt.subplots(n_inputs, 1, figsize=(7.6, 2.6 * n_inputs), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle("MPC Inputs, Bounds, And Steady Targets - Last Window", fontsize=13, fontweight="bold")
         input_start = max(0, nFE - time_in_sub_episodes)
         input_time = np.linspace(0, min(time_in_sub_episodes, nFE) * delta_t, nFE - input_start)
         for idx, ax in enumerate(axes):
@@ -316,6 +322,7 @@ def plot_mpc_results_cstr(
             ax.xaxis.set_major_formatter(mtick.FormatStrFormatter("%.1f"))
         axes[-1].set_xlabel("Time (h)")
         plt.gcf().subplots_adjust(right=0.80)
+        plt.tight_layout(rect=(0.0, 0.0, 0.80, 0.94))
         _savefig(f"fig_mpc_inputs_last{time_in_sub_episodes}")
 
     return out_dir

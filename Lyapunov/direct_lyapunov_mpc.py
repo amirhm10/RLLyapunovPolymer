@@ -7,7 +7,7 @@ import pickle
 from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
@@ -612,7 +612,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
     lyapunov_mode="hard",
     target_config=None,
     target_H=None,
-    mode="disturb",
+    mode="nominal",
     disturbance_after_step=True,
     use_target_output_for_tracking=False,
     skip_terminal_if_alpha_small=True,
@@ -1109,11 +1109,20 @@ def _physical_setpoint_steps(bundle) -> np.ndarray:
     if y_sp.ndim == 1:
         y_sp = y_sp.reshape(1, -1)
 
+    y_plot, _ = _output_deviation_steps_to_plot_units(bundle, y_sp)
+    return y_plot
+
+
+def _output_deviation_steps_to_plot_units(bundle, values) -> Tuple[np.ndarray, str]:
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+
     steady_states = bundle.get("steady_states")
     data_min = bundle.get("data_min")
     data_max = bundle.get("data_max")
     if steady_states is None or data_min is None or data_max is None:
-        return y_sp.copy()
+        return values.copy(), "scaled deviation"
 
     n_u = int(np.asarray(bundle["u_applied_phys"]).shape[1])
     y_ss_scaled = apply_min_max(
@@ -1121,11 +1130,29 @@ def _physical_setpoint_steps(bundle) -> np.ndarray:
         np.asarray(data_min, dtype=float)[n_u:],
         np.asarray(data_max, dtype=float)[n_u:],
     )
-    return reverse_min_max(
-        y_sp + y_ss_scaled.reshape(1, -1),
-        np.asarray(data_min, dtype=float)[n_u:],
-        np.asarray(data_max, dtype=float)[n_u:],
+    return (
+        reverse_min_max(
+            values + y_ss_scaled.reshape(1, -1),
+            np.asarray(data_min, dtype=float)[n_u:],
+            np.asarray(data_max, dtype=float)[n_u:],
+        ),
+        "physical units",
     )
+
+
+def _bundle_output_plot_array(bundle, physical_key: str, deviation_key: str) -> Tuple[np.ndarray, str]:
+    if physical_key in bundle:
+        arr = np.asarray(bundle[physical_key], dtype=float)
+        if arr.size and np.any(np.isfinite(arr)):
+            return arr.copy(), "physical units"
+    return _output_deviation_steps_to_plot_units(bundle, bundle[deviation_key])
+
+
+def _plot_title_prefix(bundle) -> str:
+    source = bundle.get("source")
+    if source is None or str(source).strip() == "":
+        return "Direct Lyapunov MPC"
+    return f"Direct Lyapunov MPC - {source}"
 
 
 def direct_output_rmse_post_step(bundle) -> np.ndarray:
@@ -1307,6 +1334,11 @@ def _save_comparison_overlay_plots(bundles_by_case, output_dir):
 
     fig, axes = plt.subplots(n_y, 1, figsize=(11, 3.2 * n_y), sharex=True)
     axes = np.atleast_1d(axes)
+    fig.suptitle(
+        "Direct Lyapunov Four-Scenario Output Overlay (physical units)",
+        fontsize=14,
+        fontweight="bold",
+    )
     for case_name, bundle in bundles_by_case.items():
         y_system = np.asarray(bundle["y_system"], dtype=float)
         time_y = np.arange(y_system.shape[0])
@@ -1329,13 +1361,18 @@ def _save_comparison_overlay_plots(bundles_by_case, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     paths["outputs_overlay"] = _comparison_plot_path(output_dir, "comparison_outputs_overlay.png")
     fig.savefig(paths["outputs_overlay"], dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     fig, axes = plt.subplots(n_u, 1, figsize=(11, 3.0 * n_u), sharex=True)
     axes = np.atleast_1d(axes)
+    fig.suptitle(
+        "Direct Lyapunov Four-Scenario Input Overlay (physical units)",
+        fontsize=14,
+        fontweight="bold",
+    )
     for case_name, bundle in bundles_by_case.items():
         u_applied = np.asarray(bundle["u_applied_phys"], dtype=float)
         time_u = np.arange(u_applied.shape[0])
@@ -1351,7 +1388,7 @@ def _save_comparison_overlay_plots(bundles_by_case, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
     paths["inputs_overlay"] = _comparison_plot_path(output_dir, "comparison_inputs_overlay.png")
     fig.savefig(paths["inputs_overlay"], dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -1645,10 +1682,12 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
 
     os.makedirs(output_dir, exist_ok=True)
     _save_existing_cstr_plot_views(bundle, output_dir, paper_style=paper_style)
+    title_prefix = _plot_title_prefix(bundle)
     y_system = np.asarray(bundle["y_system"], dtype=float)
     y_sp_steps = np.asarray(bundle["y_sp_steps"], dtype=float)
-    y_target_store = np.asarray(bundle["y_target_store"], dtype=float)
-    y_tracking_store = np.asarray(bundle["y_tracking_store"], dtype=float)
+    y_sp_plot, y_unit_label = _output_deviation_steps_to_plot_units(bundle, y_sp_steps)
+    y_target_plot, _ = _bundle_output_plot_array(bundle, "y_target_phys_store", "y_target_store")
+    y_tracking_plot, _ = _bundle_output_plot_array(bundle, "y_tracking_phys_store", "y_tracking_store")
     u_applied_phys = np.asarray(bundle["u_applied_phys"], dtype=float)
     u_target_phys_store = np.asarray(bundle["u_target_phys_store"], dtype=float)
     xhatdhat = np.asarray(bundle["xhatdhat"], dtype=float)
@@ -1675,21 +1714,31 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     with _plot_ctx(paper_style):
         fig, axes = plt.subplots(n_y, 1, figsize=(11, 3.2 * n_y), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle(
+            f"{title_prefix}: Output Trajectories And Targets ({y_unit_label})",
+            fontsize=14,
+            fontweight="bold",
+        )
         for idx, ax in enumerate(axes):
             ax.plot(t_y, y_system[:, idx], linewidth=2.0, color=PAPER_COLORS["output"], label="y")
-            ax.step(t_u, y_sp_steps[:, idx], where="post", linewidth=1.8, linestyle="--", color=PAPER_COLORS["setpoint"], label="y_sp")
-            ax.step(t_u, y_target_store[:, idx], where="post", linewidth=1.5, linestyle="-.", color=PAPER_COLORS["target"], label="y_s")
-            ax.step(t_u, y_tracking_store[:, idx], where="post", linewidth=1.2, linestyle=":", label="stage target")
-            ax.set_ylabel(f"y[{idx}]")
+            ax.step(t_u, y_sp_plot[:, idx], where="post", linewidth=1.8, linestyle="--", color=PAPER_COLORS["setpoint"], label="y_sp")
+            ax.step(t_u, y_target_plot[:, idx], where="post", linewidth=1.5, linestyle="-.", color=PAPER_COLORS["target"], label="y_s")
+            ax.step(t_u, y_tracking_plot[:, idx], where="post", linewidth=1.2, linestyle=":", label="stage target")
+            ax.set_ylabel(f"y[{idx}]\n{y_unit_label}")
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
         axes[-1].set_xlabel("step")
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
         plt.savefig(os.path.join(output_dir, "01_outputs_vs_targets.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         fig, axes = plt.subplots(n_u, 1, figsize=(11, 3.0 * n_u), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle(
+            f"{title_prefix}: Applied Inputs And Steady Input Targets (physical units)",
+            fontsize=14,
+            fontweight="bold",
+        )
         for idx, ax in enumerate(axes):
             ax.step(t_u, u_applied_phys[:, idx], where="post", linewidth=2.0, color=PAPER_COLORS.get(f"input_{idx}", "tab:blue"), label="u_applied")
             ax.step(t_u, u_target_phys_store[:, idx], where="post", linewidth=1.5, linestyle="--", color=PAPER_COLORS["target"], label="u_s")
@@ -1701,12 +1750,17 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
         axes[-1].set_xlabel("step")
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
         plt.savefig(os.path.join(output_dir, "02_inputs_vs_targets.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         fig, axes = plt.subplots(max(n_x, 1), 1, figsize=(11, 2.6 * max(n_x, 1)), sharex=True)
         axes = np.atleast_1d(axes)
+        fig.suptitle(
+            f"{title_prefix}: State Estimate Minus Steady Target",
+            fontsize=14,
+            fontweight="bold",
+        )
         xhat_phys = xhatdhat[:n_x, :-1]
         for idx, ax in enumerate(axes[:n_x]):
             err = xhat_phys[idx, :] - x_target_store[:, idx]
@@ -1715,11 +1769,16 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
         axes[-1].set_xlabel("step")
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         plt.savefig(os.path.join(output_dir, "03_state_target_error.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         fig, axes = plt.subplots(4, 1, figsize=(11, 11), sharex=True)
+        fig.suptitle(
+            f"{title_prefix}: Lyapunov Contraction Diagnostics",
+            fontsize=14,
+            fontweight="bold",
+        )
         axes[0].plot(t_u, V_k, linewidth=1.8, label="V_k")
         axes[0].plot(t_u, V_next_first, linewidth=1.8, label="V_next_first")
         axes[0].plot(t_u, V_bound, linewidth=1.8, linestyle="--", label="V_bound")
@@ -1740,11 +1799,16 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         axes[3].legend(loc="best")
         for ax in axes:
             ax.grid(True, linestyle="--", alpha=0.35)
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         plt.savefig(os.path.join(output_dir, "04_lyapunov_diagnostics.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         fig, axes = plt.subplots(5, 1, figsize=(11, 13), sharex=True)
+        fig.suptitle(
+            f"{title_prefix}: Target Selector Diagnostics",
+            fontsize=14,
+            fontweight="bold",
+        )
         axes[0].plot(t_u, target_residual, linewidth=1.8, label="target_residual_total_norm")
         axes[0].legend(loc="best")
         axes[0].set_ylabel("residual")
@@ -1767,7 +1831,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         axes[4].set_xlabel("step")
         for ax in axes:
             ax.grid(True, linestyle="--", alpha=0.35)
-        plt.tight_layout()
+        plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         plt.savefig(os.path.join(output_dir, "05_target_diagnostics.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
@@ -1775,10 +1839,15 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         if tail > 0:
             start = nFE - tail
             fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+            fig.suptitle(
+                f"{title_prefix}: Tail Window Summary",
+                fontsize=14,
+                fontweight="bold",
+            )
             local_t = np.arange(start, nFE)
             for idx in range(n_y):
                 axes[0].plot(np.arange(start, nFE + 1), y_system[start:nFE + 1, idx], linewidth=1.8, label=f"y[{idx}]")
-                axes[0].step(local_t, y_sp_steps[start:nFE, idx], where="post", linewidth=1.2, linestyle="--", label=f"y_sp[{idx}]")
+                axes[0].step(local_t, y_sp_plot[start:nFE, idx], where="post", linewidth=1.2, linestyle="--", label=f"y_sp[{idx}]")
             axes[0].legend(loc="best")
             axes[0].set_ylabel("outputs")
             for idx in range(n_u):
@@ -1793,7 +1862,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
             axes[2].set_xlabel("step")
             for ax in axes:
                 ax.grid(True, linestyle="--", alpha=0.35)
-            plt.tight_layout()
+            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
             plt.savefig(os.path.join(output_dir, "06_tail_window_summary.png"), dpi=300, bbox_inches="tight")
             plt.close(fig)
 

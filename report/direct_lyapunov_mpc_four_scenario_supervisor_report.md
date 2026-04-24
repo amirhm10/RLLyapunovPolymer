@@ -387,6 +387,11 @@ The comparison table is:
 
 The output RMSE values are post-step physical output RMSE values computed from `y_system[1:]` against the physical setpoint schedule.
 
+The output-target figures in this report use physical output units for all
+output traces: measured `y`, scheduled `y_sp`, selected steady target `y_s`,
+and MPC stage target. This avoids the earlier misleading comparison where
+measured `y` was physical but the target traces were scaled deviations.
+
 The Lyapunov slack and target-selector table is:
 
 | Case | Slack mean | Slack max | Slack active | Max target residual | Exact target in bounds | Bounded target used |
@@ -458,7 +463,7 @@ The slack plot separates the two soft cases clearly. `unbounded_soft` uses large
 
 The target residual plot shows why bounded projection should be interpreted carefully. A nonzero residual in bounded mode is expected: it is the price of respecting input admissibility. The relevant question is whether the resulting target makes the MPC feasible and stabilizing.
 
-![Output overlay across all four cases.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_outputs_overlay.png)
+![Output overlay across all four cases in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_outputs_overlay_physical.svg)
 
 ![Input overlay across all four cases.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_inputs_overlay.png)
 
@@ -480,7 +485,7 @@ Summary:
 
 The unbounded target selector solves the steady equations exactly, so `y_s` is essentially equal to `y_sp`. However, the exact target is outside the input bounds at every step. The hard Lyapunov MPC then has no accepted feasible trajectory and falls back to holding the previous input at every step.
 
-![unbounded_hard outputs and target outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_01_outputs_vs_targets.png)
+![unbounded_hard outputs and target outputs in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_01_outputs_vs_targets_physical.svg)
 
 ![unbounded_hard inputs and steady input targets.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_02_inputs_vs_targets.png)
 
@@ -518,7 +523,7 @@ Summary:
 
 This is the best reward case. The bounded target projection is active on almost every step, which means the exact target is normally outside the admissible input region. Unlike unbounded-hard, the projected target gives the hard Lyapunov MPC a feasible steady center for most of the run.
 
-![bounded_hard outputs and target outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_01_outputs_vs_targets.png)
+![bounded_hard outputs and target outputs in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_01_outputs_vs_targets_physical.svg)
 
 ![bounded_hard inputs and steady input targets.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_02_inputs_vs_targets.png)
 
@@ -561,7 +566,7 @@ Summary:
 
 Softening the Lyapunov constraint rescues feasibility for the unbounded target, but the result is not a clean Lyapunov controller. The unbounded target is still inadmissible almost everywhere. The optimizer can solve by using slack, but hard contraction holds on only 30.5% of steps and slack is active on 66.75% of steps.
 
-![unbounded_soft outputs and target outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_01_outputs_vs_targets.png)
+![unbounded_soft outputs and target outputs in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_01_outputs_vs_targets_physical.svg)
 
 ![unbounded_soft inputs and steady input targets.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_02_inputs_vs_targets.png)
 
@@ -604,7 +609,7 @@ Summary:
 
 This is the most robust case by solver success. The bounded target is used at every step, and the soft slack is active only rarely. The result suggests that bounded projection plus soft contraction is a good diagnostic and fallback mode: it preserves nearly all of the hard Lyapunov behavior while avoiding the occasional hard infeasibility seen in `bounded_hard`.
 
-![bounded_soft outputs and target outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_01_outputs_vs_targets.png)
+![bounded_soft outputs and target outputs in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_01_outputs_vs_targets_physical.svg)
 
 ![bounded_soft inputs and steady input targets.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_02_inputs_vs_targets.png)
 
