@@ -1,57 +1,67 @@
-# Nominal Four-Scenario Direct Lyapunov MPC Report
+# Nominal Eight-Scenario Direct Lyapunov MPC Supervisor Report
 
-This report rewrites the direct frozen-output-disturbance Lyapunov MPC study
-around the latest nominal-mode export:
+This report rewrites the direct frozen-output-disturbance Lyapunov MPC
+supervisor study around the latest nominal eight-scenario export:
 
-`Data/debug_exports/direct_lyapunov_mpc_four_scenario/20260423_221822`
+`Data/debug_exports/direct_lyapunov_mpc_eight_scenario/20260423_231816`
 
-The comparison summary was created at `2026-04-23T22:25:15`. The report-ready
+The comparison summary was created at `2026-04-23T23:29:52`. The report-ready
 figures were copied into:
 
 `report/figures/direct_lyapunov_mpc_frozen_output_disturbance/`
 
-The important change relative to the previous report is that this run uses the
-nominal plant mode and the output plots are now in a consistent physical scale.
-Measured outputs, scheduled setpoints, selected target outputs, and comparison
-overlays are no longer mixing physical plant units with scaled-deviation target
-coordinates.
+The study is nominal. Every case reports `plant_mode = nominal`,
+`disturbance_after_step = False`, and unchanged plant disturbance parameters:
+`Qi = 108.0`, `Qs = 459.0`, and `hA = 1050000.0` at both run start and run end.
 
 ## Executive Conclusion
 
-The nominal run confirms that target admissibility is the deciding issue for the
-direct Lyapunov MPC controller.
-
-The unbounded target selector solves the steady output equations almost exactly,
-so `y_s` is essentially equal to `y_sp`. That result is mathematically clean but
-not operationally useful here: the associated steady input `u_s` is outside the
-admissible input box for every logged step. With a hard Lyapunov constraint this
-produces all-step infeasibility. With a soft Lyapunov constraint the controller
-can often solve, but it does so by using large and frequent slack.
-
-The bounded target selector gives the useful controller behavior. It accepts a
-nonzero target residual when the requested setpoint is not reachable with an
-admissible steady input. In exchange, the MPC has a feasible steady center. In
-this nominal run, `bounded_hard` gives the best reward and strict first-step
-Lyapunov contraction on every accepted solve. `bounded_soft` gives nearly the
-same solve reliability while using only small, rare Lyapunov slack.
-
-The recommended baseline pair after this run is:
+The eight-scenario run changes the recommendation. The best nominal supervisor
+candidate is now:
 
 | Role | Case | Reason |
 | --- | --- | --- |
-| Strict Lyapunov baseline | `bounded_hard` | Best reward, zero slack, contraction on all accepted solves |
-| Robust fallback baseline | `bounded_soft` | Similar solve rate, tiny slack, softens only difficult steps |
+| Primary nominal supervisor | `bounded_soft_u_prev_1p0` | Best reward, best mean output RMSE, 100% solver success, 100% contraction, no active Lyapunov slack |
+| Strict no-slack backup | `bounded_hard_u_prev_1p0` | Zero slack by construction, 99.81% solver success, strong reward improvement over unregularized hard bounded MPC |
+| Diagnostic controls | `unbounded_hard`, `unbounded_soft` | Exact output targets but inadmissible steady inputs; useful for exposing target infeasibility, not for deployment |
 
-The unbounded cases should remain in the study as diagnostic controls rather
-than controller candidates.
+The previous-input target regularization is not a cosmetic change. It changes
+the steady target selected by the bounded target projection when the exact
+steady input lies outside the admissible box. In this nominal run, increasing
+the regularization from `lambda_prev = 0.1` to `lambda_prev = 1.0` improves the
+best soft bounded case from reward `-15.99` to `-3.60` and reduces the mean
+physical output RMSE from `0.8207` to `0.3705`.
 
-## Study Setup
+The important interpretation is this:
 
-The notebook entrypoint is:
+- Unbounded targets make the output equation look perfect, but the associated
+  steady input is inadmissible for all 1600 steps.
+- Bounded targets make the steady target admissible, but unregularized bounded
+  projections can jump across the input box and give the MPC a moving Lyapunov
+  center.
+- Adding `u_s-u_{k-1}` regularization makes the bounded target selector choose
+  the reachable steady target closest to the previously applied input, which
+  stabilizes the target center seen by the Lyapunov constraint.
+- The main MPC objective remains normal MPC: output tracking plus input move
+  penalty. The `u_prev` term lives in the target selector, not in the MPC cost.
 
-`DirectLyapunovMPC_FrozenOutputDisturbance.ipynb`
+## Study Matrix
 
-The current visible defaults for this study are:
+All eight cases use the same plant, observer, setpoint schedule, horizons,
+MPC weights, failure policy, and nominal plant mode.
+
+| Case | Target selector | Lyapunov mode | `lambda_prev` |
+| --- | --- | --- | ---: |
+| `unbounded_hard` | exact unbounded steady target | hard | n/a |
+| `bounded_hard` | bounded target projection | hard | 0 |
+| `unbounded_soft` | exact unbounded steady target | soft | n/a |
+| `bounded_soft` | bounded target projection | soft | 0 |
+| `bounded_hard_u_prev` | bounded target projection with previous-input regularization | hard | 0.1 |
+| `bounded_soft_u_prev` | bounded target projection with previous-input regularization | soft | 0.1 |
+| `bounded_hard_u_prev_1p0` | bounded target projection with previous-input regularization | hard | 1.0 |
+| `bounded_soft_u_prev_1p0` | bounded target projection with previous-input regularization | soft | 1.0 |
+
+The visible notebook defaults for this run were:
 
 | Setting | Value |
 | --- | --- |
@@ -68,23 +78,10 @@ The current visible defaults for this study are:
 | Terminal objective term | `False` |
 | Logged steps per case | 1600 |
 
-The four cases are:
+## Mathematical Formulation
 
-| Case | Target selector | Lyapunov constraint |
-| --- | --- | --- |
-| `unbounded_hard` | exact unbounded steady target | strict first-step contraction |
-| `bounded_hard` | input-bounded steady target projection | strict first-step contraction |
-| `unbounded_soft` | exact unbounded steady target | contraction relaxed by slack |
-| `bounded_soft` | input-bounded steady target projection | contraction relaxed by slack |
-
-All cases use the same plant, observer, setpoint schedule, horizons, cost
-weights, and failure policy. Solver failures hold the previous input and are
-logged as `solver_fail_hold_prev`.
-
-## Model And Target Calculation
-
-The direct controller uses a frozen output-disturbance model in scaled deviation
-coordinates:
+The direct controller uses the frozen output-disturbance model in scaled
+deviation coordinates:
 
 ```math
 x_{k+1}=Ax_k+Bu_k,
@@ -94,392 +91,344 @@ y_k=Cx_k+d_k,
 d_{k+1}=d_k .
 ```
 
-The online observer state is:
+The observer state is:
 
 ```math
-\hat{z}_k =
+\hat z_k =
 \begin{bmatrix}
-\hat{x}_k\\
-\hat{d}_k
+\hat x_k\\
+\hat d_k
 \end{bmatrix}.
 ```
 
-At every step the target disturbance is frozen:
+At every time step, the target selector freezes the estimated output
+disturbance:
 
 ```math
-d_s = \hat{d}_k .
+d_s = \hat d_k .
 ```
 
-Only `x_s` and `u_s` are selected. The exact steady equations are:
+Only the steady state `x_s` and steady input `u_s` are selected. The exact
+unbounded target solves:
 
 ```math
-(I-A)x_s-Bu_s=0,
+(I-A)x_s - Bu_s = 0,
 \qquad
-Cx_s = y_{\mathrm{sp},k}-\hat{d}_k .
+Cx_s = y_{\mathrm{sp},k} - \hat d_k .
 ```
 
-Stacked into one least-squares system:
+Equivalently, after eliminating `x_s` when the reduced map is available:
 
 ```math
-\begin{bmatrix}
-I-A & -B\\
-C & 0
-\end{bmatrix}
-\begin{bmatrix}
-x_s\\
-u_s
-\end{bmatrix}
+x_s = (I-A)^{-1}Bu_s,
+\qquad
+G = C(I-A)^{-1}B,
+```
+
+```math
+G u_s = y_{\mathrm{sp},k}-\hat d_k .
+```
+
+This is the clean mathematical target, but it ignores actuator limits. The
+bounded selector first checks whether the exact `u_s` satisfies:
+
+```math
+u_{\min} \le u_s \le u_{\max}.
+```
+
+If it does, the exact target is kept. This matters: the regularization does
+not pull an already feasible exact target away from the setpoint. If the exact
+target is outside the box, the unregularized bounded projection solves:
+
+```math
+\min_{u_{\min}\le u_s\le u_{\max}}
+\left\|G u_s - \left(y_{\mathrm{sp},k}-\hat d_k\right)\right\|_2^2 .
+```
+
+The two new regularized target selectors solve instead:
+
+```math
+\min_{u_{\min}\le u_s\le u_{\max}}
+\left\|G u_s - \left(y_{\mathrm{sp},k}-\hat d_k\right)\right\|_2^2
++
+\lambda_{\mathrm{prev}}
+\left\|u_s-u_{k-1}\right\|_2^2 .
+```
+
+Here `u_{k-1}` is the previous applied input in scaled deviation coordinates.
+The two weights in this run are:
+
+```math
+\lambda_{\mathrm{prev}}\in\{0.1,\;1.0\}.
+```
+
+For inactive bounds, the regularized stationarity condition is:
+
+```math
+\left(G^\top G+\lambda_{\mathrm{prev}}I\right)u_s
 =
-\begin{bmatrix}
-0\\
-y_{\mathrm{sp},k}-\hat{d}_k
-\end{bmatrix}.
+G^\top\left(y_{\mathrm{sp},k}-\hat d_k\right)
++
+\lambda_{\mathrm{prev}}u_{k-1}.
 ```
 
-The unbounded selector solves this system without input bounds. The bounded
-selector enforces:
+With active bounds, the same balance appears in the KKT system with bound
+multipliers. This equation explains the observed behavior: increasing
+`lambda_prev` damps motion of the selected steady input in directions where the
+output projection is weak or where the unconstrained target would jump to a box
+corner.
 
-```math
-u_{\min}\le u_s\le u_{\max}.
-```
-
-When the exact target is outside the input box, bounded mode returns the closest
-input-admissible steady compromise. Therefore a nonzero bounded target residual
-is not a failure by itself. It is the expected cost of replacing an unreachable
-requested setpoint with an admissible steady target.
-
-## Direct MPC Objective
-
-The current direct MPC objective is the normal output-tracking objective:
+The MPC optimization itself remains the normal tracking MPC objective:
 
 ```math
 J_k =
-\sum_{i=0}^{N_p-1}
-\left(y_{i|k}-y_{\mathrm{sp},k}\right)^T
-Q_y
-\left(y_{i|k}-y_{\mathrm{sp},k}\right)
+\sum_{i=1}^{N_p}
+\left\|y_{k+i|k}-y_{\mathrm{sp},k}\right\|_Q^2
 +
-\sum_{i=0}^{N_c-1}
-\Delta u_{i|k}^T
-R_{\Delta u}
-\Delta u_{i|k}.
+\left\|u_{k|k}-u_{k-1}\right\|_R^2
++
+\sum_{i=1}^{N_c-1}
+\left\|u_{k+i|k}-u_{k+i-1|k}\right\|_R^2 .
 ```
 
-The objective tracks the scheduled setpoint `y_sp`, not the selected steady
-target output `y_s`. The steady variables `x_s`, `u_s`, and `y_s` are retained
-for Lyapunov contraction and terminal admissibility, but they are not objective
-anchors in this run. The extra `u-u_s` and terminal `x_N-x_s` cost terms are
-disabled.
-
-The first-step Lyapunov function is:
+There is no active objective term of the form:
 
 ```math
-V_k=(\hat{x}_k-x_s)^T P_x(\hat{x}_k-x_s).
+\left\|u_{k+i|k}-u_s\right\|_{S_u}^2
 ```
 
-Hard mode enforces:
+and there is no active terminal objective term in this run. The target `x_s`
+enters through the Lyapunov constraint. Define:
 
 ```math
-V_{1|k}\le \rho V_k+\epsilon_{\mathrm{lyap}}.
+V_k = \left(\hat x_k-x_s\right)^\top P\left(\hat x_k-x_s\right).
 ```
 
-Soft mode adds one nonnegative slack:
+The hard first-step Lyapunov condition is:
 
 ```math
-V_{1|k}\le \rho V_k+\epsilon_{\mathrm{lyap}}+\sigma_k,
+\left(x_{k+1|k}-x_s\right)^\top P\left(x_{k+1|k}-x_s\right)
+\le
+\rho V_k+\epsilon .
+```
+
+The soft mode adds a nonnegative slack:
+
+```math
+\left(x_{k+1|k}-x_s\right)^\top P\left(x_{k+1|k}-x_s\right)
+\le
+\rho V_k+\epsilon+s_k,
 \qquad
-\sigma_k\ge 0,
+s_k\ge 0,
 ```
 
-and penalizes it with `slack_penalty = 1e6`.
-
-## Nominal Run Metrics
-
-The output RMSE values below are computed in physical output units from the
-post-step plant output against the scheduled setpoint.
-
-| Case | Mean reward | Output 0 RMSE | Output 1 RMSE | Mean output RMSE | Solver success | Hard contraction | Relaxed contraction |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `unbounded_hard` | -36.833 | 0.553 | 1.863 | 1.208 | 0.00% | 0.00% | 0.00% |
-| `bounded_hard` | -26.442 | 0.438 | 1.854 | 1.146 | 96.75% | 96.75% | 96.75% |
-| `unbounded_soft` | -98.829 | 0.198 | 0.889 | 0.543 | 97.31% | 26.62% | 97.31% |
-| `bounded_soft` | -33.560 | 0.468 | 2.247 | 1.358 | 97.38% | 96.38% | 97.38% |
-
-`unbounded_soft` has the lowest output RMSE, but it is not the best controller
-interpretation. Its reward is the worst of the four cases and the Lyapunov
-slack is active on most steps. This is output tracking bought with relaxation
-against an inadmissible target, not clean Lyapunov tracking.
-
-The slack and target-admissibility summary is:
-
-| Case | Slack mean | Slack max | Slack active | Max target residual | Exact target in bounds | Bounded target used |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `unbounded_hard` | 0.000 | 0.000 | 0 / 1600 | `4.07e-15` | 0 / 1600 | 0 / 1600 |
-| `bounded_hard` | 0.000 | 0.000 | 0 / 1600 | 15.555 | 37 / 1600 | 1563 / 1600 |
-| `unbounded_soft` | 4.043 | 32.227 | 1131 / 1600 | `5.05e-15` | 0 / 1600 | 0 / 1600 |
-| `bounded_soft` | 0.00242 | 0.988 | 16 / 1600 | 21.833 | 88 / 1600 | 1512 / 1600 |
-
-The target-comparison diagnostics explain the result:
-
-| Case | Mean `||u-u_s||_inf` | Max `||u-u_s||_inf` | Mean `||y_s-y_sp||_inf` | Max `||y_s-y_sp||_inf` | Mean `||d_s||_inf` | Lower-active steps | Upper-active steps |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `unbounded_hard` | 555.262 | 689.123 | `3.21e-16` | `3.66e-15` | `2.95e-09` | 0 / 1600 | 0 / 1600 |
-| `bounded_hard` | 11.598 | 19.948 | 2.697 | 15.172 | 4.156 | 1179 / 1600 | 1349 / 1600 |
-| `unbounded_soft` | 454.581 | 1690.670 | `6.05e-16` | `4.44e-15` | 6.927 | 0 / 1600 | 0 / 1600 |
-| `bounded_soft` | 11.978 | 19.960 | 2.579 | 20.914 | 4.364 | 968 / 1600 | 1286 / 1600 |
-
-The unbounded targets match the setpoint output almost exactly, but their
-steady inputs are hundreds of input units away from the applied constrained
-inputs. The bounded targets deliberately move `y_s` away from `y_sp` so that
-`u_s` can remain admissible.
-
-The first-step Lyapunov delta is the clean contraction diagnostic:
+and penalizes it:
 
 ```math
-\Delta V_{\mathrm{pred},k}=V_{1|k}-V_k .
+J_k^{\mathrm{soft}} = J_k + p_s s_k .
 ```
 
-The logged step-to-step delta,
+In this run, the best soft regularized case has `s_k` numerically zero for all
+steps, so soft mode behaves like hard mode while preserving a feasibility
+escape hatch.
+
+## Nominal-Mode Audit
+
+The latest run confirms nominal plant operation in the exported comparison
+table.
+
+| Quantity | Value |
+| --- | --- |
+| `plant_mode` | `nominal` for all eight cases |
+| `disturbance_after_step` | `False` for all eight cases |
+| `Qi` nominal/final | `108.0 / 108.0` |
+| `Qs` nominal/final | `459.0 / 459.0` |
+| `hA` nominal/final | `1050000.0 / 1050000.0` |
+
+Therefore the oscillations and performance differences in this report should
+not be attributed to disturbance injection. They are generated by the
+controller-target interaction under nominal nonlinear plant simulation.
+
+## Performance Results
+
+| Case | `lambda_prev` | Reward mean | Solver success | Hard contraction | Relaxed contraction | Slack active | Slack max | Mean output RMSE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `unbounded_hard` | n/a | -36.83 | 0.00% | 0.00% | 0.00% | 0 | 0.0000 | 1.208 |
+| `bounded_hard` | 0 | -26.44 | 96.75% | 96.75% | 96.75% | 0 | 0.0000 | 1.146 |
+| `unbounded_soft` | n/a | -98.83 | 97.31% | 26.62% | 97.31% | 1131 | 32.23 | 0.5434 |
+| `bounded_soft` | 0 | -33.56 | 97.38% | 96.38% | 97.38% | 16 | 0.9876 | 1.358 |
+| `bounded_hard_u_prev` | 0.1 | -11.64 | 99.50% | 99.50% | 99.50% | 0 | 0.0000 | 0.6442 |
+| `bounded_soft_u_prev` | 0.1 | -15.99 | 100.00% | 99.69% | 100.00% | 5 | 0.7129 | 0.8207 |
+| `bounded_hard_u_prev_1p0` | 1.0 | -7.694 | 99.81% | 99.81% | 99.81% | 0 | 0.0000 | 0.5669 |
+| `bounded_soft_u_prev_1p0` | 1.0 | -3.598 | 100.00% | 100.00% | 100.00% | 0 | 0.0000 | 0.3705 |
+
+The ranking by reward is:
+
+| Rank | Case | Reward mean |
+| ---: | --- | ---: |
+| 1 | `bounded_soft_u_prev_1p0` | -3.598 |
+| 2 | `bounded_hard_u_prev_1p0` | -7.694 |
+| 3 | `bounded_hard_u_prev` | -11.64 |
+| 4 | `bounded_soft_u_prev` | -15.99 |
+| 5 | `bounded_hard` | -26.44 |
+| 6 | `bounded_soft` | -33.56 |
+| 7 | `unbounded_hard` | -36.83 |
+| 8 | `unbounded_soft` | -98.83 |
+
+The reward ranking and RMSE ranking both point to the same conclusion: the
+stronger previous-input regularization, especially in soft mode, is the most
+useful nominal setting from this run.
+
+![Eight-scenario reward comparison](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_reward_mean.png)
+
+![Eight-scenario output RMSE comparison](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_output_rmse.png)
+
+## Target-Selector Results
+
+| Case | Exact in-bounds steps | Bounded LS steps | Target residual max | Mean `||u_s-u_prev||_inf` | Max `||u_s-u_prev||_inf` | Active `u_prev` steps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `unbounded_hard` | 0 | 0 | 0.0000 | 555.3 | 689.1 | 0 |
+| `bounded_hard` | 37 | 1563 | 15.56 | 11.67 | 19.96 | 0 |
+| `unbounded_soft` | 0 | 0 | 0.0000 | 457.7 | 1690.7 | 0 |
+| `bounded_soft` | 88 | 1512 | 21.83 | 12.06 | 19.96 | 0 |
+| `bounded_hard_u_prev` | 350 | 1250 | 11.01 | 0.5241 | 9.230 | 1250 |
+| `bounded_soft_u_prev` | 416 | 1184 | 14.06 | 0.9895 | 12.93 | 1184 |
+| `bounded_hard_u_prev_1p0` | 332 | 1268 | 14.69 | 0.4304 | 9.122 | 1268 |
+| `bounded_soft_u_prev_1p0` | 373 | 1227 | 6.476 | 0.5176 | 13.76 | 1227 |
+
+The unbounded rows show why exact output matching is misleading. Their target
+residual is essentially zero, but the exact steady input is outside the box at
+every step. That is why `unbounded_hard` is infeasible for all 1600 MPC solves,
+and why `unbounded_soft` needs large slack on 1131 steps.
+
+The bounded rows show the real tradeoff. The unregularized bounded projection
+often selects a target far from the previously applied input: mean
+`||u_s-u_prev||_inf` is about `11.67` for `bounded_hard` and `12.06` for
+`bounded_soft`. With previous-input regularization, that mean drops below `1.0`
+for all regularized bounded cases. This is the key mechanism that makes the
+target center less jumpy.
+
+The strongest result is `bounded_soft_u_prev_1p0`: it has the smallest target
+residual max among bounded cases, full solver success, full contraction, and no
+active slack. In other words, the stronger regularization did not merely smooth
+the target at the cost of worse tracking; in this nominal run, it improved both
+target consistency and closed-loop output performance.
+
+![Target residual and bounded activity](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_target_residual_bounded_activity.png)
+
+## Solver And Lyapunov Results
+
+| Case | Method counts | Solver statuses | Target stages |
+| --- | --- | --- | --- |
+| `unbounded_hard` | `solver_fail_hold_prev: 1600` | `infeasible: 1600` | `unbounded: 1600` |
+| `bounded_hard` | `direct: 1548`, `hold-prev: 52` | `infeasible: 46`, `optimal: 1545`, `optimal_inaccurate: 9` | `bounded LS: 1563`, `exact bounded: 37` |
+| `unbounded_soft` | `direct: 1557`, `hold-prev: 43` | `optimal: 899`, `optimal_inaccurate: 701` | `unbounded: 1600` |
+| `bounded_soft` | `direct: 1558`, `hold-prev: 42` | `infeasible: 4`, `optimal: 1541`, `optimal_inaccurate: 55` | `bounded LS: 1512`, `exact bounded: 88` |
+| `bounded_hard_u_prev` | `direct: 1592`, `hold-prev: 8` | `infeasible: 3`, `optimal: 1594`, `optimal_inaccurate: 3` | `bounded LS: 1250`, `exact bounded: 350` |
+| `bounded_soft_u_prev` | `direct: 1600` | `optimal: 1596`, `optimal_inaccurate: 4` | `bounded LS: 1184`, `exact bounded: 416` |
+| `bounded_hard_u_prev_1p0` | `direct: 1597`, `hold-prev: 3` | `infeasible: 1`, `optimal: 1599` | `bounded LS: 1268`, `exact bounded: 332` |
+| `bounded_soft_u_prev_1p0` | `direct: 1600` | `optimal: 1600` | `bounded LS: 1227`, `exact bounded: 373` |
+
+The soft `lambda_prev=1.0` case is unusually clean: all 1600 steps solve
+optimally, all 1600 satisfy the hard contraction diagnostic, and the exported
+slack is only numerical roundoff (`max = 1.686e-12`, active steps `0`).
+
+The hard `lambda_prev=1.0` case is also much better than the unregularized hard
+bounded case: solver failures drop from `52` to `3`, while the mean reward
+improves from `-26.44` to `-7.694`.
+
+![Solver and contraction rates](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_solver_contraction_rates.png)
+
+![Lyapunov slack comparison](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_slack.png)
+
+## Output And Input Behavior
+
+The comparison overlays make the eight-case picture visually clear. The
+unbounded cases remain diagnostic extremes: hard cannot move because the
+problem is infeasible, and soft can move but pays for infeasible target centers
+through slack. The bounded `u_prev` cases reduce the target jumps and give the
+MPC a smoother Lyapunov center.
+
+![Eight-scenario output overlay](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_outputs_overlay.png)
+
+![Eight-scenario input overlay](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_inputs_overlay.png)
+
+The recommended soft regularized case has the cleanest full-run output and
+input behavior in this export.
+
+![Recommended soft lambda 1.0 outputs](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_u_prev_1p0_fig_mpc_outputs_full.png)
+
+![Recommended soft lambda 1.0 inputs](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_u_prev_1p0_fig_mpc_inputs_full.png)
+
+For a no-slack alternative, the hard `lambda_prev=1.0` case is the best strict
+candidate.
+
+![Strict hard lambda 1.0 outputs](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_u_prev_1p0_fig_mpc_outputs_full.png)
+
+![Strict hard lambda 1.0 inputs](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_u_prev_1p0_fig_mpc_inputs_full.png)
+
+## Why The Previous-Input Term Helps
+
+The earlier oscillation concern was that a nominal run could sit close to a
+steady behavior and then suddenly become oscillatory. This eight-scenario run
+supports the hypothesis that the issue is not nominal disturbance injection.
+Instead, the dangerous object is the selected target center.
+
+The Lyapunov constraint is centered at `x_s`, while the MPC objective tracks
+`y_sp`. When the setpoint is not exactly reachable by an admissible steady
+input, the bounded selector chooses a compromise `u_s`. If that compromise
+jumps between active-set faces of the input box, the Lyapunov center moves even
+though the plant is nominal. The controller then has to satisfy contraction
+relative to a moving center while still tracking the setpoint. That is a
+natural recipe for late input motion or oscillatory output behavior.
+
+The regularized selector modifies the bounded projection by adding a memory
+term:
 
 ```math
-\Delta V_{\mathrm{logged},k}=V_k-V_{k-1},
+\lambda_{\mathrm{prev}}\left\|u_s-u_{k-1}\right\|_2^2 .
 ```
 
-is also informative, but it can jump when the target center `x_s(k)` changes.
+That term does not ask the plant to stay still. It asks the target selector not
+to move the steady target unless the output residual benefit justifies the
+move. In KKT terms, `lambda_prev` adds positive curvature to the target problem
+and pulls weakly determined target directions toward the previous input.
 
-| Case | First-step finite | First-step `Delta V <= 0` | First-step mean | Logged finite | Logged `Delta V <= 0` | Logged mean |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `unbounded_hard` | 0 | n/a | n/a | 0 | n/a | n/a |
-| `bounded_hard` | 1548 | 1548 / 1548 (100.00%) | -10.588 | 1527 | 1179 / 1527 (77.21%) | -0.095 |
-| `unbounded_soft` | 1557 | 523 / 1557 (33.59%) | 1.879 | 1516 | 747 / 1516 (49.27%) | -0.943 |
-| `bounded_soft` | 1558 | 1558 / 1558 (100.00%) | -11.497 | 1545 | 1233 / 1545 (79.81%) | 0.007 |
+This is why the regularized cases show two good signs simultaneously:
 
-Both bounded cases have negative first-step predicted Lyapunov delta on every
-accepted solve. The unbounded-soft case solves often, but the first-step
-Lyapunov delta is positive on most accepted solves.
+- the distance between selected target input and previous applied input
+  collapses from roughly `12` scaled-deviation units to below `1`;
+- solver success and contraction rates improve, especially for the
+  `lambda_prev=1.0` soft case.
 
-## Comparison Figures
+The result does not prove that `lambda_prev=1.0` is globally optimal for every
+future setpoint or disturbance run. It does prove that the target selector was
+part of the nominal oscillation mechanism, because changing only the bounded
+target projection substantially improved nominal closed-loop behavior.
 
-![Mean reward by case.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_reward_mean.png)
+## Recommendation
 
-`bounded_hard` gives the least negative reward in the nominal run. The reward
-ranking is the clearest practical argument for using bounded target selection
-when evaluating the direct controller.
+Use the following supervisor order for nominal direct Lyapunov testing:
 
-![Output RMSE by case.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_output_rmse.png)
+1. `bounded_soft_u_prev_1p0`
+2. `bounded_hard_u_prev_1p0`
+3. `bounded_hard_u_prev`
+4. `bounded_soft_u_prev`
+5. unregularized bounded cases only as ablations
+6. unbounded cases only as infeasibility diagnostics
 
-The output RMSE plot shows why RMSE cannot be read alone. `unbounded_soft`
-tracks the scheduled output best, but it relies on frequent Lyapunov relaxation
-and an inadmissible target.
+For the next notebook run, keep the eight scenarios, but make
+`bounded_soft_u_prev_1p0` the main case to inspect deeply. The key diagnostics
+to watch are:
 
-![Solver success and contraction rates.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_solver_contraction_rates.png)
+- `target_us_u_ref_inf`
+- `target_u_ref_penalty`
+- `target_residual_total_norm`
+- active bounded target stages
+- first-step contraction margin
+- slack activation
+- output RMSE in physical units
 
-The bounded cases recover the intended Lyapunov behavior. `bounded_hard`
-satisfies hard contraction on all accepted solves. `bounded_soft` is nearly as
-strong and uses slack only 16 times.
-
-![Lyapunov slack by case.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_slack.png)
-
-The slack plot separates the two soft cases. `unbounded_soft` uses large slack
-often. `bounded_soft` has a mean slack of only `0.00242`, a maximum of `0.988`,
-and only 16 active slack steps.
-
-![Target residual and bounded-target activity.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_target_residual_bounded_activity.png)
-
-The target residual plot should be read together with target admissibility. The
-unbounded cases have near-zero residuals but inadmissible `u_s`. The bounded
-cases have nonzero residuals because they are projecting the target into the
-input-admissible region.
-
-![Output overlay across all four cases in physical units.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_outputs_overlay.png)
-
-![Input overlay across all four cases.](figures/direct_lyapunov_mpc_frozen_output_disturbance/comparison_inputs_overlay.png)
-
-The refreshed overlays are the most useful visual summary of the nominal run.
-The outputs are plotted in physical units, and the input overlay shows the
-operational consequence of the target choice.
-
-## Case Notes
-
-### `unbounded_hard`
-
-| Metric | Value |
-| --- | ---: |
-| Solver success | 0 / 1600 |
-| Solver statuses | `infeasible`: 1600 |
-| Target success | 1600 / 1600 |
-| Exact target in bounds | 0 / 1600 |
-| Target residual max | `4.07e-15` |
-| Mean `||u-u_s||_inf` | 555.262 |
-| Mean `||y_s-y_sp||_inf` | `3.21e-16` |
-
-This is the negative-control case. The target equations solve, but the target is
-inadmissible at every step. The hard direct MPC cannot find an accepted
-trajectory and holds the previous input throughout the run.
-
-![unbounded_hard nominal outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_fig_mpc_outputs_full.png)
-
-![unbounded_hard nominal inputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_fig_mpc_inputs_full.png)
-
-![unbounded_hard Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_04_lyapunov_diagnostics.png)
-
-![unbounded_hard target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_hard_05_target_diagnostics.png)
-
-### `bounded_hard`
-
-| Metric | Value |
-| --- | ---: |
-| Solver success | 1548 / 1600 |
-| Solver statuses | `optimal`: 1545, `optimal_inaccurate`: 9, `infeasible`: 46 |
-| Accepted control moves | 1548 / 1600 |
-| Target success | 1600 / 1600 |
-| Hard contraction | 1548 / 1600 |
-| Exact target in bounds | 37 / 1600 |
-| Bounded target used | 1563 / 1600 |
-| Slack active | 0 / 1600 |
-| Mean reward | -26.442 |
-
-This is the best strict Lyapunov result in the nominal run. The bounded target
-projection is active on nearly every step, which means the exact target is
-usually outside the admissible region. Once the target is projected, hard MPC
-can solve on 96.75% of the run and satisfies first-step contraction on every
-accepted solve.
-
-![bounded_hard nominal outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_fig_mpc_outputs_full.png)
-
-![bounded_hard nominal inputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_fig_mpc_inputs_full.png)
-
-![bounded_hard Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_04_lyapunov_diagnostics.png)
-
-![bounded_hard target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_hard_05_target_diagnostics.png)
-
-### `unbounded_soft`
-
-| Metric | Value |
-| --- | ---: |
-| Solver success | 1557 / 1600 |
-| Solver statuses | `optimal`: 899, `optimal_inaccurate`: 701 |
-| Accepted control moves | 1557 / 1600 |
-| Target success | 1600 / 1600 |
-| Hard contraction | 426 / 1600 |
-| Relaxed contraction | 1557 / 1600 |
-| Exact target in bounds | 0 / 1600 |
-| Slack active | 1131 / 1600 |
-| Slack max | 32.227 |
-| Mean reward | -98.829 |
-
-This case is useful because it shows exactly what softening can hide. The
-solver succeeds often, and output RMSE is the best of the four cases, but the
-selected target is still inadmissible and hard contraction holds on only 26.62%
-of logged steps. This is not the preferred controller.
-
-![unbounded_soft nominal outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_fig_mpc_outputs_full.png)
-
-![unbounded_soft nominal inputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_fig_mpc_inputs_full.png)
-
-![unbounded_soft Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_04_lyapunov_diagnostics.png)
-
-![unbounded_soft target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/unbounded_soft_05_target_diagnostics.png)
-
-### `bounded_soft`
-
-| Metric | Value |
-| --- | ---: |
-| Solver success | 1558 / 1600 |
-| Solver statuses | `optimal`: 1541, `optimal_inaccurate`: 55, `infeasible`: 4 |
-| Accepted control moves | 1558 / 1600 |
-| Target success | 1600 / 1600 |
-| Hard contraction | 1542 / 1600 |
-| Relaxed contraction | 1558 / 1600 |
-| Exact target in bounds | 88 / 1600 |
-| Bounded target used | 1512 / 1600 |
-| Slack active | 16 / 1600 |
-| Slack max | 0.988 |
-| Mean reward | -33.560 |
-
-This is the robust fallback case. It does not beat `bounded_hard` on reward, but
-it keeps the same target-admissibility logic and only relaxes the Lyapunov
-constraint on 16 steps. Its first-step predicted Lyapunov delta is nonpositive
-on every accepted solve.
-
-![bounded_soft nominal outputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_fig_mpc_outputs_full.png)
-
-![bounded_soft nominal inputs.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_fig_mpc_inputs_full.png)
-
-![bounded_soft Lyapunov diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_04_lyapunov_diagnostics.png)
-
-![bounded_soft target diagnostics.](figures/direct_lyapunov_mpc_frozen_output_disturbance/bounded_soft_05_target_diagnostics.png)
-
-## Interpretation
-
-The nominal run supports three conclusions.
-
-First, exact output target matching is not enough. In the unbounded cases,
-`||y_s-y_sp||_inf` is essentially zero, but `u_s` is far outside the feasible
-input region. That is why `unbounded_hard` is completely infeasible and why
-`unbounded_soft` needs frequent slack.
-
-Second, the bounded target projection is doing real control work. Its residual
-is not a defect; it is the evidence that the selector is replacing an
-unreachable setpoint with an admissible steady target. The payoff is that the
-bounded cases satisfy first-step Lyapunov decrease on every accepted solve.
-
-Third, hard and soft Lyapunov modes have different roles. `bounded_hard` should
-be reported as the strict controller because it has the best nominal reward and
-zero slack. `bounded_soft` should be reported as the robustness controller
-because it preserves almost all of the hard behavior while reducing sensitivity
-to hard infeasibility.
-
-## Literature Context
-
-The frozen output-disturbance target calculation follows the offset-free MPC
-idea of augmenting the model with a persistent disturbance and computing a
-steady target compatible with the current disturbance estimate. Relevant
-references are Muske and Badgwell, "Disturbance modeling for offset-free linear
-model predictive control," Journal of Process Control, 2002, DOI:
-[10.1016/S0959-1524(01)00051-8](https://doi.org/10.1016/S0959-1524(01)00051-8),
-and Pannocchia and Rawlings, "Disturbance models for offset-free
-model-predictive control," AIChE Journal, 2003, DOI:
-[10.1002/aic.690490213](https://doi.org/10.1002/aic.690490213).
-
-The use of terminal ingredients and constrained receding-horizon stability
-conditions follows the standard constrained MPC framework in Mayne, Rawlings,
-Rao, and Scokaert, "Constrained model predictive control: Stability and
-optimality," Automatica, 2000, DOI:
-[10.1016/S0005-1098(99)00214-9](https://doi.org/10.1016/S0005-1098(99)00214-9).
-
-The bounded target projection is aligned with admissible artificial-reference
-tracking MPC, especially Limon, Alvarado, Alamo, and Camacho, "MPC for tracking
-piecewise constant references for constrained linear systems," Automatica,
-2008, DOI:
-[10.1016/j.automatica.2008.01.023](https://doi.org/10.1016/j.automatica.2008.01.023).
-
-The hard and soft Lyapunov interpretations connect to Lyapunov-based predictive
-control for constrained process systems; see Mhaskar, El-Farra, and Christofides,
-"Stabilization of nonlinear systems with state and control constraints using
-Lyapunov-based predictive control," Systems & Control Letters, 2006, DOI:
-[10.1016/j.sysconle.2005.09.014](https://doi.org/10.1016/j.sysconle.2005.09.014).
-
-## Recommended Next Steps
-
-1. Treat `bounded_hard` as the nominal strict Lyapunov baseline.
-2. Treat `bounded_soft` as the robust fallback baseline.
-3. Keep `unbounded_hard` and `unbounded_soft` as diagnostic controls only.
-4. Tune `bounded_soft` next, starting with `rho_lyap` and slack penalty, to see
-   whether the reward gap to `bounded_hard` can be reduced while keeping the
-   high solve rate.
-5. Add a normal offset-free MPC baseline with the same bounded target selector
-   and no Lyapunov contraction, so the marginal value of the Lyapunov constraint
-   is measured directly.
-6. Repeat the nominal four-scenario run across multiple schedules or seeds
-   before making final supervisor-level claims.
-
-## Final Takeaway
-
-The nominal run gives a coherent result now that the plots are in the proper
-scale. The direct Lyapunov MPC does not fail because the frozen
-output-disturbance target equations are wrong. It fails when the exact target is
-not input-admissible. Bounded target projection fixes that core issue. With the
-bounded target, hard Lyapunov contraction gives the best nominal performance,
-and soft Lyapunov contraction provides a controlled fallback with very little
-slack.
+If this behavior persists under disturbed runs, then the supervisor should
+prefer the bounded soft previous-input-regularized selector, with the hard
+version available as the strict no-slack comparison.
