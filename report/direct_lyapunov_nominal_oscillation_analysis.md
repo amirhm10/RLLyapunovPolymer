@@ -531,6 +531,45 @@ The practical implication is:
 This preserves the project direction. The RL policy remains the performance
 controller. The MPC layer becomes the certificate-producing shield.
 
+There is an important wording distinction here. In the one-stage design, the
+safety layer is enabled every step in the sense that it checks or certifies the
+RL action every step. It does not have to be active every step in the sense of
+changing the RL action. If `u_RL` is already feasible and satisfies the
+Lyapunov condition for an admissible artificial target, the one-stage problem
+should return:
+
+```math
+u_{\mathrm{safe}} = u_{\mathrm{RL}}
+```
+
+up to numerical tolerance. That step should be logged as:
+
+```text
+safety checked, RL action accepted, no intervention
+```
+
+not as a safety intervention.
+
+This is conceptually the same pass-through behavior as the current two-stage
+filter when a candidate action is acceptable. The difference is how the
+certificate is produced. In the current two-stage filter, the pass/fail check
+is made around a target selected before seeing the correction problem. In the
+one-stage safety layer, the pass-through decision is made while the admissible
+artificial target, Lyapunov center, and candidate action are considered
+together. Therefore the one-stage design can still be minimally invasive: it
+should intervene only when preserving `u_RL` would violate constraints,
+Lyapunov contraction, or the chosen slack policy.
+
+A practical implementation can use a two-level computational workflow:
+
+1. Fast certification: test whether `u_RL` is safe with the current/best
+   artificial target and Lyapunov ingredients.
+2. One-stage correction: only if the fast test fails, solve the full
+   artificial-target safety projection for `u_safe`.
+
+The guarantee still requires a safety certificate every step. The intervention
+rate should be measured separately from the certification rate.
+
 ## Engineering Plan
 
 Use the current best case as the baseline while building the structural fix.
