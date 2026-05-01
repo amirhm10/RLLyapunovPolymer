@@ -773,6 +773,9 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         )
     )
 
+    def _paper_dirname(long_name, short_name):
+        return short_name if paper_mode else long_name
+
     def _plot_augmented_states(data, filename, dhat_only=False):
         data = np.asarray(data, float)
         if data.ndim != 2 or data.shape[1] <= 0:
@@ -892,9 +895,9 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
             plt.close(fig)
 
     _plot_augmented_states(xhatdhat, "xhatdhat_full.png")
-    state_target_dir = os.path.join(output_dir, "state_target_channels")
+    state_target_dir = os.path.join(output_dir, _paper_dirname("state_target_channels", "st"))
     _plot_state_target_channels(
-        os.path.join(state_target_dir, "full_xhat_vs_xs"),
+        os.path.join(state_target_dir, _paper_dirname("full_xhat_vs_xs", "fx_xs")),
         xhatdhat[:n_x, :len(time_u)],
         x_target_store.T,
         "xhat_",
@@ -903,7 +906,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:red",
     )
     _plot_state_target_channels(
-        os.path.join(state_target_dir, "full_dhat_vs_ds"),
+        os.path.join(state_target_dir, _paper_dirname("full_dhat_vs_ds", "fd_ds")),
         xhatdhat[n_x:, :len(time_u)],
         d_target_store.T,
         "dhat_",
@@ -912,7 +915,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:green",
     )
     _plot_target_vs_target_channels(
-        os.path.join(state_target_dir, "full_ys_vs_ysp"),
+        os.path.join(state_target_dir, _paper_dirname("full_ys_vs_ysp", "fy_ysp")),
         y_target_plot.T,
         y_sp_plot.T,
         "ys_",
@@ -921,7 +924,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:gray",
     )
     _plot_target_vs_target_channels(
-        os.path.join(state_target_dir, "full_rs_vs_ysp"),
+        os.path.join(state_target_dir, _paper_dirname("full_rs_vs_ysp", "fr_ysp")),
         r_target_plot.T,
         y_sp_plot.T,
         "rs_",
@@ -930,7 +933,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:gray",
     )
     _plot_decomposition_channels(
-        os.path.join(state_target_dir, "full_ys_decomposition"),
+        os.path.join(state_target_dir, _paper_dirname("full_ys_decomposition", "fy_dec")),
         cx_s_store.T,
         cd_d_s_store.T,
         y_target_plot.T,
@@ -1143,7 +1146,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     _plot_augmented_states(xhatdhat_last, "xhatdhat_last_episode.png")
     _plot_augmented_states(xhatdhat_last, "dhat_last_episode.png", dhat_only=True)
     _plot_state_target_channels(
-        os.path.join(state_target_dir, "last_episode_xhat_vs_xs"),
+        os.path.join(state_target_dir, _paper_dirname("last_episode_xhat_vs_xs", "lx_xs")),
         xhatdhat[:n_x, start_idx:start_idx + x_target_last.shape[1]],
         x_target_last,
         "xhat_",
@@ -1152,7 +1155,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:red",
     )
     _plot_state_target_channels(
-        os.path.join(state_target_dir, "last_episode_dhat_vs_ds"),
+        os.path.join(state_target_dir, _paper_dirname("last_episode_dhat_vs_ds", "ld_ds")),
         xhatdhat[n_x:, start_idx:start_idx + d_target_last.shape[1]],
         d_target_last,
         "dhat_",
@@ -1161,7 +1164,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:green",
     )
     _plot_target_vs_target_channels(
-        os.path.join(state_target_dir, "last_episode_ys_vs_ysp"),
+        os.path.join(state_target_dir, _paper_dirname("last_episode_ys_vs_ysp", "ly_ysp")),
         y_target_last,
         y_sp_last,
         "ys_",
@@ -1170,7 +1173,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:gray",
     )
     _plot_target_vs_target_channels(
-        os.path.join(state_target_dir, "last_episode_rs_vs_ysp"),
+        os.path.join(state_target_dir, _paper_dirname("last_episode_rs_vs_ysp", "lr_ysp")),
         r_target_last,
         y_sp_last,
         "rs_",
@@ -1179,7 +1182,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         "tab:gray",
     )
     _plot_decomposition_channels(
-        os.path.join(state_target_dir, "last_episode_ys_decomposition"),
+        os.path.join(state_target_dir, _paper_dirname("last_episode_ys_decomposition", "ly_dec")),
         cx_s_last,
         cd_d_s_last,
         y_target_last,
