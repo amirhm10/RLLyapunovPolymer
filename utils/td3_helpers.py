@@ -137,8 +137,11 @@ def load_and_prepare_system_data(
         min_max_states = pickle.load(file)
 
     y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
+    setpoint_y = np.atleast_2d(np.asarray(setpoint_y, dtype=float))
     y_sp_scaled = apply_min_max(setpoint_y, data_min[n_inputs:], data_max[n_inputs:])
     y_sp_scaled_deviation = y_sp_scaled - y_ss_scaled
+    y_sp_bounds_min = np.min(y_sp_scaled_deviation, axis=0)
+    y_sp_bounds_max = np.max(y_sp_scaled_deviation, axis=0)
 
     u_ss_scaled = apply_min_max(steady_states["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
     b_min = apply_min_max(u_min, data_min[:n_inputs], data_max[:n_inputs]) - u_ss_scaled
@@ -147,8 +150,8 @@ def load_and_prepare_system_data(
     min_max_dict = {
         "x_max": min_max_states["max_s"],
         "x_min": min_max_states["min_s"],
-        "y_sp_min": y_sp_scaled_deviation[0],
-        "y_sp_max": y_sp_scaled_deviation[1],
+        "y_sp_min": y_sp_bounds_min,
+        "y_sp_max": y_sp_bounds_max,
         "u_max": b_max,
         "u_min": b_min,
     }
