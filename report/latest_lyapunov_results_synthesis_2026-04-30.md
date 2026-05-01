@@ -42,10 +42,11 @@ Saved result bundles used for the analysis:
 
 Important caveat:
 
-- the current direct notebook run is `plant_mode = "nominal"` with `set_points_len = 1500`
-- the selector-ablation and RL safety-filter notebooks are run in `mode = "disturb"` with `set_points_len = 400`
+- the saved direct bundle analyzed below comes from an earlier nominal ten-scenario run with `n_tests = 2`, `set_points_len = 1500`, and `use_target_output_for_tracking = True`
+- the current direct notebook defaults were later narrowed to a two-case nominal single-setpoint study with `n_tests = 1`, `set_points_len = 2000`, and `use_target_output_for_tracking = False`
+- the saved selector-ablation and RL safety-filter notebooks are run in `mode = "disturb"` with `set_points_len = 400`
 - the direct path uses output-disturbance augmentation
-- the ablation and RL notebooks use different augmented models and different closed-loop architectures
+- the saved ablation and RL studies use different augmented models and different closed-loop architectures
 
 So the comparisons below are mechanistic and directional. They are not all apples-to-apples benchmark tables.
 
@@ -53,7 +54,7 @@ So the comparisons below are mechanistic and directional. They are not all apple
 
 ### 1. Direct frozen-output-disturbance Lyapunov MPC
 
-The direct notebook now runs a ten-case matrix, not the older four-case matrix. The active notebook settings are:
+The saved direct result bundle analyzed in this report comes from an earlier ten-case matrix, not the older four-case matrix. The saved run settings used for the analysis below are:
 
 - `use_target_output_for_tracking = True`
 - `objective_steady_input_cost = False`
@@ -116,22 +117,17 @@ $$
 For the direct notebook, the bounded variant solves a box-constrained least-squares steady-state problem when the exact steady input is outside the admissible input box. With optional input anchoring, the bounded target effectively solves
 
 $$
-\min_{x_s,u_s}
-\left\|
-\begin{bmatrix}
-I-A & -B \\
-C & 0
-\end{bmatrix}
-\begin{bmatrix}
-x_s \\
-u_s
-\end{bmatrix}
--
-\begin{bmatrix}
-B_d d_s \\
-y_{sp} - C_d d_s
-\end{bmatrix}
-\right\|_2^2
+\min_{x_s,u_s} J_{\mathrm{tgt}}(x_s,u_s)
+$$
+
+with
+
+$$
+J_{\mathrm{tgt}}(x_s,u_s)
+=
+\left\|(I-A)x_s - Bu_s - B_d d_s\right\|_2^2
++
+\left\|Cx_s + C_d d_s - y_{sp}\right\|_2^2
 +
 \left\|u_s - u_{\mathrm{ref}}\right\|_{W_{u,\mathrm{ref}}}^2
 $$
@@ -146,7 +142,7 @@ where `u_ref` is the current applied input in the notebook experiments.
 
 ### Direct Lyapunov MPC stage
 
-With `use_target_output_for_tracking = True`, the direct MPC does not track the raw scheduled setpoint directly. It tracks the modified target output `y_s`:
+In the saved ten-scenario direct run analyzed here, `use_target_output_for_tracking = True`, so the direct MPC does not track the raw scheduled setpoint directly. It tracks the modified target output `y_s`:
 
 $$
 \min_{\{u_i\},\sigma \ge 0}
@@ -260,7 +256,7 @@ Main takeaways from the direct sweep:
 
 Direct target-behavior diagnostics for the most important cases:
 
-| Case | Mean target-ref inf err | Mean `|u_s-u_prev|_inf` | Slack-active steps | Active-bound max |
+| Case | Mean target-ref inf err | Mean inf-norm of `u_s-u_prev` | Slack-active steps | Active-bound max |
 | --- | ---: | ---: | ---: | ---: |
 | `bounded_hard` | 4.544 | 12.913 | 0 | 2 upper and 2 lower |
 | `bounded_soft` | 6.283 | 12.707 | 1 | 2 upper and 2 lower |
@@ -413,9 +409,9 @@ Even when the selector terms are all off, the QCQP still minimizes:
 
 So `objective_zero` keeps a strong local control objective whenever correction is needed.
 
-### 3. The direct notebook uses the modified target as the stage target
+### 3. The saved direct run uses the modified target as the stage target
 
-The current direct notebook runs with `use_target_output_for_tracking = True`. That means the stage objective tracks `y_s`, not the raw setpoint. If the bounded target is pushed onto a box corner, the direct MPC will faithfully track the wrong thing.
+In the saved direct run used for this report, `use_target_output_for_tracking = True`. That means the stage objective tracks `y_s`, not the raw setpoint. If the bounded target is pushed onto a box corner, the direct MPC will faithfully track the wrong thing.
 
 This is exactly what the direct metrics show:
 
@@ -435,11 +431,28 @@ That means `objective_zero` is still a meaningful constrained steady target, not
 
 The direct bounded target is solving a least-squares projection of the raw steady-state equations. Without the small input anchor, it tends to choose extreme admissible solutions. In this polymer CSTR case, those extreme targets are operationally poor.
 
-The refined selector is more robust because it is built around the current operating point and previous steady target. Even when all selector objective terms are removed, the rest of the architecture prevents the target from fully dominating the closed loop.
+With `all_terms_on`, the refined selector adds four practical anchoring effects that the direct bounded least-squares target does not have:
+
+- `u_applied_anchor` keeps the steady input target close to the currently applied input
+- `u_prev_smoothing` keeps the new steady input target close to the previous steady input target
+- `x_prev_smoothing` keeps the new steady state close to the previous steady state
+- `xhat_anchor` keeps the steady state from drifting too far from the current estimated state
+
+So with `all_terms_on`, the selector is not only asking "which steady target satisfies the constraints." It is also asking "which admissible steady target is closest to the operating region the plant is already in." That is why it tends to return a target that is easier for the controller to use online.
+
+The harder point is `objective_zero`, because those anchoring terms are removed there. The key is that the safety-filter architecture still gates how much influence the target has:
+
+1. The upstream offset-free MPC first computes `u_cand` against the raw setpoint.
+2. If `u_cand` already satisfies the Lyapunov and bound checks, it is applied directly.
+3. Only if `u_cand` fails does the QCQP correction use `u_s`, `x_s`, and the Lyapunov target information to modify the move.
+
+So in `objective_zero`, the target can still be poor, but it does not automatically become the commanded move at every step. Most of the time, the raw-setpoint MPC candidate still dominates the closed loop and the target acts more like a verification center or correction reference.
+
+That is fundamentally different from the saved direct run. There, the target is inside the only online controller solve and, because `use_target_output_for_tracking = True`, the stage objective itself tracks `y_s`. In that architecture, if the target is poor, the controller is asked to follow that poor target directly. In the safety-filter architecture, a poor target matters mainly when the candidate needs correction.
 
 ### 6. The experiments are not matched
 
-The direct notebook is currently nominal and uses output-disturbance augmentation. The ablation notebook is disturbed and uses a different augmented model and safety-filter workflow. So one should not interpret the comparison as proof that the direct formulation is intrinsically worse in all settings. It does mean that the current direct implementation is not yet as mature or as forgiving as the safety-filter implementation.
+The saved direct bundle analyzed here is nominal and uses output-disturbance augmentation. The saved ablation notebook is disturbed and uses a different augmented model and safety-filter workflow. So one should not interpret the comparison as proof that the direct formulation is intrinsically worse in all settings. It does mean that the current direct implementation is not yet as mature or as forgiving as the safety-filter implementation.
 
 ## Progress So Far
 
@@ -449,6 +462,7 @@ The direct notebook is currently nominal and uses output-disturbance augmentatio
 - The safety-filter MPC path is the most mature result. In the saved baseline it accepted the candidate at every step.
 - The RL safety-filter path is stable enough to run 160000 steps with reward essentially tied to the safe MPC baseline.
 - The direct path is no longer a single anecdotal run. It now has a ten-case matrix with saved comparison artifacts.
+- A matched follow-up safety-filter notebook has now been prepared so the next comparison can use the same nominal single-setpoint setup as the focused direct notebook.
 - The direct path has one clear positive design finding already:
   a small steady-input anchor in the bounded target solve is the first regularizer that materially fixes the target-selection pathology.
 
@@ -463,13 +477,12 @@ The direct notebook is currently nominal and uses output-disturbance augmentatio
 
 ### 1. Existing direct report is out of date
 
-`report/direct_lyapunov_mpc_frozen_output_disturbance_run_report.md` still describes an older direct setup. The current notebook now uses:
+`report/direct_lyapunov_mpc_frozen_output_disturbance_run_report.md` still describes an older direct setup. The situation is now split:
 
-- ten scenarios, not four
-- `use_target_output_for_tracking = True`, not `False`
-- `plant_mode = "nominal"` in the latest saved run
+- the current notebook defaults are a focused two-case nominal single-setpoint study with `use_target_output_for_tracking = False`
+- the saved bundle analyzed in this report is still the earlier ten-scenario nominal run with `use_target_output_for_tracking = True`
 
-So that earlier report should not be treated as the latest authoritative description.
+So that earlier report should not be treated as the latest authoritative description of either the current notebook defaults or the saved run analyzed here.
 
 ### 2. Cross-notebook comparison can be misleading unless normalized
 
@@ -507,6 +520,7 @@ Exact implementation targets:
 
 - direct path: `DirectLyapunovMPC_FrozenOutputDisturbance.ipynb`, `Lyapunov/frozen_output_disturbance_target.py`, `Lyapunov/direct_lyapunov_mpc.py`
 - safety-filter path: `LyapunovSafetyFilterMPCTargetSelectorTermAblation.ipynb`, `Simulation/run_mpc_lyapunov.py`, `Lyapunov/target_selector.py`, `Lyapunov/safety_filter.py`
+- matched follow-up notebook now created: `LyapunovSafetyFilterMPCTargetSelectorDirectSetup.ipynb`
 
 Metrics to compare:
 
@@ -515,7 +529,7 @@ Metrics to compare:
 - reward mean
 - QCQP attempt rate
 - fallback rate
-- mean `|u_s-u_prev|_inf`
+- mean inf-norm of `u_s-u_prev`
 - active input-bound counts on the steady target
 - Lyapunov slack usage
 
