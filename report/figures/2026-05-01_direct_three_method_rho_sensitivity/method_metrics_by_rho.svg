@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="840" viewBox="0 0 1280 840" role="img">
+<rect x="0.0" y="0.0" width="1280.0" height="840.0" fill="#ffffff" stroke="none" stroke-width="1.0" rx="0.0" />
+<text x="40.0" y="34.0" fill="#1f2430" font-size="22" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Three-method rho sensitivity summary</text>
+<text x="40.0" y="56.0" fill="#5d6574" font-size="13" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Metrics are drawn from the four unique direct-MPC bundles. The 0.98 sweep uses the latest duplicate export 20260501_003638.</text>
+<rect x="40.0" y="82.0" width="580.0" height="300.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="106.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Output RMSE mean</text>
+<text x="56.0" y="124.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Lower is better</text>
+<line x1="94.0" y1="350.0" x2="604.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="354.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">0.00</text>
+<line x1="94.0" y1="245.0" x2="604.0" y2="245.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="249.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">0.68</text>
+<line x1="94.0" y1="140.0" x2="604.0" y2="140.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="144.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">1.35</text>
+<line x1="94.0" y1="140.0" x2="94.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="94.0" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.95</text>
+<line x1="476.5" y1="140.0" x2="476.5" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="476.5" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.98</text>
+<line x1="540.2" y1="140.0" x2="540.2" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="540.2" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.985</text>
+<line x1="604.0" y1="140.0" x2="604.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="604.0" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.99</text>
+<line x1="94.0" y1="140.0" x2="94.0" y2="350.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="94.0" y1="350.0" x2="604.0" y2="350.0" stroke="#2d3440" stroke-width="1.2" />
+<polyline points="94.00,119.56 476.50,216.74 540.25,288.41 604.00,332.43" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="119.56" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="216.74" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="288.41" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="332.43" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<polyline points="94.00,237.10 476.50,329.41 540.25,230.78 604.00,332.86" fill="none" stroke="#c04b2d" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="237.10" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="329.41" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="230.78" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="332.86" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<polyline points="94.00,164.18 476.50,306.85 540.25,330.22 604.00,332.41" fill="none" stroke="#2a7f62" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="164.18" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="306.85" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="330.22" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="332.41" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<rect x="660.0" y="82.0" width="580.0" height="300.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="676.0" y="106.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Solver success rate</text>
+<text x="676.0" y="124.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Higher is better</text>
+<line x1="714.0" y1="350.0" x2="1224.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="354.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">90.0%</text>
+<line x1="714.0" y1="245.0" x2="1224.0" y2="245.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="249.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">95.0%</text>
+<line x1="714.0" y1="140.0" x2="1224.0" y2="140.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="144.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">100.0%</text>
+<line x1="714.0" y1="140.0" x2="714.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="714.0" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.95</text>
+<line x1="1096.5" y1="140.0" x2="1096.5" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1096.5" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.98</text>
+<line x1="1160.2" y1="140.0" x2="1160.2" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1160.2" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.985</text>
+<line x1="1224.0" y1="140.0" x2="1224.0" y2="350.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1224.0" y="368.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.99</text>
+<line x1="714.0" y1="140.0" x2="714.0" y2="350.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="714.0" y1="350.0" x2="1224.0" y2="350.0" stroke="#2d3440" stroke-width="1.2" />
+<polyline points="714.00,344.75 1096.50,183.05 1160.25,213.50 1224.00,143.15" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="344.75" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="183.05" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="213.50" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="143.15" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<polyline points="714.00,227.15 1096.50,140.00 1160.25,169.40 1224.00,140.00" fill="none" stroke="#c04b2d" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="227.15" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="140.00" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="169.40" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="140.00" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<polyline points="714.00,245.00 1096.50,143.15 1160.25,142.10 1224.00,143.15" fill="none" stroke="#2a7f62" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="245.00" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="143.15" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="142.10" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="143.15" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<rect x="40.0" y="420.0" width="580.0" height="300.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="444.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Target-reference inf mean</text>
+<text x="56.0" y="462.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Lower is better</text>
+<line x1="94.0" y1="688.0" x2="604.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="692.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">0.00</text>
+<line x1="94.0" y1="583.0" x2="604.0" y2="583.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="587.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">1.25</text>
+<line x1="94.0" y1="478.0" x2="604.0" y2="478.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="86.0" y="482.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">2.50</text>
+<line x1="94.0" y1="478.0" x2="94.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="94.0" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.95</text>
+<line x1="476.5" y1="478.0" x2="476.5" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="476.5" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.98</text>
+<line x1="540.2" y1="478.0" x2="540.2" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="540.2" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.985</text>
+<line x1="604.0" y1="478.0" x2="604.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="604.0" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.99</text>
+<line x1="94.0" y1="478.0" x2="94.0" y2="688.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="94.0" y1="688.0" x2="604.0" y2="688.0" stroke="#2d3440" stroke-width="1.2" />
+<polyline points="94.00,367.07 476.50,618.97 540.25,651.71 604.00,682.19" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="367.07" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="618.97" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="651.71" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="682.19" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<polyline points="94.00,574.61 476.50,679.30 540.25,598.38 604.00,681.92" fill="none" stroke="#c04b2d" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="574.61" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="679.30" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="598.38" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="681.92" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<polyline points="94.00,493.80 476.50,668.45 540.25,680.28 604.00,682.05" fill="none" stroke="#2a7f62" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="94.00" cy="493.80" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="476.50" cy="668.45" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="540.25" cy="680.28" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="604.00" cy="682.05" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<rect x="660.0" y="420.0" width="580.0" height="300.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="676.0" y="444.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Bounded-LS steps</text>
+<text x="676.0" y="462.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Fewer fallback-target steps is better</text>
+<line x1="714.0" y1="688.0" x2="1224.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="692.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">0.00</text>
+<line x1="714.0" y1="583.0" x2="1224.0" y2="583.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="587.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">1000.00</text>
+<line x1="714.0" y1="478.0" x2="1224.0" y2="478.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="706.0" y="482.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">2000.00</text>
+<line x1="714.0" y1="478.0" x2="714.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="714.0" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.95</text>
+<line x1="1096.5" y1="478.0" x2="1096.5" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1096.5" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.98</text>
+<line x1="1160.2" y1="478.0" x2="1160.2" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1160.2" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.985</text>
+<line x1="1224.0" y1="478.0" x2="1224.0" y2="688.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1224.0" y="706.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">0.99</text>
+<line x1="714.0" y1="478.0" x2="714.0" y2="688.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="714.0" y1="688.0" x2="1224.0" y2="688.0" stroke="#2d3440" stroke-width="1.2" />
+<polyline points="714.00,478.00 1096.50,567.04 1160.25,555.38 1224.00,664.79" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="478.00" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="567.04" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="555.38" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="664.79" r="2.60" fill="#1f4b99" stroke="none" stroke-width="0.0" />
+<polyline points="714.00,479.47 1096.50,655.35 1160.25,523.15 1224.00,664.79" fill="none" stroke="#c04b2d" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="479.47" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="655.35" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="523.15" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="664.79" r="2.60" fill="#c04b2d" stroke="none" stroke-width="0.0" />
+<polyline points="714.00,478.11 1096.50,634.45 1160.25,666.89 1224.00,664.16" fill="none" stroke="#2a7f62" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="714.00" cy="478.11" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1096.50" cy="634.45" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1160.25" cy="666.89" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<circle cx="1224.00" cy="664.16" r="2.60" fill="#2a7f62" stroke="none" stroke-width="0.0" />
+<line x1="54.0" y1="764.0" x2="82.0" y2="764.0" stroke="#1f4b99" stroke-width="2.2" />
+<text x="92.0" y="770.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Bounded hard</text>
+<line x1="424.0" y1="764.0" x2="452.0" y2="764.0" stroke="#c04b2d" stroke-width="2.2" />
+<text x="462.0" y="770.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Bounded hard + input anchor</text>
+<line x1="794.0" y1="764.0" x2="822.0" y2="764.0" stroke="#2a7f62" stroke-width="2.2" />
+<text x="832.0" y="770.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Bounded hard + x_s smoothing</text>
+</svg>

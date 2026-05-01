@@ -1,333 +1,257 @@
-# Direct Lyapunov Bounded Single-Setpoint Settling Report
+# Direct Lyapunov Three-Method Contraction-Factor Sensitivity Report
 
-This report analyzes the focused nominal direct Lyapunov MPC run saved at:
+This report replaces the older two-case settling note with the latest
+three-method nominal single-setpoint study from `2026-05-01`.
 
-`Data/debug_exports/direct_lyapunov_mpc_bounded_hard_single_setpoint_nominal/20260430_232523`
+The main new finding is that the Lyapunov contraction factor is not a minor
+detail. It is a first-order design parameter for the direct formulation. Across
+the latest sweeps, changing `rho_lyap` from `0.99` to `0.95` changes the same
+controller family from near-exact nominal tracking to sustained fallback-target
+operation and repeated first-step contraction failures.
 
-The setup is:
+## Objective
+
+The updated question is:
+
+How do the three direct bounded-hard methods change when the same nominal
+single-setpoint run is repeated with different Lyapunov contraction factors?
+
+The three methods are:
+
+1. `bounded_hard`
+2. `bounded_hard_u_prev_0p1`
+3. `bounded_hard_xs_prev_0p1`
+
+All four selected runs use:
 
 - one physical setpoint: `[4.5, 324.0]`
 - nominal plant
 - one episode
 - 2000 control steps
 - raw-setpoint tracking in the online MPC objective
-- frozen output-disturbance target construction
+- bounded target construction
+- hard Lyapunov constraint with zero slack activation in the saved results
 
-The two cases are:
+## Bundles Used
 
-1. `bounded_hard`
-2. `bounded_hard_u_prev_1p0`
+Representative bundles:
 
-The quantitative results below still refer to that saved two-case run.
+| `rho_lyap` | Bundle |
+| --- | --- |
+| `0.95` | `Data/debug_exports/direct_lyapunov_mpc_bounded_three_scenario_single_setpoint_nominal/20260501_001425` |
+| `0.98` | `Data/debug_exports/direct_lyapunov_mpc_bounded_three_scenario_single_setpoint_nominal/20260501_003638` |
+| `0.985` | `Data/debug_exports/direct_lyapunov_mpc_bounded_three_scenario_single_setpoint_nominal/20260501_002805` |
+| `0.99` | `Data/debug_exports/direct_lyapunov_mpc_bounded_three_scenario_single_setpoint_nominal/20260501_001948` |
 
-The direct notebook and target-solver code have now been extended for the next
-rerun to use a three-scenario default:
+Duplicate note:
 
-1. `bounded_hard`
-2. `bounded_hard_u_prev_0p1`
-3. `bounded_hard_xs_prev_0p1`
+- `20260501_000956` is a duplicate export of the `rho_lyap = 0.98` run. The
+  metrics match `20260501_003638`, so the later bundle is used as the
+  representative artifact.
 
-## Objective
-
-The key question in this run is not only which case has the better average reward.
-The more interesting question is:
-
-Does the bounded direct Lyapunov controller eventually settle to the raw setpoint
-if the setpoint is held long enough?
-
-The answer is yes.
-
-That is the most interesting outcome of this run. In particular, `bounded_hard`
-shows a clear late-settling phase: after about step `k ~ 1039` it enters a
-practical tracking band and never leaves it, and by `k >= 1500` the output is
-essentially at the setpoint up to numerical precision.
-
-## Controller Interpretation
-
-The frozen-output-disturbance direct target is built around the current
-disturbance estimate $\hat d_k$. In simplified form, the bounded target solve is:
+The `rho_lyap` labels were verified directly from the saved step tables. For the
+first saved step in each run,
 
 $$
-\min_{x_s,u_s}
-J_{\mathrm{tgt}}(x_s,u_s)
+V_{\mathrm{bound},k} = \rho_{\mathrm{lyap}} V_k
 $$
 
-with
+to numerical precision, so `V_bound / V_k` identifies the contraction factor
+without relying on notebook memory or filenames.
+
+## Why This Parameter Matters
+
+The direct controller enforces first-step contraction around the current steady
+target:
 
 $$
-J_{\mathrm{tgt}}(x_s,u_s)
-=
-\left\|
-x_s - A x_s - B u_s - B_d \hat d_k
-\right\|_2^2
-+
-\left\|
-C x_s + C_d \hat d_k - y_{\mathrm{sp}}
-\right\|_2^2
-+
-\lambda_{\mathrm{prev}}
-\left\|
-u_s - u_{\mathrm{prev}}
-\right\|_2^2
+V(x_{1|k} - x_s) \le \rho_{\mathrm{lyap}} V(\hat x_k - x_s).
 $$
 
-subject to the input bounds.
+Lower `rho_lyap` means stricter contraction. In this sweep:
 
-For `bounded_hard`, $\lambda_{\mathrm{prev}} = 0$.
+- `rho_lyap = 0.95` is the most restrictive run.
+- `rho_lyap = 0.99` is the least restrictive run.
 
-For `bounded_hard_u_prev_1p0`, $\lambda_{\mathrm{prev}} = 1.0$.
-
-The online Lyapunov MPC then tracks the raw setpoint $y_{\mathrm{sp}}$, not $y_s$, but the
-Lyapunov center and terminal ingredients are still defined around `(x_s,u_s)`.
-That is why target quality still matters even though the stage objective uses the
-raw setpoint.
-
-## Implemented $x_s$-Smoothing Extension
-
-For the next rerun, the direct bounded target stage now also supports a state
-smoothing term:
-
-$$
-J_{\mathrm{tgt,ext}}(x_s,u_s)
-=
-J_{\mathrm{tgt}}(x_s,u_s)
-+
-\lambda_x
-\left\|
-x_s - x_{s,\mathrm{prev}}
-\right\|_2^2
-$$
-
-Here $x_{s,\mathrm{prev}}$ is the previous successful steady target state from the
-earlier control step.
-
-This term is different from the previous-input penalty:
-
-- $\lambda_{\mathrm{prev}} \|u_s-u_{\mathrm{prev}}\|_2^2$ suppresses movement in the steady input.
-- $\lambda_x \|x_s-x_{s,\mathrm{prev}}\|_2^2$ suppresses movement in the steady target state.
-
-So the new term does not directly penalize the applied control move. It penalizes
-how quickly the Lyapunov center itself drifts from one step to the next.
-
-In the current implementation, this new term is active only inside the bounded
-least-squares fallback stage. If the exact steady target is already feasible
-within the input bounds, the controller keeps that exact target and no
-state-smoothing penalty is applied.
-
-The first step also has no $x_s$ smoothing reference yet, because there is no
-previous successful steady target available. So the term becomes active only
-after the controller has produced at least one successful target and only on
-later steps where the bounded least-squares target stage is actually used.
-
-The intended control effect is:
-
-- less abrupt motion of the internal steady target
-- smaller step-to-step changes in the Lyapunov center during the bounded regime
-- a possible compromise between the aggressive `bounded_hard` target motion and
-  the slower but better-conditioned `u_prev`-regularized case
+Because the saved runs have zero Lyapunov slack activation, the differences
+below are not caused by slack softening. They come from the actual interaction
+between the target construction and the hard one-step contraction requirement.
 
 ## Executive Findings
 
-Two different advantages appear in this run:
+1. `rho_lyap` must be reported alongside the direct-controller result. Without
+   it, the performance story is incomplete.
+2. `rho_lyap = 0.95` is too aggressive for this nominal direct bounded setup.
+   All three methods spend almost the entire episode in the bounded least-squares
+   fallback target stage, and the output RMSE degrades sharply.
+3. `rho_lyap = 0.99` is the strongest nominal operating point in this sweep.
+   All three methods become nearly indistinguishable, with output RMSE near
+   `0.11` and solver success at or above `99.85%`.
+4. `rho_lyap = 0.985` gives the clearest method separation. The `x_s`-smoothing
+   method is best there, while the input-anchor method degrades substantially.
+5. `rho_lyap = 0.98` still separates the methods, but in a different way:
+   the input-anchor method remains strong while plain `bounded_hard` and
+   `x_s` smoothing are noticeably worse.
 
-- `bounded_hard` gives the clearest proof of eventual settling.
-- `bounded_hard_u_prev_1p0` gives the better aggregate closed-loop performance.
+## Method 1: `bounded_hard`
 
-This is not a contradiction. The `u_prev` penalty improves the early transient
-and reduces solver failures, but it also keeps the steady target in the bounded
-least-squares regime for longer, which delays the final exact convergence phase.
+### Results
 
-## Overall Comparison
+| `rho_lyap` | Reward mean | Output RMSE mean | Solver success | Hard contraction | Violation steps | Bounded-LS steps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.95` | -46.759 | 1.481 | 90.25% | 90.20% | 196 | 2000 |
+| `0.98` | -11.801 | 0.857 | 97.95% | 97.95% | 41 | 1152 |
+| `0.985` | -2.948 | 0.396 | 96.50% | 96.50% | 70 | 1263 |
+| `0.99` | -0.362 | 0.113 | 99.85% | 99.85% | 3 | 221 |
 
-| Case | Reward mean | Solver success | Output 0 RMSE | Output 1 RMSE |
-| --- | ---: | ---: | ---: | ---: |
-| `bounded_hard` | -11.801 | 97.95% | 0.280 | 1.434 |
-| `bounded_hard_u_prev_1p0` | -6.804 | 99.35% | 0.230 | 0.851 |
+Lyapunov and target notes:
 
-| Case | Target-ref inf mean | Target-ref inf max | Bounded-LS steps | Solver-fail hold-prev |
-| --- | ---: | ---: | ---: | ---: |
-| `bounded_hard` | 0.822 | 17.935 | 1152 | 41 |
-| `bounded_hard_u_prev_1p0` | 0.600 | 9.157 | 1503 | 13 |
+- The strict `0.95` run is effectively always in bounded-LS target mode
+  (`2000/2000` steps), so the method never reaches a clean exact-target regime.
+- The contraction margin minimum improves from `-132.46` at `rho = 0.95` to
+  `-1.78` at `rho = 0.99`.
+- Plain `bounded_hard` benefits the most from relaxing `rho_lyap`. Its nominal
+  weakness is not intrinsic; it is strongly tied to over-restrictive contraction.
 
-The second case is better on the aggregate statistics. It has:
-
-- better reward
-- better RMSE
-- lower target-reference mismatch
-- fewer solver-fail hold steps
-
-So the `u_prev` penalty is genuinely helpful overall.
-
-## Settling Metrics
-
-I used two sustained-settling bands in physical units:
-
-- practical band: eta error <= 0.1 and T error <= 0.5
-- tight band: eta error <= 0.05 and T error <= 0.2
-
-The first index after which the outputs stay inside the band for the rest of the
-episode is:
-
-| Case | Practical settling index | Tight settling index |
-| --- | ---: | ---: |
-| `bounded_hard` | 1039 | 1061 |
-| `bounded_hard_u_prev_1p0` | 1745 | 1774 |
-
-This is the main result.
-
-The step-1 case really does settle after about index 1000. The step-2 case also
-settles, but much later.
-
-![Late settling zoom](figures/2026-04-30_direct_bounded_single_setpoint_settling/late_settling_zoom_outputs.png)
-
-## Windowed Performance
-
-### Step 1: `bounded_hard`
-
-| Window | Output 0 RMSE | Output 1 RMSE | Exact-bounded target fraction | Solver-fail hold-prev |
-| --- | ---: | ---: | ---: | ---: |
-| `0-999` | 0.389 | 2.021 | 0.5% | 39 |
-| `1000-1499` | 0.102 | 0.235 | 68.6% | 2 |
-| `1500-1999` | ~0.000 | ~0.000 | 100.0% | 0 |
-| `1800-1999` | ~0.000 | ~0.000 | 100.0% | 0 |
+![Bounded hard contraction ratio across rho](figures/2026-05-01_direct_three_method_rho_sensitivity/bounded_hard_contraction_ratio_by_rho.svg)
 
 Interpretation:
 
-- The early transient is poor.
-- But once the controller passes the long initial adaptation, the behavior changes
-  qualitatively.
-- From `k >= 1500`, the tracking is essentially exact.
+- At `rho = 0.95`, the method is over-constrained and performs worst in the
+  three-method set.
+- At `rho = 0.99`, it becomes fully competitive and nearly tied with the other
+  two methods.
+- So plain `bounded_hard` is highly sensitive to contraction-factor choice.
 
-This is the strongest evidence in the run that the bounded-hard direct Lyapunov
-design is not fundamentally oscillatory. With a long enough dwell time, it can
-become perfectly aligned with the requested setpoint.
+## Method 2: `bounded_hard_u_prev_0p1`
 
-### Step 2: `bounded_hard_u_prev_1p0`
+### Results
 
-| Window | Output 0 RMSE | Output 1 RMSE | Exact-bounded target fraction | Solver-fail hold-prev |
-| --- | ---: | ---: | ---: | ---: |
-| `0-999` | 0.100 | 0.322 | 18.4% | 2 |
-| `1000-1499` | 0.406 | 1.408 | 30.6% | 8 |
-| `1500-1999` | 0.166 | 0.842 | 32.0% | 3 |
-| `1800-1999` | 0.003 | 0.029 | 67.0% | 0 |
+| `rho_lyap` | Reward mean | Output RMSE mean | Solver success | Hard contraction | Violation steps | Bounded-LS steps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.95` | -10.659 | 0.726 | 95.85% | 95.80% | 84 | 1986 |
+| `0.98` | -0.467 | 0.132 | 100.00% | 100.00% | 0 | 311 |
+| `0.985` | -9.880 | 0.766 | 98.60% | 98.60% | 28 | 1570 |
+| `0.99` | -0.370 | 0.110 | 100.00% | 100.00% | 0 | 221 |
+
+Lyapunov and target notes:
+
+- This is the most robust method at `rho = 0.98`. It is the only case in that
+  run with both perfect solver success and zero contraction violations.
+- The method is not uniformly monotone in `rho`. It performs well at `0.98` and
+  `0.99`, but degrades strongly at `0.985`.
+- The target-input anchoring does reduce `||u_s-u_{\mathrm{ref}}||`, but at
+  `rho = 0.985` it still leaves the run in bounded-LS target mode for `1570`
+  steps, which is far too long for good nominal tracking.
+
+![Bounded hard plus input anchor contraction ratio across rho](figures/2026-05-01_direct_three_method_rho_sensitivity/bounded_hard_u_prev_0p1_contraction_ratio_by_rho.svg)
 
 Interpretation:
 
-- This case is much better at the beginning.
-- The previous-input penalty suppresses the large early mismatch seen in
-  `bounded_hard`.
-- But the same regularization also delays the final transition into the exact
-  bounded target regime.
+- This method is best at `rho = 0.95` and `rho = 0.98`.
+- It is also marginally best on nominal RMSE at `rho = 0.99`, although the
+  difference there is very small.
+- The surprising point is the `rho = 0.985` regression. So the input-anchor
+  method is not just sensitive to strict versus loose contraction; it is also
+  sensitive to how the contraction factor interacts with the steady-target move
+  regularization.
 
-So the step-2 case is better if the metric is overall episode quality. It is not
-better if the metric is "how soon do we enter the final exact-settled regime?"
+## Method 3: `bounded_hard_xs_prev_0p1`
 
-## Why Step 1 Settles Earlier But Step 2 Scores Better
+### Results
 
-This is the most important control interpretation.
+| `rho_lyap` | Reward mean | Output RMSE mean | Solver success | Hard contraction | Violation steps | Bounded-LS steps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.95` | -28.395 | 1.195 | 95.00% | 94.95% | 101 | 1999 |
+| `0.98` | -2.002 | 0.277 | 99.85% | 99.85% | 3 | 510 |
+| `0.985` | -0.448 | 0.127 | 99.90% | 99.90% | 2 | 201 |
+| `0.99` | -0.362 | 0.113 | 99.85% | 99.85% | 3 | 227 |
 
-For `bounded_hard`, the target is freer to move aggressively. That hurts the
-early transient:
+Lyapunov and target notes:
 
-- larger target-reference error
-- more solver failures
-- more bounded-face activity
+- This method collapses under `rho = 0.95`. It is almost always in bounded-LS
+  mode (`1999` steps) and the mean target-reference mismatch rises to `2.312`.
+- Once `rho` is relaxed to `0.985` or `0.99`, the `x_s`-smoothing method
+  becomes one of the two best performers in the entire sweep.
+- The best single run for this method is `rho = 0.985`, not `0.99`. That is the
+  clearest evidence that the state-smoothing term is helpful, but only when the
+  contraction factor is not too strict.
 
-But that same freedom lets the internal steady target reach the exact bounded
-solution sooner in a sustained way. The first index after which the exact bounded
-target remains active for the rest of the run is:
+![Bounded hard plus x_s smoothing contraction ratio across rho](figures/2026-05-01_direct_three_method_rho_sensitivity/bounded_hard_xs_prev_0p1_contraction_ratio_by_rho.svg)
 
-- `bounded_hard`: `k = 1157`
-- `bounded_hard_u_prev_1p0`: `k = 1866`
+Interpretation:
 
-For `bounded_hard_u_prev_1p0`, the `u_prev` penalty keeps `u_s` close to the
-previous input and removes the repeated target-bound activation:
+- `x_s` smoothing is the most sensitive method at the strict end of the sweep.
+- But it is also the method that gains the most at `rho = 0.985`.
+- So the correct statement is not that `x_s` smoothing is universally better or
+  worse. It is conditionally strong when the contraction factor is chosen well.
 
-- `target_u_ref_active_steps = 1503`
-- `bounded_active_lower_count_max = 0`
-- `bounded_active_upper_count_max = 0`
+## Cross-Method Comparison
 
-That improves early behavior and average reward. But it also keeps the internal
-target in the bounded least-squares compromise for longer. The controller tracks
-the raw setpoint better on average, yet it reaches the final exact-target regime
-later.
+The cross-rho comparison is summarized below.
 
-This is why the two cases rank differently depending on the metric:
+![Method metrics by rho](figures/2026-05-01_direct_three_method_rho_sensitivity/method_metrics_by_rho.svg)
 
-- `bounded_hard` is the more convincing eventual-settling result.
-- `bounded_hard_u_prev_1p0` is the better practical controller over a finite
-  2000-step episode.
+Best method by contraction factor:
 
-## Mechanism Figure
+| `rho_lyap` | Best method on output RMSE | Practical interpretation |
+| --- | --- | --- |
+| `0.95` | `bounded_hard_u_prev_0p1` | The input anchor is the least damaged by the strict contraction, but all three methods are still poor. |
+| `0.98` | `bounded_hard_u_prev_0p1` | Input anchoring gives the cleanest feasible nominal behavior at this contraction level. |
+| `0.985` | `bounded_hard_xs_prev_0p1` | `x_s` smoothing is the best compromise between target stability and tracking quality here. |
+| `0.99` | effectively tied; smallest RMSE is `bounded_hard_u_prev_0p1` | At this loose contraction factor, method choice matters much less than at `0.98-0.985`. |
 
-The figure below shows the link between output-error decay and the transition to
-the exact bounded target stage.
+Cross-method comparison points:
 
-![Settling versus target stage](figures/2026-04-30_direct_bounded_single_setpoint_settling/settling_stage_timeline.png)
+- The worst case in the whole sweep is not tied to one regularizer. It appears
+  whenever `rho_lyap` is too strict.
+- The nominal direct formulation does not need slack to work well here. The good
+  runs at `0.985-0.99` achieve their behavior with zero Lyapunov slack
+  activation.
+- The three methods are not being ranked on different targets. The large
+  differences in performance coincide with large differences in bounded-LS usage,
+  target-reference mismatch, and contraction-violation count.
 
-The main pattern is:
+## What Should Be Stated
 
-- Step 1 enters its sustained exact-target phase much earlier.
-- Step 2 keeps returning to bounded least-squares for much longer.
-- The late exact-target transition is what allows the very small final errors.
+The report should state the following clearly:
 
-## Existing Comparison Figures
+1. The Lyapunov contraction factor is a major tuning variable for the direct
+   controller and must be reported with every result.
+2. In the current nominal single-setpoint study, `rho_lyap = 0.95` is too
+   restrictive and materially harms all three methods.
+3. The strong operating region is `rho_lyap = 0.985-0.99`.
+4. The best method depends on `rho_lyap`:
+   - input anchoring is strongest at `0.95-0.98`
+   - `x_s` smoothing is strongest at `0.985`
+   - all three methods are nearly tied at `0.99`
+5. Therefore, conclusions about "which method is best" are not valid unless the
+   contraction factor is fixed and reported.
 
-The aggregate comparison still matters, because it shows the practical value of
-the `u_prev` penalty.
+## Summary
 
-![Comparison outputs overlay](figures/2026-04-30_direct_bounded_single_setpoint_settling/comparison_outputs_overlay.png)
+The most important new conclusion is not just that one method won one run. The
+more important conclusion is that `rho_lyap` changes the direct-controller
+regime.
 
-![Comparison output RMSE](figures/2026-04-30_direct_bounded_single_setpoint_settling/comparison_output_rmse.png)
+- At `rho_lyap = 0.95`, the hard contraction is so aggressive that the direct
+  controller spends almost the whole episode in bounded-LS target mode.
+- At `rho_lyap = 0.98`, input anchoring is clearly the most reliable choice.
+- At `rho_lyap = 0.985`, `x_s` smoothing becomes the best method.
+- At `rho_lyap = 0.99`, the direct formulation is well-conditioned enough that
+  all three methods are nearly equivalent on this nominal task.
 
-![Comparison reward mean](figures/2026-04-30_direct_bounded_single_setpoint_settling/comparison_reward_mean.png)
+That is why the contraction-factor sweep should replace the earlier single-run
+report as the main statement for this experiment.
 
-![Comparison target residual and bounded activity](figures/2026-04-30_direct_bounded_single_setpoint_settling/comparison_target_residual_bounded_activity.png)
+## Limitations And Next Step
 
-## What Progress This Shows
+These are still nominal single-setpoint results. The next experiment should keep
+the same three methods and test:
 
-This run changes the interpretation of the direct controller in an important way.
-
-Before this, the bounded-hard direct formulation could easily be read as
-"oscillatory and not really converging." The new 2000-step single-setpoint run
-shows that this is too pessimistic.
-
-The controller can converge.
-
-More precisely:
-
-- the hard bounded direct formulation is capable of eventual exact-setpoint
-  convergence in the nominal case
-- the previous-input penalty improves overall practical performance
-- but that regularization can delay the final exact-settled phase
-
-So the real design question is no longer "can it settle at all?" The better
-question is:
-
-How do we retain the strong early transient of the `u_prev`-regularized case
-while recovering the earlier exact-target transition of `bounded_hard`?
-
-## Recommended Next Experiment
-
-The next notebook rerun should use the now-implemented three-scenario setup:
-
-- `bounded_hard`
-- `bounded_hard_u_prev_0p1`
-- `bounded_hard_xs_prev_0p1`
-
-The key metrics should be:
-
-- practical settling index
-- tight settling index
-- first sustained exact-target index
-- full-episode RMSE
-- `0-999` RMSE
-- `1000-1999` RMSE
-- solver-fail hold-prev count
-- mean target-reference mismatch
-- mean inf-norm of `u_s-u_prev`
-- mean inf-norm of $x_s-x_{s,\mathrm{prev}}$
-
-That rerun should show whether $x_s$ smoothing can retain the cleaner early
-behavior of regularized targets without delaying the exact-target transition as
-much as the earlier strong previous-input penalty.
+1. `rho_lyap = 0.99` as the nominal default because it gives the cleanest
+   overall baseline.
+2. `rho_lyap = 0.985` as the discriminating stress point because it separates
+   `x_s` smoothing from the input-anchor method most clearly.
+3. disturbed and multi-setpoint runs before making broader claims about the best
+   regularization strategy.
