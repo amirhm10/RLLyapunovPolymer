@@ -46,6 +46,7 @@ DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
     "box_bound_tol": 1.0e-9,
     "box_use_reduced_first": True,
     "u_ref_weight": 0.0,
+    "x_ref_weight": 0.0,
     "analysis_target_variant": "hybrid",
     "box_event_window_radius": 5,
     "box_dhat_event_threshold": 5.0e-2,
@@ -662,6 +663,8 @@ def solve_bounded_steady_state_least_squares(
     use_reduced_first: bool = True,
     u_ref: Optional[np.ndarray] = None,
     u_ref_weight: Any = 0.0,
+    x_ref: Optional[np.ndarray] = None,
+    x_ref_weight: Any = 0.0,
 ) -> Dict[str, Any]:
     A = _as_float_array(A, "A", ndim=2)
     B = _as_float_array(B, "B", ndim=2)
@@ -704,6 +707,24 @@ def solve_bounded_steady_state_least_squares(
     use_u_ref_term = bool(np.any(u_ref_weight > 0.0))
     sqrt_u_ref_weight = np.sqrt(u_ref_weight)
 
+    if x_ref is None:
+        x_ref = np.zeros(n_states, dtype=float)
+        x_ref_weight = np.zeros(n_states, dtype=float)
+    else:
+        x_ref = _as_float_array(x_ref, "x_ref", ndim=1)
+        if x_ref.shape != (n_states,):
+            raise ValueError("x_ref must match the number of states.")
+        x_ref_weight = np.asarray(x_ref_weight, dtype=float).reshape(-1)
+        if x_ref_weight.size == 0:
+            x_ref_weight = np.zeros(n_states, dtype=float)
+        elif x_ref_weight.size == 1:
+            x_ref_weight = np.full(n_states, float(x_ref_weight.item()), dtype=float)
+        elif x_ref_weight.size != n_states:
+            raise ValueError("x_ref_weight must be scalar or match the number of states.")
+        x_ref_weight = np.maximum(x_ref_weight, 0.0)
+    use_x_ref_term = bool(np.any(x_ref_weight > 0.0))
+    sqrt_x_ref_weight = np.sqrt(x_ref_weight)
+
     if not HAS_SCIPY:
         return {
             "solve_success": False,
@@ -723,6 +744,13 @@ def solve_bounded_steady_state_least_squares(
             "output_residual_inf": float("nan"),
             "active_lower_mask": np.zeros(n_inputs, dtype=bool),
             "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+            "u_ref": u_ref.copy(),
+            "u_ref_weight": u_ref_weight.copy(),
+            "u_ref_penalty": float("nan"),
+            "x_ref": x_ref.copy(),
+            "x_ref_weight": x_ref_weight.copy(),
+            "x_ref_penalty": float("nan"),
+            "xs_x_ref_inf": float("nan"),
         }
 
     solve_attempts: List[str] = []
@@ -732,12 +760,17 @@ def solve_bounded_steady_state_least_squares(
         G = np.asarray(reduced_info["G"], dtype=float)
         solve_attempts.append("reduced_lsq_linear")
         try:
+            aug_blocks = [G]
+            aug_rhs = [rhs_output]
             if use_u_ref_term:
-                G_aug = np.vstack([G, np.diag(sqrt_u_ref_weight)])
-                rhs_aug = np.concatenate([rhs_output, sqrt_u_ref_weight * u_ref])
-            else:
-                G_aug = G
-                rhs_aug = rhs_output
+                aug_blocks.append(np.diag(sqrt_u_ref_weight))
+                aug_rhs.append(sqrt_u_ref_weight * u_ref)
+            if use_x_ref_term:
+                state_to_input_gain = np.asarray(reduced_info["state_to_input_gain"], dtype=float)
+                aug_blocks.append(np.diag(sqrt_x_ref_weight) @ state_to_input_gain)
+                aug_rhs.append(sqrt_x_ref_weight * x_ref)
+            G_aug = np.vstack(aug_blocks)
+            rhs_aug = np.concatenate(aug_rhs)
             reduced_result = lsq_linear(G_aug, rhs_aug, bounds=(u_min, u_max))
             last_result = reduced_result
             if reduced_result.success:
@@ -773,6 +806,10 @@ def solve_bounded_steady_state_least_squares(
                     "u_ref": u_ref.copy(),
                     "u_ref_weight": u_ref_weight.copy(),
                     "u_ref_penalty": float(np.sum(u_ref_weight * np.square(u_s - u_ref))),
+                    "x_ref": x_ref.copy(),
+                    "x_ref_weight": x_ref_weight.copy(),
+                    "x_ref_penalty": float(np.sum(x_ref_weight * np.square(x_s - x_ref))),
+                    "xs_x_ref_inf": _inf_norm(x_s - x_ref),
                 }
         except Exception:
             last_result = None
@@ -782,13 +819,20 @@ def solve_bounded_steady_state_least_squares(
     lower = np.concatenate([np.full(n_states, -np.inf, dtype=float), u_min])
     upper = np.concatenate([np.full(n_states, np.inf, dtype=float), u_max])
     try:
+        aug_blocks = [M]
+        aug_rhs = [rhs]
         if use_u_ref_term:
-            reg_block = np.hstack([np.zeros((n_inputs, n_states), dtype=float), np.diag(sqrt_u_ref_weight)])
-            M_aug = np.vstack([M, reg_block])
-            rhs_aug = np.concatenate([rhs, sqrt_u_ref_weight * u_ref])
-        else:
-            M_aug = M
-            rhs_aug = rhs
+            aug_blocks.append(
+                np.hstack([np.zeros((n_inputs, n_states), dtype=float), np.diag(sqrt_u_ref_weight)])
+            )
+            aug_rhs.append(sqrt_u_ref_weight * u_ref)
+        if use_x_ref_term:
+            aug_blocks.append(
+                np.hstack([np.diag(sqrt_x_ref_weight), np.zeros((n_states, n_inputs), dtype=float)])
+            )
+            aug_rhs.append(sqrt_x_ref_weight * x_ref)
+        M_aug = np.vstack(aug_blocks)
+        rhs_aug = np.concatenate(aug_rhs)
         full_result = lsq_linear(M_aug, rhs_aug, bounds=(lower, upper))
         last_result = full_result
         if full_result.success:
@@ -825,6 +869,10 @@ def solve_bounded_steady_state_least_squares(
                 "u_ref": u_ref.copy(),
                 "u_ref_weight": u_ref_weight.copy(),
                 "u_ref_penalty": float(np.sum(u_ref_weight * np.square(u_s - u_ref))),
+                "x_ref": x_ref.copy(),
+                "x_ref_weight": x_ref_weight.copy(),
+                "x_ref_penalty": float(np.sum(x_ref_weight * np.square(x_s - x_ref))),
+                "xs_x_ref_inf": _inf_norm(x_s - x_ref),
             }
     except Exception:
         last_result = None
@@ -857,6 +905,10 @@ def solve_bounded_steady_state_least_squares(
         "u_ref": u_ref.copy(),
         "u_ref_weight": u_ref_weight.copy(),
         "u_ref_penalty": float("nan"),
+        "x_ref": x_ref.copy(),
+        "x_ref_weight": x_ref_weight.copy(),
+        "x_ref_penalty": float("nan"),
+        "xs_x_ref_inf": float("nan"),
     }
 
 

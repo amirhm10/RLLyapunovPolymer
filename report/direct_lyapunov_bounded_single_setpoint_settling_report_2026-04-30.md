@@ -18,6 +18,15 @@ The two cases are:
 1. `bounded_hard`
 2. `bounded_hard_u_prev_1p0`
 
+The quantitative results below still refer to that saved two-case run.
+
+The direct notebook and target-solver code have now been extended for the next
+rerun to use a three-scenario default:
+
+1. `bounded_hard`
+2. `bounded_hard_u_prev_0p1`
+3. `bounded_hard_xs_prev_0p1`
+
 ## Objective
 
 The key question in this run is not only which case has the better average reward.
@@ -36,16 +45,16 @@ essentially at the setpoint up to numerical precision.
 ## Controller Interpretation
 
 The frozen-output-disturbance direct target is built around the current
-disturbance estimate `\hat d_k`. In simplified form, the bounded target solve is:
+disturbance estimate $\hat d_k$. In simplified form, the bounded target solve is:
 
-```math
+$$
 \min_{x_s,u_s}
 J_{\mathrm{tgt}}(x_s,u_s)
-```
+$$
 
 with
 
-```math
+$$
 J_{\mathrm{tgt}}(x_s,u_s)
 =
 \left\|
@@ -60,18 +69,62 @@ C x_s + C_d \hat d_k - y_{\mathrm{sp}}
 \left\|
 u_s - u_{\mathrm{prev}}
 \right\|_2^2
-```
+$$
 
 subject to the input bounds.
 
-For `bounded_hard`, `\lambda_prev = 0`.
+For `bounded_hard`, $\lambda_{\mathrm{prev}} = 0$.
 
-For `bounded_hard_u_prev_1p0`, `\lambda_prev = 1.0`.
+For `bounded_hard_u_prev_1p0`, $\lambda_{\mathrm{prev}} = 1.0$.
 
-The online Lyapunov MPC then tracks the raw setpoint `y_sp`, not `y_s`, but the
+The online Lyapunov MPC then tracks the raw setpoint $y_{\mathrm{sp}}$, not $y_s$, but the
 Lyapunov center and terminal ingredients are still defined around `(x_s,u_s)`.
 That is why target quality still matters even though the stage objective uses the
 raw setpoint.
+
+## Implemented $x_s$-Smoothing Extension
+
+For the next rerun, the direct bounded target stage now also supports a state
+smoothing term:
+
+$$
+J_{\mathrm{tgt,ext}}(x_s,u_s)
+=
+J_{\mathrm{tgt}}(x_s,u_s)
++
+\lambda_x
+\left\|
+x_s - x_{s,\mathrm{prev}}
+\right\|_2^2
+$$
+
+Here $x_{s,\mathrm{prev}}$ is the previous successful steady target state from the
+earlier control step.
+
+This term is different from the previous-input penalty:
+
+- $\lambda_{\mathrm{prev}} \|u_s-u_{\mathrm{prev}}\|_2^2$ suppresses movement in the steady input.
+- $\lambda_x \|x_s-x_{s,\mathrm{prev}}\|_2^2$ suppresses movement in the steady target state.
+
+So the new term does not directly penalize the applied control move. It penalizes
+how quickly the Lyapunov center itself drifts from one step to the next.
+
+In the current implementation, this new term is active only inside the bounded
+least-squares fallback stage. If the exact steady target is already feasible
+within the input bounds, the controller keeps that exact target and no
+state-smoothing penalty is applied.
+
+The first step also has no $x_s$ smoothing reference yet, because there is no
+previous successful steady target available. So the term becomes active only
+after the controller has produced at least one successful target and only on
+later steps where the bounded least-squares target stage is actually used.
+
+The intended control effect is:
+
+- less abrupt motion of the internal steady target
+- smaller step-to-step changes in the Lyapunov center during the bounded regime
+- a possible compromise between the aggressive `bounded_hard` target motion and
+  the slower but better-conditioned `u_prev`-regularized case
 
 ## Executive Findings
 
@@ -109,8 +162,8 @@ So the `u_prev` penalty is genuinely helpful overall.
 
 I used two sustained-settling bands in physical units:
 
-- practical band: `|eta error| <= 0.1`, `|T error| <= 0.5`
-- tight band: `|eta error| <= 0.05`, `|T error| <= 0.2`
+- practical band: eta error <= 0.1 and T error <= 0.5
+- tight band: eta error <= 0.05 and T error <= 0.2
 
 The first index after which the outputs stay inside the band for the rest of the
 episode is:
@@ -256,13 +309,11 @@ while recovering the earlier exact-target transition of `bounded_hard`?
 
 ## Recommended Next Experiment
 
-The next comparison should keep the same nominal single-setpoint setup and sweep:
+The next notebook rerun should use the now-implemented three-scenario setup:
 
-- `lambda_prev = 0`
-- `lambda_prev = 0.1`
-- `lambda_prev = 0.25`
-- `lambda_prev = 0.5`
-- `lambda_prev = 1.0`
+- `bounded_hard`
+- `bounded_hard_u_prev_0p1`
+- `bounded_hard_xs_prev_0p1`
 
 The key metrics should be:
 
@@ -273,7 +324,10 @@ The key metrics should be:
 - `0-999` RMSE
 - `1000-1999` RMSE
 - solver-fail hold-prev count
+- mean target-reference mismatch
+- mean inf-norm of `u_s-u_prev`
+- mean inf-norm of $x_s-x_{s,\mathrm{prev}}$
 
-That sweep should identify whether there is an intermediate `u_prev` weight that
-keeps the good early transient without delaying the exact-target phase as much as
-`lambda_prev = 1.0`.
+That rerun should show whether $x_s$ smoothing can retain the cleaner early
+behavior of regularized targets without delaying the exact-target transition as
+much as the earlier strong previous-input penalty.

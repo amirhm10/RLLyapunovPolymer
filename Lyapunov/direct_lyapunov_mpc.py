@@ -706,6 +706,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
     delta_u_storage = []
     direct_info_storage = []
     target_info_storage = []
+    x_target_prev_success = None
 
     IC_opt = np.asarray(IC_opt, float).copy()
     target_cfg = _target_config_dict(target_config)
@@ -731,6 +732,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
             config=target_cfg,
             H=target_H,
             u_ref=u_prev_dev,
+            x_ref=x_target_prev_success,
         )
         target_info = {} if target_info is None else dict(target_info)
         target_info.update(
@@ -744,6 +746,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
             }
         )
         target_info_storage.append(target_info)
+        if target_info.get("success", False) and target_info.get("x_s") is not None:
+            x_target_prev_success = np.asarray(target_info.get("x_s"), float).reshape(n_x).copy()
 
         step_info = {
             "step": int(step_idx),
@@ -796,6 +800,15 @@ def run_direct_output_disturbance_lyapunov_mpc(
             "target_u_ref_active": target_info.get("u_ref_active"),
             "target_u_ref_penalty": target_info.get("u_ref_penalty"),
             "target_us_u_ref_inf": target_info.get("us_u_ref_inf"),
+            "target_x_ref": None
+            if target_info.get("x_ref") is None
+            else np.asarray(target_info.get("x_ref"), float).copy(),
+            "target_x_ref_weight": None
+            if target_info.get("x_ref_weight") is None
+            else np.asarray(target_info.get("x_ref_weight"), float).copy(),
+            "target_x_ref_active": target_info.get("x_ref_active"),
+            "target_x_ref_penalty": target_info.get("x_ref_penalty"),
+            "target_xs_x_ref_inf": target_info.get("xs_x_ref_inf"),
             "target_bounded_active_lower_mask": None
             if target_info.get("bounded_active_lower_mask") is None
             else np.asarray(target_info.get("bounded_active_lower_mask"), bool).copy(),
@@ -1069,6 +1082,11 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "target_u_ref_active": info.get("target_u_ref_active"),
             "target_u_ref_penalty": info.get("target_u_ref_penalty"),
             "target_us_u_ref_inf": info.get("target_us_u_ref_inf"),
+            "target_x_ref": json.dumps(_jsonable(info.get("target_x_ref"))),
+            "target_x_ref_weight": json.dumps(_jsonable(info.get("target_x_ref_weight"))),
+            "target_x_ref_active": info.get("target_x_ref_active"),
+            "target_x_ref_penalty": info.get("target_x_ref_penalty"),
+            "target_xs_x_ref_inf": info.get("target_xs_x_ref_inf"),
             "target_bounded_active_lower_count": None
             if info.get("target_bounded_active_lower_mask") is None
             else int(np.sum(np.asarray(info.get("target_bounded_active_lower_mask"), dtype=bool))),
@@ -1174,6 +1192,11 @@ def summarize_direct_lyapunov_bundle(bundle):
         "target_us_u_ref_inf_mean": _safe_nanmean(bundle.get("target_us_u_ref_inf", [])),
         "target_us_u_ref_inf_max": _safe_nanmax(bundle.get("target_us_u_ref_inf", [])),
         "target_u_ref_active_steps": int(np.nansum(bundle.get("target_u_ref_active_flags", []))),
+        "target_x_ref_penalty_mean": _safe_nanmean(bundle.get("target_x_ref_penalty", [])),
+        "target_x_ref_penalty_max": _safe_nanmax(bundle.get("target_x_ref_penalty", [])),
+        "target_xs_x_ref_inf_mean": _safe_nanmean(bundle.get("target_xs_x_ref_inf", [])),
+        "target_xs_x_ref_inf_max": _safe_nanmax(bundle.get("target_xs_x_ref_inf", [])),
+        "target_x_ref_active_steps": int(np.nansum(bundle.get("target_x_ref_active_flags", []))),
         "target_cond_M_max": float(np.nanmax(bundle["target_cond_M"])) if bundle["target_cond_M"].size else None,
         "bounded_solution_used_steps": int(np.sum(np.nan_to_num(bundle["target_bounded_solution_used_flags"], nan=0.0) > 0.5)),
         "bounded_active_lower_count_max": float(np.nanmax(bundle["target_bounded_active_lower_count"])) if bundle["target_bounded_active_lower_count"].size else None,
@@ -1330,6 +1353,11 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "target_us_u_ref_inf_mean": summary.get("target_us_u_ref_inf_mean"),
         "target_us_u_ref_inf_max": summary.get("target_us_u_ref_inf_max"),
         "target_u_ref_active_steps": summary.get("target_u_ref_active_steps"),
+        "target_x_ref_penalty_mean": summary.get("target_x_ref_penalty_mean"),
+        "target_x_ref_penalty_max": summary.get("target_x_ref_penalty_max"),
+        "target_xs_x_ref_inf_mean": summary.get("target_xs_x_ref_inf_mean"),
+        "target_xs_x_ref_inf_max": summary.get("target_xs_x_ref_inf_max"),
+        "target_x_ref_active_steps": summary.get("target_x_ref_active_steps"),
         "target_cond_M_max": summary.get("target_cond_M_max"),
         "bounded_solution_used_steps": summary.get("bounded_solution_used_steps"),
         "bounded_active_lower_count_max": summary.get("bounded_active_lower_count_max"),
@@ -1688,6 +1716,8 @@ def build_direct_lyapunov_run_bundle(
         "u_target_dev_store": _stack_vectors(direct_info_storage, "u_s", n_u),
         "target_u_ref_store": _stack_vectors(direct_info_storage, "target_u_ref", n_u),
         "target_u_ref_weight_store": _stack_vectors(direct_info_storage, "target_u_ref_weight", n_u),
+        "target_x_ref_store": _stack_vectors(direct_info_storage, "target_x_ref", n_x),
+        "target_x_ref_weight_store": _stack_vectors(direct_info_storage, "target_x_ref_weight", n_x),
         "y_target_store": _stack_vectors(direct_info_storage, "y_s", n_y),
         "y_tracking_store": _stack_vectors(direct_info_storage, "y_target", n_y),
         "y_s_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_s_minus_y_sp", n_y),
@@ -1708,6 +1738,9 @@ def build_direct_lyapunov_run_bundle(
         "target_u_ref_penalty": np.array([info.get("target_u_ref_penalty", np.nan) for info in direct_info_storage], dtype=float),
         "target_us_u_ref_inf": np.array([info.get("target_us_u_ref_inf", np.nan) for info in direct_info_storage], dtype=float),
         "target_u_ref_active_flags": np.array([1.0 if bool(info.get("target_u_ref_active", False)) else 0.0 for info in direct_info_storage], dtype=float),
+        "target_x_ref_penalty": np.array([info.get("target_x_ref_penalty", np.nan) for info in direct_info_storage], dtype=float),
+        "target_xs_x_ref_inf": np.array([info.get("target_xs_x_ref_inf", np.nan) for info in direct_info_storage], dtype=float),
+        "target_x_ref_active_flags": np.array([1.0 if bool(info.get("target_x_ref_active", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "target_bounded_active_lower_count": np.array(
             [
                 np.nan if info.get("target_bounded_active_lower_mask") is None

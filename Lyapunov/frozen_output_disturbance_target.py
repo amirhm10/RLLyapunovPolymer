@@ -21,6 +21,7 @@ DEFAULT_FROZEN_OUTPUT_DISTURBANCE_TARGET_CONFIG: Dict[str, Any] = {
     "box_bound_tol": DEFAULT_ANALYSIS_CONFIG["box_bound_tol"],
     "box_use_reduced_first": DEFAULT_ANALYSIS_CONFIG["box_use_reduced_first"],
     "u_ref_weight": DEFAULT_ANALYSIS_CONFIG.get("u_ref_weight", 0.0),
+    "x_ref_weight": DEFAULT_ANALYSIS_CONFIG.get("x_ref_weight", 0.0),
     "zero_block_tol": 1.0e-9,
     "integrator_tol": 1.0e-9,
     "cd_identity_tol": 1.0e-9,
@@ -211,6 +212,57 @@ def _u_ref_debug_fields(
     }
 
 
+def _normalize_x_ref_regularization(
+    x_ref: Optional[np.ndarray],
+    x_ref_weight: Any,
+    n_x: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if x_ref is None:
+        return np.zeros(n_x, dtype=float), np.zeros(n_x, dtype=float)
+
+    x_ref_arr = _as_float_array(x_ref, "x_ref", ndim=1)
+    if x_ref_arr.size != n_x:
+        raise ValueError(f"x_ref must have size {n_x}.")
+
+    weight_arr = np.asarray(x_ref_weight, dtype=float).reshape(-1)
+    if weight_arr.size == 0:
+        weight_arr = np.zeros(n_x, dtype=float)
+    elif weight_arr.size == 1:
+        weight_arr = np.full(n_x, float(weight_arr.item()), dtype=float)
+    elif weight_arr.size != n_x:
+        raise ValueError(f"x_ref_weight must be scalar or have size {n_x}.")
+
+    return x_ref_arr.reshape(n_x).copy(), np.maximum(weight_arr.reshape(n_x), 0.0)
+
+
+def _x_ref_debug_fields(
+    x_s: np.ndarray,
+    x_ref: Optional[np.ndarray],
+    x_ref_weight: Optional[np.ndarray],
+    *,
+    active: bool,
+) -> Dict[str, Any]:
+    if x_ref is None or x_ref_weight is None:
+        return {
+            "x_ref": None,
+            "x_ref_weight": None,
+            "x_ref_active": False,
+            "x_ref_penalty": None,
+            "xs_x_ref_inf": None,
+        }
+    x_s_arr = _as_float_array(x_s, "x_s", ndim=1)
+    x_ref_arr = _as_float_array(x_ref, "x_ref", ndim=1)
+    weight_arr = _as_float_array(x_ref_weight, "x_ref_weight", ndim=1)
+    diff = x_s_arr - x_ref_arr
+    return {
+        "x_ref": x_ref_arr.copy(),
+        "x_ref_weight": weight_arr.copy(),
+        "x_ref_active": bool(active),
+        "x_ref_penalty": float(np.sum(weight_arr * np.square(diff))),
+        "xs_x_ref_inf": float(np.max(np.abs(diff))) if diff.size else 0.0,
+    }
+
+
 def _base_result_dict(
     *,
     mode: str,
@@ -285,6 +337,7 @@ def solve_target_unbounded_output_disturbance(
     config: Optional[Dict[str, Any]] = None,
     H: Optional[np.ndarray] = None,
     u_ref: Optional[np.ndarray] = None,
+    x_ref: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     cfg = _merge_config(config)
     model = _recover_output_disturbance_model(A_aug, B_aug, C_aug, cfg)
@@ -325,6 +378,11 @@ def solve_target_unbounded_output_disturbance(
         cfg.get("u_ref_weight", 0.0),
         model["n_u"],
     )
+    x_ref_arr, x_ref_weight_arr = _normalize_x_ref_regularization(
+        x_ref,
+        cfg.get("x_ref_weight", 0.0),
+        model["n_x"],
+    )
     result.update(
         {
             "solve_stage": "frozen_output_disturbance_unbounded",
@@ -346,6 +404,14 @@ def solve_target_unbounded_output_disturbance(
             active=False,
         )
     )
+    result.update(
+        _x_ref_debug_fields(
+            result["x_s"],
+            None if x_ref is None else x_ref_arr,
+            None if x_ref is None else x_ref_weight_arr,
+            active=False,
+        )
+    )
     return result
 
 
@@ -361,6 +427,7 @@ def solve_target_bounded_output_disturbance(
     config: Optional[Dict[str, Any]] = None,
     H: Optional[np.ndarray] = None,
     u_ref: Optional[np.ndarray] = None,
+    x_ref: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     cfg = _merge_config(config)
     model = _recover_output_disturbance_model(A_aug, B_aug, C_aug, cfg)
@@ -379,6 +446,11 @@ def solve_target_bounded_output_disturbance(
         u_ref,
         cfg.get("u_ref_weight", 0.0),
         model["n_u"],
+    )
+    x_ref_arr, x_ref_weight_arr = _normalize_x_ref_regularization(
+        x_ref,
+        cfg.get("x_ref_weight", 0.0),
+        model["n_x"],
     )
 
     exact_info = solve_legacy_ss_exact(
@@ -423,6 +495,14 @@ def solve_target_bounded_output_disturbance(
             active=False,
         )
     )
+    exact_result.update(
+        _x_ref_debug_fields(
+            exact_result["x_s"],
+            None if x_ref is None else x_ref_arr,
+            None if x_ref is None else x_ref_weight_arr,
+            active=False,
+        )
+    )
 
     if bool(bounds_info["within_bounds"]):
         exact_result.update(
@@ -454,6 +534,8 @@ def solve_target_bounded_output_disturbance(
         use_reduced_first=bool(cfg["box_use_reduced_first"]),
         u_ref=u_ref_arr,
         u_ref_weight=u_ref_weight_arr,
+        x_ref=x_ref_arr,
+        x_ref_weight=x_ref_weight_arr,
     )
 
     if not bool(bounded_info["solve_success"]):
@@ -479,6 +561,14 @@ def solve_target_bounded_output_disturbance(
                 u_ref_arr,
                 u_ref_weight_arr,
                 active=bool(np.any(u_ref_weight_arr > 0.0)),
+            )
+        )
+        exact_result.update(
+            _x_ref_debug_fields(
+                exact_result["x_s"],
+                None if x_ref is None else x_ref_arr,
+                None if x_ref is None else x_ref_weight_arr,
+                active=bool(np.any(x_ref_weight_arr > 0.0)),
             )
         )
         return exact_result
@@ -522,6 +612,18 @@ def solve_target_bounded_output_disturbance(
             active=bool(np.any(u_ref_weight_arr > 0.0)),
         )
     )
+    exact_result.update(
+        _x_ref_debug_fields(
+            exact_result["x_s"],
+            None
+            if x_ref is None
+            else np.asarray(bounded_info.get("x_ref", x_ref_arr), dtype=float).reshape(model["n_x"]),
+            None
+            if x_ref is None
+            else np.asarray(bounded_info.get("x_ref_weight", x_ref_weight_arr), dtype=float).reshape(model["n_x"]),
+            active=bool(np.any(x_ref_weight_arr > 0.0)),
+        )
+    )
     return exact_result
 
 
@@ -538,6 +640,7 @@ def solve_output_disturbance_target(
     config: Optional[Dict[str, Any]] = None,
     H: Optional[np.ndarray] = None,
     u_ref: Optional[np.ndarray] = None,
+    x_ref: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     mode = str(target_mode).strip().lower()
     if mode == "unbounded":
@@ -552,6 +655,7 @@ def solve_output_disturbance_target(
             config=config,
             H=H,
             u_ref=u_ref,
+            x_ref=x_ref,
         )
     if mode == "bounded":
         if u_min is None or u_max is None:
@@ -567,5 +671,6 @@ def solve_output_disturbance_target(
             config=config,
             H=H,
             u_ref=u_ref,
+            x_ref=x_ref,
         )
     raise ValueError("target_mode must be 'unbounded' or 'bounded'.")
