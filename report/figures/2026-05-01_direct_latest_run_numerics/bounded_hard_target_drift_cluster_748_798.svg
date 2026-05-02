@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" role="img">
+<rect x="0.0" y="0.0" width="1200.0" height="860.0" fill="#ffffff" stroke="none" stroke-width="1.0" rx="0.0" />
+<text x="40.0" y="34.0" fill="#1f2430" font-size="22" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">bounded_hard: late-segment target drift during the failure cluster</text>
+<text x="40.0" y="56.0" fill="#5d6574" font-size="13" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Between steps 748 and 798, the target output y_s barely moves while u_s sweeps through a large range. The red markers are solver-failure hold steps.</text>
+<rect x="40.0" y="90.0" width="1120.0" height="330.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="114.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Steady-input target drift</text>
+<text x="56.0" y="132.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Second input component of u_s in scaled deviation coordinates. Vertical dashed line marks the first exact-bounded target step.</text>
+<line x1="98.0" y1="388.0" x2="1136.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="392.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-1.822</text>
+<line x1="98.0" y1="268.0" x2="1136.0" y2="268.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="272.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-0.002</text>
+<line x1="98.0" y1="148.0" x2="1136.0" y2="148.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="152.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">1.818</text>
+<line x1="98.0" y1="148.0" x2="98.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="98.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">748</text>
+<line x1="617.0" y1="148.0" x2="617.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="617.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">773</text>
+<line x1="1136.0" y1="148.0" x2="1136.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1136.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">798</text>
+<line x1="98.0" y1="148.0" x2="98.0" y2="388.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="98.0" y1="388.0" x2="1136.0" y2="388.0" stroke="#2d3440" stroke-width="1.2" />
+<text x="56.0" y="162.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">u_s[1]</text>
+<line x1="1136.0" y1="148.0" x2="1136.0" y2="388.0" stroke="#9e5a00" stroke-width="1.4" stroke-dasharray="7 4" />
+<polyline points="98.00,371.45 118.76,355.92 139.52,339.89 160.28,323.57 181.04,311.05 201.80,302.12 222.56,295.89 243.32,291.58 264.08,288.64 284.84,286.70 305.60,285.50 326.36,281.09 347.12,273.77 367.88,264.50 388.64,254.11 409.40,243.15 430.16,232.04 450.92,221.06 471.68,210.41 492.44,200.25 513.20,193.02 533.96,188.37 554.72,185.55 575.48,183.98 596.24,183.25 617.00,183.10 637.76,182.35 658.52,181.02 679.28,179.31 700.04,177.42 720.80,175.52 741.56,173.70 762.32,172.03 783.08,170.55 803.84,169.28 824.60,168.25 845.36,167.45 866.12,166.87 886.88,166.51 907.64,166.34 928.40,166.34 949.16,166.50 969.92,166.78 990.68,167.15 1011.44,166.81 1032.20,166.07 1052.96,165.25 1073.72,164.55 1094.48,164.84 1115.24,164.97 1136.00,166.30" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<circle cx="139.52" cy="339.89" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="160.28" cy="323.57" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="181.04" cy="311.05" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="201.80" cy="302.12" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="222.56" cy="295.89" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="243.32" cy="291.58" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="264.08" cy="288.64" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="471.68" cy="210.41" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="492.44" cy="200.25" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="513.20" cy="193.02" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="533.96" cy="188.37" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="554.72" cy="185.55" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="575.48" cy="183.98" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="969.92" cy="166.78" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="990.68" cy="167.15" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="1011.44" cy="166.81" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="1032.20" cy="166.07" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="1073.72" cy="164.55" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="1094.48" cy="164.84" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<circle cx="1115.24" cy="164.97" r="2.40" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<rect x="40.0" y="450.0" width="1120.0" height="330.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="474.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Steady-output target drift</text>
+<text x="56.0" y="492.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Both y_s output components remain almost fixed while u_s keeps moving.</text>
+<line x1="98.0" y1="748.0" x2="1136.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="752.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-3.422</text>
+<line x1="98.0" y1="628.0" x2="1136.0" y2="628.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="632.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-2.772</text>
+<line x1="98.0" y1="508.0" x2="1136.0" y2="508.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="512.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-2.121</text>
+<line x1="98.0" y1="508.0" x2="98.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="98.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">748</text>
+<line x1="617.0" y1="508.0" x2="617.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="617.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">773</text>
+<line x1="1136.0" y1="508.0" x2="1136.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1136.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">798</text>
+<line x1="98.0" y1="508.0" x2="98.0" y2="748.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="98.0" y1="748.0" x2="1136.0" y2="748.0" stroke="#2d3440" stroke-width="1.2" />
+<text x="56.0" y="522.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">y_s</text>
+<line x1="1136.0" y1="508.0" x2="1136.0" y2="748.0" stroke="#9e5a00" stroke-width="1.4" stroke-dasharray="7 4" />
+<polyline points="98.00,528.45 118.76,527.98 139.52,527.54 160.28,527.15 181.04,526.84 201.80,526.60 222.56,526.41 243.32,526.27 264.08,526.16 284.84,526.08 305.60,526.00 326.36,525.89 347.12,525.76 367.88,525.61 388.64,525.47 409.40,525.33 430.16,525.20 450.92,525.09 471.68,525.01 492.44,524.94 513.20,524.92 533.96,524.93 554.72,524.97 575.48,525.03 596.24,525.09 617.00,525.15 637.76,525.19 658.52,525.22 679.28,525.24 700.04,525.26 720.80,525.26 741.56,525.26 762.32,525.26 783.08,525.26 803.84,525.25 824.60,525.24 845.36,525.22 866.12,525.21 886.88,525.19 907.64,525.16 928.40,525.13 949.16,525.10 969.92,525.06 990.68,525.01 1011.44,524.95 1032.20,524.88 1052.96,524.81 1073.72,524.73 1094.48,524.67 1115.24,524.60 1136.00,524.55" fill="none" stroke="#2458d3" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<polyline points="98.00,730.69 118.76,730.78 139.52,730.86 160.28,730.94 181.04,731.00 201.80,731.05 222.56,731.08 243.32,731.11 264.08,731.13 284.84,731.15 305.60,731.16 326.36,731.19 347.12,731.21 367.88,731.24 388.64,731.27 409.40,731.30 430.16,731.32 450.92,731.34 471.68,731.36 492.44,731.37 513.20,731.38 533.96,731.37 554.72,731.37 575.48,731.36 596.24,731.34 617.00,731.33 637.76,731.32 658.52,731.32 679.28,731.31 700.04,731.31 720.80,731.31 741.56,731.31 762.32,731.31 783.08,731.31 803.84,731.31 824.60,731.31 845.36,731.32 866.12,731.32 886.88,731.32 907.64,731.33 928.40,731.33 949.16,731.34 969.92,731.35 990.68,731.36 1011.44,731.37 1032.20,731.38 1052.96,731.40 1073.72,731.41 1094.48,731.43 1115.24,731.44 1136.00,731.45" fill="none" stroke="#c04b2d" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<line x1="54.0" y1="821.0" x2="82.0" y2="821.0" stroke="#1f4b99" stroke-width="2.4" />
+<text x="92.0" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">u_s[1]</text>
+<line x1="140.6" y1="821.0" x2="168.6" y2="821.0" stroke="#2458d3" stroke-width="2.4" />
+<text x="178.6" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">y_s[0]</text>
+<line x1="227.2" y1="821.0" x2="255.2" y2="821.0" stroke="#c04b2d" stroke-width="2.4" />
+<text x="265.2" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">y_s[1]</text>
+<circle cx="319.80" cy="821.00" r="3.20" fill="#bf1e2d" stroke="none" stroke-width="0.0" />
+<text x="331.8" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">solver fail</text>
+<line x1="413.4" y1="821.0" x2="441.4" y2="821.0" stroke="#9e5a00" stroke-width="2.4" stroke-dasharray="7 4" />
+<text x="451.4" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">exact target starts</text>
+</svg>

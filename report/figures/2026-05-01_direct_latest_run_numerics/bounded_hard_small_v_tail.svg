@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="860" viewBox="0 0 1200 860" role="img">
+<rect x="0.0" y="0.0" width="1200.0" height="860.0" fill="#ffffff" stroke="none" stroke-width="1.0" rx="0.0" />
+<text x="40.0" y="34.0" fill="#1f2430" font-size="22" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">bounded_hard: small-V tail before the setpoint switch</text>
+<text x="40.0" y="56.0" fill="#5d6574" font-size="13" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">These steps are already in the tiny-Lyapunov regime. The run still satisfies the contraction test cleanly, which argues against the small-V hypothesis for this latest run.</text>
+<rect x="40.0" y="90.0" width="1120.0" height="330.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="114.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Lyapunov values</text>
+<text x="56.0" y="132.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Scaled by 1e6 for readability. V_next_first stays below V_bound even when V_k is only a few micro-units.</text>
+<line x1="98.0" y1="388.0" x2="1136.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="392.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">2.227</text>
+<line x1="98.0" y1="268.0" x2="1136.0" y2="268.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="272.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">6.199</text>
+<line x1="98.0" y1="148.0" x2="1136.0" y2="148.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="152.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">10.171</text>
+<line x1="98.0" y1="148.0" x2="98.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="98.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">372</text>
+<line x1="617.0" y1="148.0" x2="617.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="617.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">386</text>
+<line x1="1136.0" y1="148.0" x2="1136.0" y2="388.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1136.0" y="406.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">399</text>
+<line x1="98.0" y1="148.0" x2="98.0" y2="388.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="98.0" y1="388.0" x2="1136.0" y2="388.0" stroke="#2d3440" stroke-width="1.2" />
+<text x="56.0" y="162.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">1e6 * V</text>
+<polyline points="98.00,164.55 136.44,177.50 174.89,189.87 213.33,201.69 251.78,212.99 290.22,223.78 328.67,234.10 367.11,243.96 405.56,253.37 444.00,262.37 482.44,270.97 520.89,279.19 559.33,287.04 597.78,294.55 636.22,301.72 674.67,308.58 713.11,315.14 751.56,321.40 790.00,327.39 828.44,333.10 866.89,338.55 905.33,343.75 943.78,348.72 982.22,353.47 1020.67,358.01 1059.11,362.34 1097.56,366.49 1136.00,370.46" fill="none" stroke="#2458d3" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<polyline points="98.00,165.98 136.44,178.86 174.89,191.17 213.33,202.93 251.78,214.17 290.22,224.91 328.67,235.18 367.11,244.98 405.56,254.35 444.00,263.31 482.44,271.86 520.89,280.04 559.33,287.85 597.78,295.32 636.22,302.46 674.67,309.28 713.11,315.81 751.56,322.04 790.00,328.00 828.44,333.68 866.89,339.10 905.33,344.28 943.78,349.22 982.22,353.95 1020.67,358.46 1059.11,362.78 1097.56,366.90 1136.00,370.85" fill="none" stroke="#9e5a00" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 4" />
+<polyline points="98.00,167.93 136.44,180.73 174.89,192.96 213.33,204.65 251.78,215.81 290.22,226.48 328.67,236.68 367.11,246.42 405.56,255.73 444.00,264.62 482.44,273.12 520.89,281.24 559.33,289.00 597.78,296.43 636.22,303.52 674.67,310.30 713.11,316.78 751.56,322.98 790.00,328.89 828.44,334.53 866.89,339.92 905.33,345.06 943.78,349.97 982.22,354.66 1020.67,359.14 1059.11,363.43 1097.56,367.53 1136.00,371.45" fill="none" stroke="#2a7f62" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<rect x="40.0" y="450.0" width="1120.0" height="330.0" fill="#fbfbfd" stroke="#d7dbe5" stroke-width="1.0" rx="8.0" />
+<text x="56.0" y="474.0" fill="#1f2430" font-size="16" font-family="Segoe UI, Arial, sans-serif" font-weight="600" text-anchor="start">Contraction margin</text>
+<text x="56.0" y="492.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">Scaled by 1e8 for readability. The margin stays negative in this small-V window.</text>
+<line x1="98.0" y1="748.0" x2="1136.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="752.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-6.838</text>
+<line x1="98.0" y1="628.0" x2="1136.0" y2="628.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="632.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-4.229</text>
+<line x1="98.0" y1="508.0" x2="1136.0" y2="508.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="90.0" y="512.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="end">-1.62</text>
+<line x1="98.0" y1="508.0" x2="98.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="98.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">372</text>
+<line x1="617.0" y1="508.0" x2="617.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="617.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">386</text>
+<line x1="1136.0" y1="508.0" x2="1136.0" y2="748.0" stroke="#d7dbe5" stroke-width="1.0" stroke-dasharray="4 4" />
+<text x="1136.0" y="766.0" fill="#5d6574" font-size="11" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="middle">399</text>
+<line x1="98.0" y1="508.0" x2="98.0" y2="748.0" stroke="#2d3440" stroke-width="1.2" />
+<line x1="98.0" y1="748.0" x2="1136.0" y2="748.0" stroke="#2d3440" stroke-width="1.2" />
+<text x="56.0" y="522.0" fill="#5d6574" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">1e8 * m</text>
+<polyline points="98.00,731.45 136.44,718.67 174.89,706.40 213.33,694.56 251.78,683.17 290.22,672.27 328.67,661.93 367.11,652.04 405.56,642.56 444.00,633.50 482.44,624.84 520.89,616.61 559.33,608.71 597.78,601.43 636.22,594.42 674.67,587.85 713.11,582.02 751.56,576.03 790.00,569.91 828.44,563.83 866.89,557.96 905.33,552.36 943.78,547.04 982.22,542.02 1020.67,537.27 1059.11,532.78 1097.56,528.53 1136.00,524.55" fill="none" stroke="#1f4b99" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<line x1="54.0" y1="821.0" x2="82.0" y2="821.0" stroke="#2458d3" stroke-width="2.4" />
+<text x="92.0" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">V_k</text>
+<line x1="120.8" y1="821.0" x2="148.8" y2="821.0" stroke="#9e5a00" stroke-width="2.4" stroke-dasharray="7 4" />
+<text x="158.8" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">V_bound</text>
+<line x1="214.0" y1="821.0" x2="242.0" y2="821.0" stroke="#2a7f62" stroke-width="2.4" />
+<text x="252.0" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">V_next_first</text>
+<line x1="340.2" y1="821.0" x2="368.2" y2="821.0" stroke="#1f4b99" stroke-width="2.4" />
+<text x="378.2" y="826.0" fill="#1f2430" font-size="12" font-family="Segoe UI, Arial, sans-serif" font-weight="400" text-anchor="start">margin</text>
+</svg>
