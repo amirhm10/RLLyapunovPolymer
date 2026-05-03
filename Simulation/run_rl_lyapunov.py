@@ -430,6 +430,13 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     if decay_scope != "entire_run":
         raise ValueError("training_phase_config['exploration_decay_scope'] must be 'entire_run'.")
 
+    exploration_decay_mode = str(cfg.get("exploration_decay_mode", "agent_schedule")).strip().lower()
+    if exploration_decay_mode not in {"agent_schedule", "linear", "exp"}:
+        raise ValueError(
+            "training_phase_config['exploration_decay_mode'] must be "
+            "'agent_schedule', 'linear', or 'exp'."
+        )
+
     teacher_policy = str(cfg.get("bc_teacher_policy", "direct_lyapunov_mpc")).strip().lower()
     if teacher_policy != "direct_lyapunov_mpc":
         raise ValueError("training_phase_config['bc_teacher_policy'] must be 'direct_lyapunov_mpc'.")
@@ -456,18 +463,34 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "exploration_std_start": float(cfg.get("exploration_std_start", 0.02)),
         "exploration_std_end": float(cfg.get("exploration_std_end", 0.0)),
         "exploration_decay_scope": decay_scope,
+        "exploration_decay_mode": exploration_decay_mode,
+        "exploration_decay_rate": float(cfg.get("exploration_decay_rate", 0.99992)),
         "bc_teacher_policy": teacher_policy,
         "warmup_behavior_source": warmup_behavior_source,
         "total_steps": max(1, int(n_steps)),
     }
 
 
-def _phase_exploration_sigma(phase_cfg, step_idx):
+def _phase_exploration_sigma(phase_cfg, step_idx, agent=None):
     if phase_cfg is None:
         return None
-    total_steps = max(1, int(phase_cfg["total_steps"]))
     start = float(phase_cfg["exploration_std_start"])
     end = float(phase_cfg["exploration_std_end"])
+    decay_mode = str(phase_cfg.get("exploration_decay_mode", "agent_schedule")).strip().lower()
+
+    if decay_mode == "agent_schedule":
+        expl_sched = getattr(agent, "expl_sched", None)
+        if expl_sched is not None and hasattr(expl_sched, "value"):
+            sigma = float(expl_sched.value(int(step_idx)))
+            return float(np.clip(sigma, min(start, end), max(start, end)))
+        decay_mode = "linear"
+
+    if decay_mode == "exp":
+        decay_rate = float(phase_cfg.get("exploration_decay_rate", 0.99992))
+        sigma = end + (start - end) * (decay_rate ** max(int(step_idx), 0))
+        return float(max(0.0, sigma))
+
+    total_steps = max(1, int(phase_cfg["total_steps"]))
     if total_steps <= 1:
         return end
     frac = min(max(float(step_idx) / float(total_steps - 1), 0.0), 1.0)
@@ -826,7 +849,7 @@ def run_rl_train(
             warm_start_idx=WARM_START,
             phase_cfg=phase_cfg,
         )
-        sigma_override = _phase_exploration_sigma(phase_cfg, k)
+        sigma_override = _phase_exploration_sigma(phase_cfg, k, agent=agent)
 
         rl_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k], y_sp_k, u_prev_dev)
         precomputed_direct_step_context = None
