@@ -183,9 +183,11 @@ class TD3Agent(nn.Module):
             self.buffer = ReplayBuffer(buffer_size, state_dim, action_dim)
         else:
             self.buffer = PERRecentReplayBuffer(buffer_size, state_dim, action_dim)
+        self.bc_buffer = ReplayBuffer(buffer_size, state_dim, action_dim)
 
         # logs
         self.actor_losses, self.critic_losses = [], []
+        self.actor_bc_losses = []
 
         # decay scheduler
         self.expl_sched = exploration_schedule if exploration_schedule is not None else GaussianNoiseSchedule(
@@ -222,18 +224,50 @@ class TD3Agent(nn.Module):
         return a.clamp(-self.max_action, self.max_action).cpu().numpy()
 
     @torch.no_grad()
-    def take_action(self, state: np.ndarray, explore: bool = False) -> np.ndarray:
-        self.steps += 1
+    def apply_exploration(
+        self,
+        action: np.ndarray,
+        sigma_override: Optional[float] = None,
+        advance_step: bool = False,
+    ) -> np.ndarray:
+        if advance_step:
+            self.steps += 1
+
+        if sigma_override is None:
+            sigma = float(self.expl_sched.value(self.steps))
+        else:
+            sigma = float(max(0.0, sigma_override))
+
+        self._expl_sigma = sigma
+        a = np.asarray(action, dtype=np.float32).copy()
+        if sigma > 0.0:
+            a = a + np.random.randn(*a.shape).astype(np.float32) * sigma
+        return np.clip(a, -self.max_action, self.max_action)
+
+    @torch.no_grad()
+    def take_action(
+        self,
+        state: np.ndarray,
+        explore: bool = False,
+        sigma_override: Optional[float] = None,
+    ) -> np.ndarray:
         s = torch.as_tensor(state, dtype=torch.float32, device=self.device)
         a = self.actor(s).detach().cpu().numpy()
         if explore:
-            self._expl_sigma = self.expl_sched.value(self.steps)
-            a = a + np.random.randn(*a.shape) * self._expl_sigma
+            return self.apply_exploration(
+                a,
+                sigma_override=sigma_override,
+                advance_step=True,
+            )
+        self._expl_sigma = 0.0
         return np.clip(a, -self.max_action, self.max_action)
 
 
     def push(self, s, a, r, ns, done):
         self.buffer.push(s, a, r, ns, done)
+
+    def push_actor_demo(self, s, a):
+        self.bc_buffer.push(s, a, 0.0, s, 0.0)
 
     def pretrain_push(self, s, a, r, ns,):
         self.buffer.pretrain_add(s, a, r, ns)
@@ -331,6 +365,34 @@ class TD3Agent(nn.Module):
                 self.buffer.update_priorities(idx, td.abs())
 
         return float(critic_loss.item())
+
+    def train_actor_bc_step(self, batch_size: Optional[int] = None) -> Optional[float]:
+        batch_size = int(batch_size or self.batch_size)
+        if len(self.bc_buffer) < batch_size:
+            return None
+
+        s, a, _r, _ns, _done = self.bc_buffer.sample(batch_size, device=self.device)
+        s = s.to(self.device, non_blocking=True).float()
+        a = a.to(self.device, non_blocking=True).float()
+
+        pred = self.actor(s)
+        bc_loss = self.loss_fn_actor(pred, a)
+
+        self.actor_optimizer.zero_grad(set_to_none=True)
+        bc_loss.backward()
+        if self.grad_clip_norm is not None:
+            nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip_norm)
+        self.actor_optimizer.step()
+
+        if self.target_update == "soft":
+            soft_update(self.actor_target, self.actor, self.tau)
+        else:
+            hard_update(self.actor_target, self.actor)
+
+        bc_value = float(bc_loss.item())
+        self.actor_losses.append(bc_value)
+        self.actor_bc_losses.append(bc_value)
+        return bc_value
 
     def pretrain_from_buffer(
             self,
