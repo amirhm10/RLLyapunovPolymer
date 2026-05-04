@@ -1665,6 +1665,110 @@ If \(u_k^{RL}\) already satisfies the same direct contraction test, apply it. Ot
 \begin{frame}
 \setbeamertemplate{blocks}[default]
 \setbeamercolor{block body}{fg=black,bg=lightgray}
+\frametitle{\large \textbf{Mathematics III: RL with a direct Lyapunov acceptance gate}}
+\tiny
+\vspace{-0.30cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.54\textwidth}
+\begin{block}{State, action, target, and gate}
+\justifying
+\[
+s_k=\big[\hat x_k^{aug},\, y_k^{sp},\, u_{k-1}\big].
+\]
+\[
+a_k=\pi_\theta(s_k),\qquad u_k^{RL}=\mathcal{M}(a_k),
+\]
+\[
+(x_{s,k},u_{s,k},d_{s,k},y_{s,k})=\mathcal{T}(\hat x_k^{aug},y_k^{sp},u_{k-1}).
+\]
+\[
+e_k^x=\hat x_k-x_{s,k},\qquad
+V_k=(e_k^x)^\top P_x e_k^x .
+\]
+\[
+\hat x_{k+1|k}^{RL}=A\hat x_k+B u_k^{RL}+B_d d_{s,k},
+\]
+\[
+e_{k+1|k}^{RL}=\hat x_{k+1|k}^{RL}-x_{s,k},
+\qquad
+V_{k+1|k}^{RL}=(e_{k+1|k}^{RL})^\top P_x e_{k+1|k}^{RL},
+\]
+\[
+V_{k+1|k}^{RL}\le \rho_{\mathrm{lyap}}V_k+\varepsilon_{\mathrm{lyap}}.
+\]
+\end{block}
+
+\vspace{0.02cm}
+
+\begin{block}{Applied action and replay tuple}
+\justifying
+\[
+u_k^{exec}=
+\begin{cases}
+u_k^{RL}, & \text{if } V_{k+1|k}^{RL}\le \rho_{\mathrm{lyap}}V_k+\varepsilon_{\mathrm{lyap}},\\
+u_k^{LMPC}, & \text{otherwise},
+\end{cases}
+\]
+\[
+\tau_k=(s_k,\; a_k^{exec},\; r_k,\; s_{k+1},\; 0),\qquad
+a_k^{exec}=\mathcal{M}^{-1}(u_k^{exec}).
+\]
+\[
+s_{k+1}=\big[\hat x_{k+1}^{aug},\, y_k^{sp},\, u_k^{exec}\big].
+\]
+\end{block}
+\end{column}
+
+\begin{column}{0.42\textwidth}
+\begin{block}{Reward and replay are intentionally unchanged}
+\justifying
+\[
+r_k=r_{\mathrm{Proj2}}(e_k,\Delta u_k,y_k^{sp}),
+\]
+\[
+e_k=y_k-y_k^{sp},\qquad
+\Delta u_k=u_k^{exec}-u_{k-1},\qquad
+\mathcal{B}_{k+1}=\mathcal{B}_k\cup\{\tau_k\}.
+\]
+\end{block}
+
+\vspace{0.02cm}
+
+\begin{block}{Replay-buffer and TD3 update}
+\justifying
+For a batch \((s_i,a_i,r_i,s_i')\sim\mathcal{B}\),
+\[
+y_i=r_i+\gamma \min_{j=1,2}Q_{\phi_j^-}\!\left(s_i',\pi_{\theta^-}(s_i')+\epsilon_i\right).
+\]
+\[
+\nabla_\theta J \approx \frac{1}{N}\sum_i \nabla_a Q_{\phi_1}(s_i,a)\vert_{a=\pi_\theta(s_i)}\nabla_\theta \pi_\theta(s_i).
+\]
+\[
+\theta,\phi \leftarrow \mathrm{TD3Train}(\mathcal{B}),\qquad
+s_k \rightarrow a_k \rightarrow \mathcal{T} \rightarrow \text{check} \rightarrow u_k^{exec} \rightarrow \tau_k \rightarrow \mathcal{B}.
+\]
+\end{block}
+
+\vspace{0.02cm}
+
+\begin{block}{Key distinction}
+\justifying
+Project 3 adds a target-and-Lyapunov gate before the plant, while keeping the Project 2 reward and replay logic.
+\end{block}
+\end{column}
+
+\end{columns}
+
+\takeawaybox{Project 3 reuses the same Project 2 reward and replay pipeline, but inserts a mathematically explicit target-and-Lyapunov gate between the actor output and the plant.}
+
+\end{frame}
+
+%============================= Slide 26 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[default]
+\setbeamercolor{block body}{fg=black,bg=lightgray}
 \frametitle{\large \textbf{Project 3 closes the loop between practical RL initialization and direct Lyapunov deployment}}
 \scriptsize
 \vspace{-0.28cm}
