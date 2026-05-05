@@ -127,6 +127,13 @@ Most control bugs here come from mixing those representations.
 - Do not rewrite files under `Data/` unless the user explicitly asks for regenerated assets.
 - Ignore `__pycache__/`.
 
+## Markdown Report Formatting
+- Avoid wide pipe tables in Markdown reports. If a table grows beyond about 6-7 columns, split it into smaller themed tables such as performance, reliability, tracking, target diagnostics, and input ranges.
+- Keep numeric columns right-aligned, use consistent precision within each table, and keep units or shorthand terms defined in the surrounding text.
+- Put long text fields such as failure clusters, interpretation notes, or caveats in bullets below the table instead of forcing them into wide table cells.
+- Prefer compact labels such as `S1 high` or `Residual mean` when the meaning is clear from the surrounding paragraph.
+- Before finishing a Markdown report, scan the rendered table shape in plain text: it should remain readable in an IDE preview and on GitHub without horizontal scrolling for the main conclusions.
+
 ## Commit And Change-Report Workflow
 - For any major code, notebook, or controller update, create a Git commit at the end of the task unless the user explicitly says not to commit.
 - Use a descriptive commit message that matches the main technical change. Prefer messages like `Refine Step A selector tuning`, `Add RL paper-style debug export plots`, or `Fix safety-filter target backup logic`.

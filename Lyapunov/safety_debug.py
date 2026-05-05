@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import pickle
@@ -91,6 +92,30 @@ def _selector_debug(info):
 def _target_info(info):
     target_info = info.get("target_info", {})
     return target_info if isinstance(target_info, dict) else {}
+
+
+def _safe_nanmean(values):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.mean(finite))
+
+
+def _safe_nanmax(values):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.max(finite))
+
+
+def _safe_nanmin(values):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.min(finite))
 
 
 def make_safety_filter_step_records(lyap_info_storage):
@@ -204,6 +229,15 @@ def make_safety_filter_step_records(lyap_info_storage):
             "selector_warm_start_used": info.get("selector_warm_start_used"),
             "selector_prev_input_term_active": info.get("selector_prev_input_term_active"),
             "selector_prev_state_term_active": info.get("selector_prev_state_term_active"),
+            "target_cond_M": info.get("target_cond_M"),
+            "target_cond_G": info.get("target_cond_G"),
+            "target_residual_total_norm": info.get("target_residual_total_norm"),
+            "target_u_ref_active": info.get("target_u_ref_active"),
+            "target_u_ref_penalty": info.get("target_u_ref_penalty"),
+            "target_us_u_ref_inf": info.get("target_us_u_ref_inf"),
+            "target_x_ref_active": info.get("target_x_ref_active"),
+            "target_x_ref_penalty": info.get("target_x_ref_penalty"),
+            "target_xs_x_ref_inf": info.get("target_xs_x_ref_inf"),
             "selector_x_s_minus_xhat_inf": None if target_info.get("x_s_minus_xhat") is None else float(np.max(np.abs(np.asarray(target_info.get("x_s_minus_xhat"), float).reshape(-1)))),
             "selector_x_s_minus_xprev_inf": None if target_info.get("x_s_minus_x_prev") is None else float(np.max(np.abs(np.asarray(target_info.get("x_s_minus_x_prev"), float).reshape(-1)))),
             "selector_u_s_minus_uapplied_inf": None if target_info.get("u_s_minus_u_applied") is None else float(np.max(np.abs(np.asarray(target_info.get("u_s_minus_u_applied"), float).reshape(-1)))),
@@ -223,6 +257,10 @@ def make_safety_filter_step_records(lyap_info_storage):
             "u_prev": json.dumps(_jsonable(info.get("u_prev"))),
             "u_s": json.dumps(_jsonable(info.get("u_s"))),
             "u_fallback_mpc": json.dumps(_jsonable(info.get("u_fallback_mpc"))),
+            "target_u_ref": json.dumps(_jsonable(info.get("target_u_ref"))),
+            "target_u_ref_weight": json.dumps(_jsonable(info.get("target_u_ref_weight"))),
+            "target_x_ref": json.dumps(_jsonable(info.get("target_x_ref"))),
+            "target_x_ref_weight": json.dumps(_jsonable(info.get("target_x_ref_weight"))),
             "mpc_tracking_target": json.dumps(_jsonable(info.get("mpc_tracking_target"))),
             "qcqp_tracking_target": json.dumps(_jsonable(info.get("qcqp_tracking_target"))),
             "y_s": json.dumps(_jsonable(info.get("y_s"))),
@@ -231,6 +269,16 @@ def make_safety_filter_step_records(lyap_info_storage):
             "d_s": json.dumps(_jsonable(info.get("d_s"))),
             "cx_s": json.dumps(_jsonable(info.get("cx_s"))),
             "cd_d_s": json.dumps(_jsonable(info.get("cd_d_s"))),
+            "executed_action_gap_inf": None
+            if info.get("u_safe") is None or info.get("u_cand") is None
+            else float(
+                np.max(
+                    np.abs(
+                        np.asarray(info.get("u_safe"), float).reshape(-1)
+                        - np.asarray(info.get("u_cand"), float).reshape(-1)
+                    )
+                )
+            ),
             "solver_residuals": json.dumps(_jsonable(info.get("solver_residuals", {}))),
             "upstream_candidate_info": json.dumps(_jsonable(upstream_info)),
         }
@@ -278,6 +326,16 @@ def summarize_safety_filter_bundle(bundle):
         "source": bundle.get("source"),
         "n_steps": int(bundle.get("nFE", len(lyap_info_storage))),
         "n_verified": int(sum(bool(info.get("verified", False)) for info in lyap_info_storage)),
+        "verified_rate": float(
+            np.mean([1.0 if bool(info.get("verified", False)) else 0.0 for info in lyap_info_storage])
+        )
+        if lyap_info_storage
+        else None,
+        "accepted_rate": float(
+            np.mean([1.0 if str(info.get("correction_mode", "")) == "accepted_candidate" else 0.0 for info in lyap_info_storage])
+        )
+        if lyap_info_storage
+        else None,
         "n_target_success": int(sum(bool(info.get("current_target_success", info.get("target_success", False))) for info in lyap_info_storage)),
         "n_effective_target_success": int(sum(bool(info.get("effective_target_success", False)) for info in lyap_info_storage)),
         "n_target_reused": int(sum(bool(info.get("effective_target_reused", False)) for info in lyap_info_storage)),
@@ -285,6 +343,8 @@ def summarize_safety_filter_bundle(bundle):
         "n_optimized_correction": int(sum(mode == "optimized_correction" for mode in modes)),
         "n_fallback_mpc_verified": int(sum(mode == "fallback_mpc_verified" for mode in modes)),
         "n_fallback_mpc_unverified": int(sum(mode == "fallback_mpc_unverified" for mode in modes)),
+        "n_target_fail_hold_prev": int(sum(mode == "target_fail_hold_prev" for mode in modes)),
+        "n_solver_fail_hold_prev": int(sum(mode == "solver_fail_hold_prev" for mode in modes)),
         "n_secondary_fallbacks": int(sum(mode.endswith("_secondary") for mode in modes)),
         "n_target_failures": int(sum(not bool(info.get("current_target_success", info.get("target_success", False))) for info in lyap_info_storage)),
         "n_qcqp_attempted": int(sum(bool(info.get("qcqp_attempted", False)) for info in lyap_info_storage)),
@@ -303,7 +363,21 @@ def summarize_safety_filter_bundle(bundle):
         "lyapunov_margin_min": float(np.nanmin(bundle["lyapunov_margin"])) if bundle["lyapunov_margin"].size > 0 else None,
         "target_mismatch_inf_max": float(np.nanmax(bundle["target_mismatch_inf"])) if bundle["target_mismatch_inf"].size > 0 else None,
         "d_s_minus_dhat_inf_max": float(np.nanmax(bundle["d_s_minus_dhat_inf"])) if bundle["d_s_minus_dhat_inf"].size > 0 else None,
+        "target_cond_M_max": _safe_nanmax(bundle.get("target_cond_M", [])),
+        "target_cond_G_max": _safe_nanmax(bundle.get("target_cond_G", [])),
+        "target_residual_total_norm_max": _safe_nanmax(bundle.get("target_residual_total_norm", [])),
+        "target_u_ref_active_steps": int(np.nansum(bundle.get("target_u_ref_active_flags", []))),
+        "target_us_u_ref_inf_mean": _safe_nanmean(bundle.get("target_us_u_ref_inf", [])),
+        "target_us_u_ref_inf_max": _safe_nanmax(bundle.get("target_us_u_ref_inf", [])),
+        "target_x_ref_active_steps": int(np.nansum(bundle.get("target_x_ref_active_flags", []))),
+        "target_xs_x_ref_inf_mean": _safe_nanmean(bundle.get("target_xs_x_ref_inf", [])),
+        "target_xs_x_ref_inf_max": _safe_nanmax(bundle.get("target_xs_x_ref_inf", [])),
+        "executed_action_gap_inf_mean": _safe_nanmean(bundle.get("executed_action_gap_inf", [])),
+        "executed_action_gap_inf_max": _safe_nanmax(bundle.get("executed_action_gap_inf", [])),
     }
+    summary["fallback_rate"] = None if summary["n_steps"] <= 0 else float(
+        (summary["n_fallback_mpc_verified"] + summary["n_fallback_mpc_unverified"]) / float(summary["n_steps"])
+    )
     summary["mode_counts"] = {mode: int(modes.count(mode)) for mode in sorted(set(modes))}
     summary["solver_status_counts"] = {
         status: int(solver_statuses.count(status)) for status in sorted(set(solver_statuses))
@@ -386,6 +460,10 @@ def build_safety_filter_run_bundle(
         "x_target_store": _stack_vectors(lyap_info_storage, "x_s", xhatdhat.shape[0] - n_y),
         "d_target_store": _stack_vectors(lyap_info_storage, "d_s", n_y),
         "y_target_store": _stack_vectors(lyap_info_storage, "y_s", n_y),
+        "target_u_ref_store": _stack_vectors(lyap_info_storage, "target_u_ref", n_u),
+        "target_u_ref_weight_store": _stack_vectors(lyap_info_storage, "target_u_ref_weight", n_u),
+        "target_x_ref_store": _stack_vectors(lyap_info_storage, "target_x_ref", xhatdhat.shape[0] - n_y),
+        "target_x_ref_weight_store": _stack_vectors(lyap_info_storage, "target_x_ref_weight", xhatdhat.shape[0] - n_y),
         "r_target_store": _stack_vectors(lyap_info_storage, "r_s", y_sp.shape[1]),
         "cx_s_store": _stack_vectors(lyap_info_storage, "cx_s", n_y),
         "cd_d_s_store": _stack_vectors(lyap_info_storage, "cd_d_s", n_y),
@@ -494,6 +572,50 @@ def build_safety_filter_run_bundle(
             [info.get("target_mismatch_inf", np.nan) for info in lyap_info_storage],
             dtype=float,
         ),
+        "target_cond_M": np.array(
+            [info.get("target_cond_M", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_cond_G": np.array(
+            [info.get("target_cond_G", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_residual_total_norm": np.array(
+            [info.get("target_residual_total_norm", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_u_ref_active_flags": np.array(
+            [1.0 if bool(info.get("target_u_ref_active", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_x_ref_active_flags": np.array(
+            [1.0 if bool(info.get("target_x_ref_active", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_us_u_ref_inf": np.array(
+            [info.get("target_us_u_ref_inf", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_xs_x_ref_inf": np.array(
+            [info.get("target_xs_x_ref_inf", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "executed_action_gap_inf": np.array(
+            [
+                np.nan
+                if info.get("u_safe") is None or info.get("u_cand") is None
+                else float(
+                    np.max(
+                        np.abs(
+                            np.asarray(info.get("u_safe"), float).reshape(-1)
+                            - np.asarray(info.get("u_cand"), float).reshape(-1)
+                        )
+                    )
+                )
+                for info in lyap_info_storage
+            ],
+            dtype=float,
+        ),
         "target_success_flags": np.array(
             [1.0 if bool(info.get("target_success", False)) else 0.0 for info in lyap_info_storage],
             dtype=float,
@@ -592,6 +714,154 @@ def build_safety_filter_run_bundle(
     return bundle
 
 
+def _normalize_step_matrix(values, n_steps, width):
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 1:
+        if values.size != width:
+            raise ValueError(f"Expected vector of width {width}, got {values.size}.")
+        return np.tile(values.reshape(1, -1), (n_steps, 1))
+    if values.shape == (width, n_steps):
+        return values.T.copy()
+    if values.shape == (n_steps, width):
+        return values.copy()
+    raise ValueError(f"Cannot normalize array of shape {values.shape} into ({n_steps}, {width}).")
+
+
+def _physical_setpoint_steps(bundle):
+    y_sp = _normalize_step_matrix(
+        bundle["y_sp"],
+        int(bundle["nFE"]),
+        int(np.asarray(bundle["y_system"], dtype=float).shape[1]),
+    )
+    steady_states = bundle.get("steady_states")
+    data_min = bundle.get("data_min")
+    data_max = bundle.get("data_max")
+    if steady_states is None or data_min is None or data_max is None:
+        return y_sp.copy()
+
+    n_u = int(np.asarray(bundle["u_applied_phys"], dtype=float).shape[1])
+    y_ss_scaled = apply_min_max(
+        np.asarray(steady_states["y_ss"], dtype=float).reshape(-1),
+        np.asarray(data_min, dtype=float)[n_u:],
+        np.asarray(data_max, dtype=float)[n_u:],
+    )
+    return reverse_min_max(
+        y_sp + y_ss_scaled.reshape(1, -1),
+        np.asarray(data_min, dtype=float)[n_u:],
+        np.asarray(data_max, dtype=float)[n_u:],
+    )
+
+
+def safety_output_rmse_post_step(bundle):
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + y_sp_phys.shape[0], :]
+    n_rows = min(y_post.shape[0], y_sp_phys.shape[0])
+    n_cols = min(y_post.shape[1], y_sp_phys.shape[1])
+    if n_rows <= 0 or n_cols <= 0:
+        return np.array([], dtype=float)
+    err = y_post[:n_rows, :n_cols] - y_sp_phys[:n_rows, :n_cols]
+    return np.sqrt(np.mean(err**2, axis=0))
+
+
+def make_safety_filter_episode_records(bundle):
+    episode_len = int(bundle.get("time_in_sub_episodes", 0))
+    n_steps = int(bundle.get("nFE", 0))
+    if episode_len <= 0 or n_steps <= 0:
+        return []
+
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
+    rewards = np.asarray(bundle["rewards"], dtype=float).reshape(-1)
+    contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
+    executed_action_gap_inf = np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float).reshape(-1)
+    modes = list(bundle.get("correction_modes", []))
+    n_episodes = int(np.ceil(n_steps / float(episode_len)))
+
+    records = []
+    for episode_idx in range(n_episodes):
+        start = episode_idx * episode_len
+        stop = min((episode_idx + 1) * episode_len, n_steps)
+        if stop <= start:
+            continue
+
+        err = y_post[start:stop, :] - y_sp_phys[start:stop, :]
+        rmse = np.sqrt(np.mean(err**2, axis=0)) if err.size else np.array([], dtype=float)
+        max_abs = np.max(np.abs(err), axis=0) if err.size else np.array([], dtype=float)
+        mode_slice = modes[start:stop]
+        row = {
+            "episode": int(episode_idx + 1),
+            "step_start": int(start),
+            "step_stop_exclusive": int(stop),
+            "n_steps": int(stop - start),
+            "reward_mean": float(np.mean(rewards[start:stop])) if stop > start else None,
+            "reward_sum": float(np.sum(rewards[start:stop])) if stop > start else None,
+            "accepted_candidate_count": int(sum(mode == "accepted_candidate" for mode in mode_slice)),
+            "fallback_count": int(
+                sum(mode in {"fallback_mpc_verified", "fallback_mpc_unverified"} for mode in mode_slice)
+            ),
+            "fallback_verified_count": int(sum(mode == "fallback_mpc_verified" for mode in mode_slice)),
+            "fallback_unverified_count": int(sum(mode == "fallback_mpc_unverified" for mode in mode_slice)),
+            "target_fail_hold_prev_count": int(sum(mode == "target_fail_hold_prev" for mode in mode_slice)),
+            "solver_fail_hold_prev_count": int(sum(mode == "solver_fail_hold_prev" for mode in mode_slice)),
+            "target_failure_count": int(
+                np.sum(np.asarray(bundle.get("target_failure_flags", np.zeros(n_steps)), dtype=float)[start:stop] > 0.5)
+            ),
+            "min_contraction_margin": _safe_nanmin(contraction_margin[start:stop]),
+            "max_executed_action_gap_inf": _safe_nanmax(executed_action_gap_inf[start:stop]),
+            "output_rmse_mean": _safe_nanmean(rmse),
+            "output_max_abs_error": _safe_nanmax(max_abs),
+        }
+        for idx, value in enumerate(rmse):
+            row[f"output{idx}_rmse"] = float(value)
+        for idx, value in enumerate(max_abs):
+            row[f"output{idx}_max_abs_error"] = float(value)
+        records.append(row)
+    return records
+
+
+def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
+    summary = dict(bundle.get("summary", {}))
+    rmse = safety_output_rmse_post_step(bundle)
+    episode_records = make_safety_filter_episode_records(bundle)
+
+    record = {
+        "case_name": str(case_name),
+        "source": summary.get("source", bundle.get("source")),
+        "n_steps": summary.get("n_steps", bundle.get("nFE")),
+        "reward_mean": summary.get("reward_mean"),
+        "reward_sum": summary.get("reward_sum"),
+        "verified_rate": summary.get("verified_rate"),
+        "accepted_rate": summary.get("accepted_rate"),
+        "fallback_rate": summary.get("fallback_rate"),
+        "n_accepted_candidate": summary.get("n_accepted_candidate"),
+        "n_fallback_mpc_verified": summary.get("n_fallback_mpc_verified"),
+        "n_fallback_mpc_unverified": summary.get("n_fallback_mpc_unverified"),
+        "n_target_fail_hold_prev": summary.get("n_target_fail_hold_prev"),
+        "n_solver_fail_hold_prev": summary.get("n_solver_fail_hold_prev"),
+        "n_target_failures": summary.get("n_target_failures"),
+        "lyapunov_margin_min": summary.get("lyapunov_margin_min"),
+        "target_cond_M_max": summary.get("target_cond_M_max"),
+        "target_cond_G_max": summary.get("target_cond_G_max"),
+        "target_residual_total_norm_max": summary.get("target_residual_total_norm_max"),
+        "target_u_ref_active_steps": summary.get("target_u_ref_active_steps"),
+        "target_us_u_ref_inf_mean": summary.get("target_us_u_ref_inf_mean"),
+        "target_us_u_ref_inf_max": summary.get("target_us_u_ref_inf_max"),
+        "target_x_ref_active_steps": summary.get("target_x_ref_active_steps"),
+        "target_xs_x_ref_inf_mean": summary.get("target_xs_x_ref_inf_mean"),
+        "target_xs_x_ref_inf_max": summary.get("target_xs_x_ref_inf_max"),
+        "executed_action_gap_inf_mean": summary.get("executed_action_gap_inf_mean"),
+        "executed_action_gap_inf_max": summary.get("executed_action_gap_inf_max"),
+        "episode_reward_mean": _safe_nanmean([row.get("reward_mean") for row in episode_records]),
+        "episode_fallback_mean": _safe_nanmean([row.get("fallback_count") for row in episode_records]),
+        "episode_gap_inf_max": _safe_nanmax([row.get("max_executed_action_gap_inf") for row in episode_records]),
+        "debug_dir": None if debug_dir is None else str(debug_dir),
+    }
+    for idx, value in enumerate(rmse):
+        record[f"output{idx}_rmse"] = float(value)
+    record["output_rmse_mean"] = _safe_nanmean(rmse)
+    return record
+
+
 def _write_csv(path, records):
     if not records:
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -622,6 +892,10 @@ def _save_npz(path, bundle):
         u_prev_dev_store=bundle["u_prev_dev_store"],
         u_target_dev_store=bundle["u_target_dev_store"],
         u_fallback_mpc_dev_store=bundle["u_fallback_mpc_dev_store"],
+        target_u_ref_store=bundle["target_u_ref_store"],
+        target_u_ref_weight_store=bundle["target_u_ref_weight_store"],
+        target_x_ref_store=bundle["target_x_ref_store"],
+        target_x_ref_weight_store=bundle["target_x_ref_weight_store"],
         x_target_store=bundle["x_target_store"],
         d_target_store=bundle["d_target_store"],
         y_target_store=bundle["y_target_store"],
@@ -656,6 +930,14 @@ def _save_npz(path, bundle):
         selector_dyn_residual_inf=bundle["selector_dyn_residual_inf"],
         selector_bound_violation_inf=bundle["selector_bound_violation_inf"],
         target_mismatch_inf=bundle["target_mismatch_inf"],
+        target_cond_M=bundle["target_cond_M"],
+        target_cond_G=bundle["target_cond_G"],
+        target_residual_total_norm=bundle["target_residual_total_norm"],
+        target_u_ref_active_flags=bundle["target_u_ref_active_flags"],
+        target_x_ref_active_flags=bundle["target_x_ref_active_flags"],
+        target_us_u_ref_inf=bundle["target_us_u_ref_inf"],
+        target_xs_x_ref_inf=bundle["target_xs_x_ref_inf"],
+        executed_action_gap_inf=bundle["executed_action_gap_inf"],
         target_success_flags=bundle["target_success_flags"],
         target_failure_flags=bundle["target_failure_flags"],
         target_stage_code=bundle["target_stage_code"],
@@ -676,6 +958,298 @@ def _save_npz(path, bundle):
         fallback_verified_flags=bundle["fallback_verified_flags"],
         projection_active_flags=bundle["projection_active_flags"],
     )
+
+
+def _comparison_plot_path(output_dir, filename):
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, filename)
+
+
+def _record_series(records, key):
+    out = []
+    for record in records:
+        value = record.get(key)
+        if value is None:
+            out.append(np.nan)
+        else:
+            try:
+                out.append(float(value))
+            except Exception:
+                out.append(np.nan)
+    return np.asarray(out, dtype=float)
+
+
+def _save_safety_comparison_bar(records, keys, labels, ylabel, title, path):
+    x = np.arange(len(records))
+    case_labels = [str(record["case_name"]) for record in records]
+    width = min(0.8 / max(len(keys), 1), 0.35)
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    for idx, key in enumerate(keys):
+        offset = (idx - (len(keys) - 1) / 2.0) * width
+        ax.bar(x + offset, _record_series(records, key), width=width, label=labels[idx])
+    ax.set_xticks(x)
+    ax.set_xticklabels(case_labels, rotation=25, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _save_safety_mode_stacked_bar(records, path):
+    x = np.arange(len(records))
+    case_labels = [str(record["case_name"]) for record in records]
+    accepted = _record_series(records, "n_accepted_candidate")
+    fallback_verified = _record_series(records, "n_fallback_mpc_verified")
+    fallback_unverified = _record_series(records, "n_fallback_mpc_unverified")
+    target_fail = _record_series(records, "n_target_fail_hold_prev")
+    solver_fail = _record_series(records, "n_solver_fail_hold_prev")
+
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    ax.bar(x, accepted, label="accepted_candidate")
+    ax.bar(x, fallback_verified, bottom=accepted, label="fallback_verified")
+    ax.bar(x, fallback_unverified, bottom=accepted + fallback_verified, label="fallback_unverified")
+    ax.bar(
+        x,
+        target_fail,
+        bottom=accepted + fallback_verified + fallback_unverified,
+        label="target_fail_hold_prev",
+    )
+    ax.bar(
+        x,
+        solver_fail,
+        bottom=accepted + fallback_verified + fallback_unverified + target_fail,
+        label="solver_fail_hold_prev",
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(case_labels, rotation=25, ha="right")
+    ax.set_ylabel("step count")
+    ax.set_title("RL Safety Gate Correction Modes")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _save_safety_distribution_boxplot(data_by_case, ylabel, title, path):
+    case_labels = [label for label, values in data_by_case if len(values) > 0]
+    values = [values for _label, values in data_by_case if len(values) > 0]
+    if not values:
+        return None
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    ax.boxplot(values, labels=case_labels, showfliers=False)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.35)
+    plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _save_safety_last_episode_overlays(bundles_by_case, output_dir):
+    if not bundles_by_case:
+        return {}
+
+    first_bundle = next(iter(bundles_by_case.values()))
+    episode_len = int(first_bundle.get("time_in_sub_episodes", 0))
+    if episode_len <= 0:
+        return {}
+
+    paths = {}
+    time_y = np.arange(episode_len + 1)
+    time_u = np.arange(episode_len)
+
+    y_sp_phys = _physical_setpoint_steps(first_bundle)
+    y_sp_last = y_sp_phys[-episode_len:, :]
+
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+    for case_name, bundle in bundles_by_case.items():
+        y_data = np.asarray(bundle["y_system"], dtype=float)
+        y_last = y_data[-(episode_len + 1) :, :]
+        axes[0].plot(time_y, y_last[:, 0], linewidth=1.8, label=case_name)
+        axes[1].plot(time_y, y_last[:, 1], linewidth=1.8, label=case_name)
+    axes[0].step(time_u, y_sp_last[:, 0], where="post", linestyle="--", color="k", label="setpoint")
+    axes[1].step(time_u, y_sp_last[:, 1], where="post", linestyle="--", color="k", label="setpoint")
+    axes[0].set_ylabel("output 0")
+    axes[1].set_ylabel("output 1")
+    axes[1].set_xlabel("step in last episode")
+    axes[0].set_title("Last-Episode Output Overlay")
+    for ax in axes:
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    fig.tight_layout()
+    paths["outputs_last_episode"] = _comparison_plot_path(output_dir, "comparison_outputs_last_episode.png")
+    fig.savefig(paths["outputs_last_episode"], dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
+    for case_name, bundle in bundles_by_case.items():
+        u_data = np.asarray(bundle["u_applied_phys"], dtype=float)
+        u_last = u_data[-episode_len:, :]
+        axes[0].step(time_u, u_last[:, 0], where="post", linewidth=1.8, label=case_name)
+        axes[1].step(time_u, u_last[:, 1], where="post", linewidth=1.8, label=case_name)
+    axes[0].set_ylabel("input 0")
+    axes[1].set_ylabel("input 1")
+    axes[1].set_xlabel("step in last episode")
+    axes[0].set_title("Last-Episode Input Overlay")
+    for ax in axes:
+        ax.grid(True, linestyle="--", alpha=0.35)
+        ax.legend(loc="best")
+    fig.tight_layout()
+    paths["inputs_last_episode"] = _comparison_plot_path(output_dir, "comparison_inputs_last_episode.png")
+    fig.savefig(paths["inputs_last_episode"], dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(11, 4.8))
+    for case_name, bundle in bundles_by_case.items():
+        margin = np.asarray(bundle.get("contraction_margin", []), dtype=float)
+        if margin.size < episode_len:
+            continue
+        ax.plot(time_u, margin[-episode_len:], linewidth=1.8, label=case_name)
+    ax.axhline(0.0, color="k", linestyle="--", linewidth=1.0)
+    ax.set_ylabel("V_next - V_bound")
+    ax.set_xlabel("step in last episode")
+    ax.set_title("Last-Episode Contraction Margin Overlay")
+    ax.grid(True, linestyle="--", alpha=0.35)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    paths["contraction_margin_last_episode"] = _comparison_plot_path(
+        output_dir,
+        "comparison_contraction_margin_last_episode.png",
+    )
+    fig.savefig(paths["contraction_margin_last_episode"], dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return paths
+
+
+def _build_safety_figure_manifest(out_dir, bundle):
+    entries = []
+
+    def add(key, rel_path, description):
+        full_path = os.path.join(out_dir, rel_path)
+        if os.path.exists(full_path):
+            entries.append(
+                {
+                    "key": key,
+                    "path": full_path,
+                    "description": description,
+                }
+            )
+
+    add("correction_modes", "correction_modes.png", "Safety activity counts by correction mode.")
+    add("solver_status_counts", "solver_status_counts.png", "Fallback/tracking solver status counts.")
+    add("fallback_solver_status_counts", "fallback_solver_status_counts.png", "Fallback solver status counts.")
+    add("last_episode_summary", "last_episode_summary", "Last-episode summary figures.")
+    add("episode_samples_by_tens", "episode_samples_by_tens", "Representative episode windows for slide selection.")
+    add("paper_safety_selector", os.path.join("paper_plots", "safety_selector"), "Paper-style safety selector figures.")
+    add("paper_rl_summary", os.path.join("paper_plots", "rl_summary"), "Paper-style RL summary figures.")
+    return {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "source": bundle.get("source"),
+        "recommended_figures": entries,
+    }
+
+
+_WINDOWS_PATH_SOFT_LIMIT = 240
+
+
+def _truncate_path_component(value, max_len=64):
+    value = str(value)
+    if len(value) <= max_len:
+        return value
+    if max_len <= 5:
+        return value[:max_len]
+    head = (max_len - 1) // 2
+    tail = max_len - head - 1
+    return f"{value[:head]}_{value[-tail:]}"
+
+
+def _unique_directory_candidate(base_path):
+    candidate = str(base_path)
+    idx = 2
+    while os.path.exists(candidate):
+        candidate = f"{base_path}_{idx:02d}"
+        idx += 1
+    return candidate
+
+
+def _project_safety_debug_max_path_len(
+    out_dir,
+    *,
+    save_paper_plots,
+    save_rl_summary_plots,
+    paper_plot_subdir,
+):
+    rel_paths = [
+        "bundle.pkl",
+        os.path.join("episode_samples_by_tens", "episode_001_from_001_010.png"),
+        os.path.join("last_episode_summary", "episode_001_last.png"),
+    ]
+    if save_paper_plots:
+        paper_root = str(paper_plot_subdir)
+        rel_paths.extend(
+            [
+                os.path.join(paper_root, "safety_selector", "first_step_contraction_diagnostics.png"),
+                os.path.join(paper_root, "safety_selector", "last_episode_summary", "episode_001_last.png"),
+            ]
+        )
+        if save_rl_summary_plots:
+            rel_paths.append(os.path.join(paper_root, "rl_summary", "fig_rl_outputs_last9999.png"))
+    return max(len(os.path.join(out_dir, rel_path)) for rel_path in rel_paths)
+
+
+def _select_safety_debug_output_dir(
+    directory,
+    prefix_name,
+    *,
+    timestamp,
+    save_paper_plots,
+    save_rl_summary_plots,
+    paper_plot_subdir,
+):
+    standard_base = os.path.join(directory, prefix_name, timestamp)
+    standard_candidate = _unique_directory_candidate(standard_base)
+    if os.name != "nt":
+        return standard_candidate
+
+    prefix_hash = hashlib.sha1(str(prefix_name).encode("utf-8")).hexdigest()[:8]
+    short_stamp = str(timestamp)[-6:]
+    candidate_bases = [
+        standard_base,
+        os.path.join(directory, prefix_name),
+        os.path.join(directory, f"{_truncate_path_component(prefix_name, max_len=56)}_{short_stamp}"),
+        os.path.join(directory, f"sf_{prefix_hash}_{short_stamp}"),
+        os.path.join(directory, f"sf_{prefix_hash}"),
+    ]
+
+    best_candidate = standard_candidate
+    best_len = _project_safety_debug_max_path_len(
+        best_candidate,
+        save_paper_plots=save_paper_plots,
+        save_rl_summary_plots=save_rl_summary_plots,
+        paper_plot_subdir=paper_plot_subdir,
+    )
+    for base_path in candidate_bases:
+        candidate = _unique_directory_candidate(base_path)
+        projected_len = _project_safety_debug_max_path_len(
+            candidate,
+            save_paper_plots=save_paper_plots,
+            save_rl_summary_plots=save_rl_summary_plots,
+            paper_plot_subdir=paper_plot_subdir,
+        )
+        if projected_len < best_len:
+            best_candidate = candidate
+            best_len = projected_len
+        if projected_len <= _WINDOWS_PATH_SOFT_LIMIT:
+            return candidate
+    return best_candidate
 
 
 def _plot_safety_filter_bundle_impl(bundle, output_dir):
@@ -1947,7 +2521,14 @@ def save_safety_filter_debug_artifacts(
         directory = os.getcwd()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(directory, prefix_name, timestamp)
+    out_dir = _select_safety_debug_output_dir(
+        directory,
+        prefix_name,
+        timestamp=timestamp,
+        save_paper_plots=save_paper_plots,
+        save_rl_summary_plots=save_rl_summary_plots,
+        paper_plot_subdir=paper_plot_subdir,
+    )
     os.makedirs(out_dir, exist_ok=True)
 
     with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
@@ -1965,11 +2546,15 @@ def save_safety_filter_debug_artifacts(
     step_records = make_safety_filter_step_records(bundle["lyap_info_storage"])
     _write_csv(os.path.join(out_dir, "step_table.csv"), step_records)
 
+    episode_records = make_safety_filter_episode_records(bundle)
+    _write_csv(os.path.join(out_dir, "episode_table.csv"), episode_records)
+
     _save_npz(os.path.join(out_dir, "arrays.npz"), bundle)
 
     if HAS_PANDAS:
         df = pd.DataFrame(step_records)
         df.to_pickle(os.path.join(out_dir, "step_table.pkl"))
+        pd.DataFrame(episode_records).to_pickle(os.path.join(out_dir, "episode_table.pkl"))
 
     if save_plots:
         if save_paper_plots:
@@ -1991,7 +2576,152 @@ def save_safety_filter_debug_artifacts(
                     save_input_data=False,
                 )
 
+    figure_manifest = _build_safety_figure_manifest(out_dir, bundle)
+    with open(os.path.join(out_dir, "figure_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_jsonable(figure_manifest), f, indent=2)
+
     return out_dir
+
+
+def save_safety_filter_comparison_artifacts(
+    records,
+    bundles_by_case,
+    study_root,
+    *,
+    save_plots=True,
+):
+    os.makedirs(study_root, exist_ok=True)
+    records = [dict(record) for record in records]
+
+    comparison_csv = os.path.join(study_root, "comparison_table.csv")
+    _write_csv(comparison_csv, records)
+
+    comparison_pkl = os.path.join(study_root, "comparison_table.pkl")
+    if HAS_PANDAS:
+        pd.DataFrame(records).to_pickle(comparison_pkl)
+    else:
+        with open(comparison_pkl, "wb") as f:
+            pickle.dump(records, f)
+
+    summary = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "n_cases": len(records),
+        "case_names": [str(record.get("case_name")) for record in records],
+        "comparison_table_csv": comparison_csv,
+        "comparison_table_pkl": comparison_pkl,
+        "case_debug_dirs": {
+            str(record.get("case_name")): record.get("debug_dir")
+            for record in records
+        },
+    }
+
+    plot_paths = {}
+    if save_plots:
+        if not HAS_MATPLOTLIB:
+            raise ImportError("matplotlib is required to save safety comparison plots.")
+        plot_dir = os.path.join(study_root, "comparison_plots")
+        plot_paths["reward_mean"] = _save_safety_comparison_bar(
+            records,
+            ["reward_mean"],
+            ["reward mean"],
+            "reward",
+            "RL Safety Gate Reward Comparison",
+            _comparison_plot_path(plot_dir, "comparison_reward_mean.png"),
+        )
+        output_rmse_keys = [
+            key for key in records[0].keys()
+            if key.startswith("output") and key.endswith("_rmse")
+        ] if records else []
+        if output_rmse_keys:
+            plot_paths["output_rmse"] = _save_safety_comparison_bar(
+                records,
+                output_rmse_keys,
+                output_rmse_keys,
+                "RMSE (physical units)",
+                "RL Safety Gate Output RMSE",
+                _comparison_plot_path(plot_dir, "comparison_output_rmse.png"),
+            )
+        plot_paths["rates"] = _save_safety_comparison_bar(
+            records,
+            ["accepted_rate", "verified_rate", "fallback_rate"],
+            ["accepted", "verified", "fallback"],
+            "rate",
+            "RL Safety Gate Acceptance And Fallback Rates",
+            _comparison_plot_path(plot_dir, "comparison_rates.png"),
+        )
+        plot_paths["correction_modes"] = _save_safety_mode_stacked_bar(
+            records,
+            _comparison_plot_path(plot_dir, "comparison_correction_modes.png"),
+        )
+        gap_plot = _save_safety_distribution_boxplot(
+            [
+                (
+                    case_name,
+                    np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float)[
+                        np.isfinite(np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float))
+                    ],
+                )
+                for case_name, bundle in bundles_by_case.items()
+            ],
+            "||u_exec - u_rl||_inf",
+            "Executed Action Gap Distribution",
+            _comparison_plot_path(plot_dir, "comparison_executed_action_gap_box.png"),
+        )
+        if gap_plot is not None:
+            plot_paths["executed_action_gap_box"] = gap_plot
+        fallback_episode_plot = _save_safety_distribution_boxplot(
+            [
+                (
+                    case_name,
+                    np.asarray(
+                        [row.get("fallback_count", np.nan) for row in make_safety_filter_episode_records(bundle)],
+                        dtype=float,
+                    )[np.isfinite(np.asarray(
+                        [row.get("fallback_count", np.nan) for row in make_safety_filter_episode_records(bundle)],
+                        dtype=float,
+                    ))],
+                )
+                for case_name, bundle in bundles_by_case.items()
+            ],
+            "fallback count per episode",
+            "Fallback Count Per Episode",
+            _comparison_plot_path(plot_dir, "comparison_fallback_count_per_episode_box.png"),
+        )
+        if fallback_episode_plot is not None:
+            plot_paths["fallback_count_per_episode_box"] = fallback_episode_plot
+        plot_paths["target_diagnostics"] = _save_safety_comparison_bar(
+            records,
+            ["target_cond_M_max", "target_residual_total_norm_max"],
+            ["cond_M max", "target residual max"],
+            "diagnostic value",
+            "Direct-Target Diagnostic Comparison",
+            _comparison_plot_path(plot_dir, "comparison_target_diagnostics.png"),
+        )
+        plot_paths.update(_save_safety_last_episode_overlays(bundles_by_case, plot_dir))
+
+    summary["plot_paths"] = plot_paths
+    figure_manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "recommended_figures": [
+            {"key": key, "path": path}
+            for key, path in plot_paths.items()
+            if path is not None and os.path.exists(path)
+        ],
+        "case_debug_dirs": summary["case_debug_dirs"],
+    }
+
+    comparison_summary_json = os.path.join(study_root, "comparison_summary.json")
+    with open(comparison_summary_json, "w", encoding="utf-8") as f:
+        json.dump(_jsonable(summary), f, indent=2)
+    with open(os.path.join(study_root, "figure_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_jsonable(figure_manifest), f, indent=2)
+
+    return {
+        "comparison_table_csv": comparison_csv,
+        "comparison_table_pkl": comparison_pkl,
+        "comparison_summary_json": comparison_summary_json,
+        "plot_paths": plot_paths,
+    }
 
 
 def save_lyap_debug_artifacts(
