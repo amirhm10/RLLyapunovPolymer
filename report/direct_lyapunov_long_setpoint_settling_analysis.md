@@ -119,21 +119,34 @@ needed to preserve constraints.
 
 ## Overall Short-Run Versus Long-Run Comparison
 
-The table below compares the 400-step-segment run against the new
-1500-step-segment run.
+The 400-step-segment and 1500-step-segment runs are split into performance and
+reliability tables so the comparison remains readable in Markdown.
 
-| Case | Reward 400 | Reward 1500 | RMSE 400 | RMSE 1500 | Solver 400 | Solver 1500 | Slack steps 400 | Slack steps 1500 | Held/fail steps 1500 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `unbounded_hard` | -36.833 | -36.833 | 1.208 | 1.208 | 0.00% | 0.00% | 0 | 0 | 6000 |
-| `bounded_hard` | -26.442 | -19.394 | 1.146 | 0.831 | 96.75% | 95.83% | 0 | 0 | 249 |
-| `unbounded_soft` | -98.829 | -96.810 | 0.543 | 0.540 | 97.31% | 97.42% | 1131 | 4171 | 155 |
-| `bounded_soft` | -33.560 | -22.288 | 1.358 | 0.963 | 97.38% | 94.80% | 16 | 40 | 312 |
-| `bounded_hard_u_prev` | -11.640 | -11.214 | 0.644 | 0.669 | 99.50% | 98.68% | 0 | 0 | 78 |
-| `bounded_soft_u_prev` | -15.989 | -17.552 | 0.821 | 0.844 | 100.00% | 99.93% | 5 | 26 | 4 |
-| `bounded_hard_u_prev_1p0` | -7.694 | -10.075 | 0.567 | 0.637 | 99.81% | 98.87% | 0 | 0 | 67 |
-| `bounded_soft_u_prev_1p0` | -3.598 | -9.648 | 0.371 | 0.605 | 100.00% | 99.50% | 0 | 22 | 30 |
-| `bounded_hard_u_prev_10p0` | -6.568 | -92.414 | 0.487 | 3.516 | 99.31% | 91.70% | 0 | 0 | 497 |
-| `bounded_soft_u_prev_10p0` | -4.183 | -120.213 | 0.405 | 3.303 | 100.00% | 85.60% | 0 | 28 | 864 |
+| Case | Reward 400 | Reward 1500 | RMSE 400 | RMSE 1500 |
+| --- | ---: | ---: | ---: | ---: |
+| `unbounded_hard` | -36.833 | -36.833 | 1.208 | 1.208 |
+| `bounded_hard` | -26.442 | -19.394 | 1.146 | 0.831 |
+| `unbounded_soft` | -98.829 | -96.810 | 0.543 | 0.540 |
+| `bounded_soft` | -33.560 | -22.288 | 1.358 | 0.963 |
+| `bounded_hard_u_prev` | -11.640 | -11.214 | 0.644 | 0.669 |
+| `bounded_soft_u_prev` | -15.989 | -17.552 | 0.821 | 0.844 |
+| `bounded_hard_u_prev_1p0` | -7.694 | -10.075 | 0.567 | 0.637 |
+| `bounded_soft_u_prev_1p0` | -3.598 | -9.648 | 0.371 | 0.605 |
+| `bounded_hard_u_prev_10p0` | -6.568 | -92.414 | 0.487 | 3.516 |
+| `bounded_soft_u_prev_10p0` | -4.183 | -120.213 | 0.405 | 3.303 |
+
+| Case | Solver 400 | Solver 1500 | Slack 400 | Slack 1500 | Held/fail 1500 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `unbounded_hard` | 0.00% | 0.00% | 0 | 0 | 6000 |
+| `bounded_hard` | 96.75% | 95.83% | 0 | 0 | 249 |
+| `unbounded_soft` | 97.31% | 97.42% | 1131 | 4171 | 155 |
+| `bounded_soft` | 97.38% | 94.80% | 16 | 40 | 312 |
+| `bounded_hard_u_prev` | 99.50% | 98.68% | 0 | 0 | 78 |
+| `bounded_soft_u_prev` | 100.00% | 99.93% | 5 | 26 | 4 |
+| `bounded_hard_u_prev_1p0` | 99.81% | 98.87% | 0 | 0 | 67 |
+| `bounded_soft_u_prev_1p0` | 100.00% | 99.50% | 0 | 22 | 30 |
+| `bounded_hard_u_prev_10p0` | 99.31% | 91.70% | 0 | 0 | 497 |
+| `bounded_soft_u_prev_10p0` | 100.00% | 85.60% | 0 | 28 | 864 |
 
 The major change is the ranking of `lambda_prev = 10.0`. In the short run it
 looked competitive. In the long run it is not. The strong anchor suppresses
@@ -160,21 +173,27 @@ The long-run comparison plots support the same conclusion.
 ## Late-Window Settling Metrics
 
 For each 1500-step segment, I computed metrics over the last 300 samples. The
-table reports physical output RMSE, physical output range, solver failures,
-slack activity, target residual, target motion relative to previous input, and
-input range.
+tables separate output tracking from solver and target diagnostics. Here
+`mean du_s` means the mean `||u_s-u_prev||_inf` over the window.
 
 ### Recommended Soft Case
 
 `bounded_soft_u_prev_1p0` is the best current practical case. It is no longer
 perfect over 6000 steps, but it is the cleanest long-run soft setting.
 
-| Segment | eta RMSE | T RMSE | eta range | T range | eta bias | T bias | Solver fails | Slack active | Target residual mean | Mean `||u_s-u_prev||_inf` | Qc range | Qm range |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 high | 0.0155 | 0.0767 | 0.0599 | 0.2396 | -0.0046 | 0.0439 | 0 | 0 | 0.1099 | 0.6720 | 25.78 | 20.81 |
-| 2 low | 0.1449 | 0.5360 | 0.4244 | 1.6186 | 0.1000 | -0.3690 | 0 | 0 | 0.7291 | 0.2133 | 228.99 | 100.75 |
-| 3 high | 0.0159 | 0.0830 | 0.0615 | 0.3152 | -0.0015 | 0.0293 | 0 | 0 | 0.1179 | 0.5825 | 33.78 | 20.11 |
-| 4 low | 0.0811 | 0.3381 | 0.1977 | 1.0050 | 0.0553 | -0.2116 | 0 | 0 | 0.3980 | 2.0636 | 142.82 | 26.63 |
+| Segment | eta RMSE | T RMSE | eta bias | T bias | eta range | T range |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 high | 0.0155 | 0.0767 | -0.0046 | 0.0439 | 0.0599 | 0.2396 |
+| 2 low | 0.1449 | 0.5360 | 0.1000 | -0.3690 | 0.4244 | 1.6186 |
+| 3 high | 0.0159 | 0.0830 | -0.0015 | 0.0293 | 0.0615 | 0.3152 |
+| 4 low | 0.0811 | 0.3381 | 0.0553 | -0.2116 | 0.1977 | 1.0050 |
+
+| Segment | Solver fails | Slack active | Residual mean | Mean du_s | Qc range | Qm range |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 high | 0 | 0 | 0.1099 | 0.6720 | 25.78 | 20.81 |
+| 2 low | 0 | 0 | 0.7291 | 0.2133 | 228.99 | 100.75 |
+| 3 high | 0 | 0 | 0.1179 | 0.5825 | 33.78 | 20.11 |
+| 4 low | 0 | 0 | 0.3980 | 2.0636 | 142.82 | 26.63 |
 
 The high setpoint settles well. The low setpoint settles more slowly and with
 larger residual thermal motion. That is visible in the full-run outputs and
@@ -194,16 +213,44 @@ The `lambda_prev = 10.0` cases are the important negative result. They do not
 validate the "more time always fixes it" hypothesis. They expose a slow
 failure mode.
 
-| Case | Segment | eta RMSE | T RMSE | eta range | T range | Solver fails | Slack active | Target residual mean | Mean `||u_s-u_prev||_inf` | Qc range | Qm range |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `bounded_hard_u_prev_10p0` | 1 high | 0.1040 | 0.4710 | 0.6787 | 2.0745 | 5 | 0 | 0.5184 | 0.2101 | 205.06 | 285.10 |
-| `bounded_hard_u_prev_10p0` | 2 low | 0.1141 | 0.4205 | 0.3100 | 1.1723 | 0 | 0 | 0.5390 | 0.1826 | 190.64 | 64.35 |
-| `bounded_hard_u_prev_10p0` | 3 high | 0.1034 | 0.4564 | 0.7231 | 2.6978 | 2 | 0 | 0.5649 | 0.6054 | 108.62 | 324.94 |
-| `bounded_hard_u_prev_10p0` | 4 low | 0.1491 | 0.5547 | 0.4349 | 1.6515 | 0 | 0 | 0.7545 | 0.2065 | 238.02 | 102.44 |
-| `bounded_soft_u_prev_10p0` | 1 high | 0.9984 | 4.1491 | 3.0208 | 9.5649 | 72 | 2 | 4.1461 | 0.5715 | 289.43 | 592.00 |
-| `bounded_soft_u_prev_10p0` | 2 low | 1.6320 | 4.6804 | 2.2625 | 7.1778 | 175 | 0 | 8.0608 | 0.0079 | 492.30 | 224.51 |
-| `bounded_soft_u_prev_10p0` | 3 high | 0.0156 | 0.0795 | 0.0610 | 0.2890 | 0 | 0 | 0.1129 | 0.5879 | 31.40 | 19.69 |
-| `bounded_soft_u_prev_10p0` | 4 low | 0.1431 | 0.5248 | 0.4205 | 1.6060 | 0 | 0 | 0.7090 | 0.2041 | 225.98 | 100.08 |
+Tracking:
+
+| Case | Segment | eta RMSE | T RMSE | eta range | T range |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `bounded_hard_u_prev_10p0` | 1 high | 0.1040 | 0.4710 | 0.6787 | 2.0745 |
+| `bounded_hard_u_prev_10p0` | 2 low | 0.1141 | 0.4205 | 0.3100 | 1.1723 |
+| `bounded_hard_u_prev_10p0` | 3 high | 0.1034 | 0.4564 | 0.7231 | 2.6978 |
+| `bounded_hard_u_prev_10p0` | 4 low | 0.1491 | 0.5547 | 0.4349 | 1.6515 |
+| `bounded_soft_u_prev_10p0` | 1 high | 0.9984 | 4.1491 | 3.0208 | 9.5649 |
+| `bounded_soft_u_prev_10p0` | 2 low | 1.6320 | 4.6804 | 2.2625 | 7.1778 |
+| `bounded_soft_u_prev_10p0` | 3 high | 0.0156 | 0.0795 | 0.0610 | 0.2890 |
+| `bounded_soft_u_prev_10p0` | 4 low | 0.1431 | 0.5248 | 0.4205 | 1.6060 |
+
+Solver and target diagnostics:
+
+| Case | Segment | Solver fails | Slack active | Residual mean | Mean du_s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `bounded_hard_u_prev_10p0` | 1 high | 5 | 0 | 0.5184 | 0.2101 |
+| `bounded_hard_u_prev_10p0` | 2 low | 0 | 0 | 0.5390 | 0.1826 |
+| `bounded_hard_u_prev_10p0` | 3 high | 2 | 0 | 0.5649 | 0.6054 |
+| `bounded_hard_u_prev_10p0` | 4 low | 0 | 0 | 0.7545 | 0.2065 |
+| `bounded_soft_u_prev_10p0` | 1 high | 72 | 2 | 4.1461 | 0.5715 |
+| `bounded_soft_u_prev_10p0` | 2 low | 175 | 0 | 8.0608 | 0.0079 |
+| `bounded_soft_u_prev_10p0` | 3 high | 0 | 0 | 0.1129 | 0.5879 |
+| `bounded_soft_u_prev_10p0` | 4 low | 0 | 0 | 0.7090 | 0.2041 |
+
+Input range:
+
+| Case | Segment | Qc range | Qm range |
+| --- | --- | ---: | ---: |
+| `bounded_hard_u_prev_10p0` | 1 high | 205.06 | 285.10 |
+| `bounded_hard_u_prev_10p0` | 2 low | 190.64 | 64.35 |
+| `bounded_hard_u_prev_10p0` | 3 high | 108.62 | 324.94 |
+| `bounded_hard_u_prev_10p0` | 4 low | 238.02 | 102.44 |
+| `bounded_soft_u_prev_10p0` | 1 high | 289.43 | 592.00 |
+| `bounded_soft_u_prev_10p0` | 2 low | 492.30 | 224.51 |
+| `bounded_soft_u_prev_10p0` | 3 high | 31.40 | 19.69 |
+| `bounded_soft_u_prev_10p0` | 4 low | 225.98 | 100.08 |
 
 The soft `10.0` case is especially revealing. It eventually looks good in the
 third segment, but it has severe early long-run failure clusters. Its maximum
@@ -235,16 +282,31 @@ Longer setpoint segments improve the averages for the unregularized bounded
 cases, but they do not make them final candidates. They still have many held
 steps and larger target motion.
 
-| Case | Segment | eta RMSE | T RMSE | eta range | T range | Solver fails | Slack active | Target residual mean | Mean `||u_s-u_prev||_inf` |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `bounded_hard` | 1 high | 0.0009 | 0.0049 | 0.0057 | 0.0164 | 0 | 0 | 0.0000 | 0.9260 |
-| `bounded_hard` | 2 low | 0.0055 | 0.0223 | 0.0159 | 0.0552 | 0 | 0 | 0.0000 | 3.0364 |
-| `bounded_hard` | 3 high | 0.0602 | 0.3410 | 0.3280 | 1.5856 | 22 | 0 | 0.2702 | 10.8520 |
-| `bounded_hard` | 4 low | 0.4543 | 1.2934 | 1.5182 | 5.8882 | 6 | 0 | 2.6933 | 11.5396 |
-| `bounded_soft` | 1 high | 0.0704 | 0.4197 | 0.3633 | 1.3511 | 3 | 0 | 0.3460 | 7.4713 |
-| `bounded_soft` | 2 low | 0.4791 | 1.5710 | 2.4750 | 4.7494 | 5 | 3 | 1.8626 | 9.8587 |
-| `bounded_soft` | 3 high | 0.0339 | 0.1726 | 0.1423 | 0.5774 | 64 | 0 | 0.1232 | 10.1106 |
-| `bounded_soft` | 4 low | 0.3180 | 1.0603 | 2.0801 | 6.1447 | 15 | 2 | 1.7902 | 11.1521 |
+Tracking:
+
+| Case | Segment | eta RMSE | T RMSE | eta range | T range |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `bounded_hard` | 1 high | 0.0009 | 0.0049 | 0.0057 | 0.0164 |
+| `bounded_hard` | 2 low | 0.0055 | 0.0223 | 0.0159 | 0.0552 |
+| `bounded_hard` | 3 high | 0.0602 | 0.3410 | 0.3280 | 1.5856 |
+| `bounded_hard` | 4 low | 0.4543 | 1.2934 | 1.5182 | 5.8882 |
+| `bounded_soft` | 1 high | 0.0704 | 0.4197 | 0.3633 | 1.3511 |
+| `bounded_soft` | 2 low | 0.4791 | 1.5710 | 2.4750 | 4.7494 |
+| `bounded_soft` | 3 high | 0.0339 | 0.1726 | 0.1423 | 0.5774 |
+| `bounded_soft` | 4 low | 0.3180 | 1.0603 | 2.0801 | 6.1447 |
+
+Solver and target diagnostics:
+
+| Case | Segment | Solver fails | Slack active | Residual mean | Mean du_s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `bounded_hard` | 1 high | 0 | 0 | 0.0000 | 0.9260 |
+| `bounded_hard` | 2 low | 0 | 0 | 0.0000 | 3.0364 |
+| `bounded_hard` | 3 high | 22 | 0 | 0.2702 | 10.8520 |
+| `bounded_hard` | 4 low | 6 | 0 | 2.6933 | 11.5396 |
+| `bounded_soft` | 1 high | 3 | 0 | 0.3460 | 7.4713 |
+| `bounded_soft` | 2 low | 5 | 3 | 1.8626 | 9.8587 |
+| `bounded_soft` | 3 high | 64 | 0 | 0.1232 | 10.1106 |
+| `bounded_soft` | 4 low | 15 | 2 | 1.7902 | 11.1521 |
 
 ![Bounded hard outputs](figures/direct_lyapunov_long_setpoint_settling/bounded_hard_fig_mpc_outputs_full.png)
 
@@ -268,14 +330,17 @@ and asked whether the output stayed inside that band for the rest of the
 1500-step segment. This is not a formal proof; it is a practical check for the
 "give it enough time" hypothesis.
 
-| Case | Segment 1 high | Segment 2 low | Segment 3 high | Segment 4 low |
-| --- | --- | --- | --- | --- |
-| `bounded_hard` | settles at step 1057 | settles at step 2631 | settles at step 4247 | settles at step 5971 |
-| `bounded_soft` | settles at step 1419 | settles at step 2902 | settles at step 4152 | does not settle |
-| `bounded_hard_u_prev_1p0` | settles at step 1450 | settles at step 2963 | does not settle | does not settle |
-| `bounded_soft_u_prev_1p0` | settles at step 754 | settles at step 2833 | settles at step 4103 | settles at step 5959 |
-| `bounded_hard_u_prev_10p0` | settles at step 1253 | does not settle | settles at step 4449 | settles at step 5927 |
-| `bounded_soft_u_prev_10p0` | does not settle | settles at step 2970 | settles at step 4088 | settles at step 5966 |
+Values are the first global step at which the remainder of the segment stays
+inside the settling band. `no` means the segment never met that condition.
+
+| Case | S1 high | S2 low | S3 high | S4 low |
+| --- | ---: | ---: | ---: | ---: |
+| `bounded_hard` | 1057 | 2631 | 4247 | 5971 |
+| `bounded_soft` | 1419 | 2902 | 4152 | no |
+| `bounded_hard_u_prev_1p0` | 1450 | 2963 | no | no |
+| `bounded_soft_u_prev_1p0` | 754 | 2833 | 4103 | 5959 |
+| `bounded_hard_u_prev_10p0` | 1253 | no | 4449 | 5927 |
+| `bounded_soft_u_prev_10p0` | no | 2970 | 4088 | 5966 |
 
 This table supports a nuanced conclusion:
 
@@ -292,11 +357,18 @@ This table supports a nuanced conclusion:
 
 The latest run has three important extreme-event observations:
 
-| Case | Max target residual step | Max target residual | Held/fail steps | First failure clusters | Slack active | Max slack |
-| --- | ---: | ---: | ---: | --- | ---: | ---: |
-| `bounded_soft_u_prev_1p0` | 3838 | 15.341 | 30 | 657-658, 1819-1827, 3850-3851, 3861-3865 | 22 | 1.407 |
-| `bounded_hard_u_prev_10p0` | 5402 | 1232.656 | 498 | 653-655, 924-926, 1192-1192, 1208-1210 | 0 | 0.000 |
-| `bounded_soft_u_prev_10p0` | 1841 | 739.489 | 864 | 670-740, 1408-1479, 1540-1540, 1570-1713 | 28 | 7.264 |
+| Case | Max residual step | Max residual | Held/fail steps | Slack active | Max slack |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `bounded_soft_u_prev_1p0` | 3838 | 15.341 | 30 | 22 | 1.407 |
+| `bounded_hard_u_prev_10p0` | 5402 | 1232.656 | 498 | 0 | 0.000 |
+| `bounded_soft_u_prev_10p0` | 1841 | 739.489 | 864 | 28 | 7.264 |
+
+First failure clusters:
+
+- `bounded_soft_u_prev_1p0`: `657-658`, `1819-1827`, `3850-3851`,
+  `3861-3865`
+- `bounded_hard_u_prev_10p0`: `653-655`, `924-926`, `1192`, `1208-1210`
+- `bounded_soft_u_prev_10p0`: `670-740`, `1408-1479`, `1540`, `1570-1713`
 
 These events explain why the `10.0` cases are demoted. Their target anchoring
 can keep `||u_s-u_prev||` small while allowing the output residual or state

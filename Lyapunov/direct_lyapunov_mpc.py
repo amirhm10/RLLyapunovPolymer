@@ -606,6 +606,328 @@ def _target_config_dict(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return merged
 
 
+def direct_lyapunov_evaluation_ingredients(LMPC_obj) -> Dict[str, np.ndarray]:
+    A_aug = np.asarray(LMPC_obj.A, dtype=float)
+    B_aug = np.asarray(LMPC_obj.B, dtype=float)
+    C_aug = np.asarray(LMPC_obj.C, dtype=float)
+    P_x = getattr(LMPC_obj, "P_x", None)
+    if P_x is None:
+        raise ValueError("LMPC_obj must expose P_x for Lyapunov candidate evaluation.")
+
+    n_y = C_aug.shape[0]
+    n_x = A_aug.shape[0] - n_y
+    return {
+        "A_phys": A_aug[:n_x, :n_x].copy(),
+        "B_phys": B_aug[:n_x, :].copy(),
+        "C_phys": C_aug[:, :n_x].copy(),
+        "Cd_phys": C_aug[:, n_x:].copy(),
+        "P_x": np.asarray(P_x, dtype=float).copy(),
+    }
+
+
+def prepare_direct_output_disturbance_step(
+    *,
+    LMPC_obj,
+    x0_aug: np.ndarray,
+    y_sp_k: np.ndarray,
+    u_prev_dev: np.ndarray,
+    u_dev_min: np.ndarray,
+    u_dev_max: np.ndarray,
+    target_mode: str = "bounded",
+    target_config: Optional[Dict[str, Any]] = None,
+    target_H: Optional[np.ndarray] = None,
+    x_target_prev_success: Optional[np.ndarray] = None,
+    step_idx: Optional[int] = None,
+    y_prev_scaled: Optional[np.ndarray] = None,
+    plant_mode: Optional[str] = None,
+    disturbance_after_step: Optional[bool] = None,
+    use_target_output_for_tracking: bool = False,
+    slack_penalty: float = DEFAULT_DIRECT_SOFT_SLACK_PENALTY,
+) -> Dict[str, Any]:
+    n_inputs = LMPC_obj.B.shape[1]
+    n_outputs = LMPC_obj.C.shape[0]
+    n_aug = LMPC_obj.A.shape[0]
+    n_x = n_aug - n_outputs
+
+    x0_aug = np.asarray(x0_aug, dtype=float).reshape(-1)
+    y_sp_k = np.asarray(y_sp_k, dtype=float).reshape(-1)
+    u_prev_dev = np.asarray(u_prev_dev, dtype=float).reshape(-1)
+    u_dev_min = np.asarray(u_dev_min, dtype=float).reshape(-1)
+    u_dev_max = np.asarray(u_dev_max, dtype=float).reshape(-1)
+
+    yhat_now = np.asarray(LMPC_obj.C @ x0_aug, float).reshape(-1)
+    innovation = None
+    if y_prev_scaled is not None:
+        innovation = np.asarray(y_prev_scaled, dtype=float).reshape(-1) - yhat_now
+
+    target_info = solve_output_disturbance_target(
+        LMPC_obj.A,
+        LMPC_obj.B,
+        LMPC_obj.C,
+        x0_aug,
+        y_sp_k,
+        target_mode=target_mode,
+        u_min=u_dev_min,
+        u_max=u_dev_max,
+        config=_target_config_dict(target_config),
+        H=target_H,
+        u_ref=u_prev_dev,
+        x_ref=x_target_prev_success,
+    )
+    target_info = {} if target_info is None else dict(target_info)
+    target_info.update(
+        {
+            "step": int(step_idx) if step_idx is not None else -1,
+            "y_sp": y_sp_k.copy(),
+            "x0_aug": x0_aug.copy(),
+            "yhat_now": yhat_now.copy(),
+            "innovation": None if innovation is None else innovation.copy(),
+            "target_mode": target_mode,
+        }
+    )
+
+    x_target_next = x_target_prev_success
+    if target_info.get("success", False) and target_info.get("x_s") is not None:
+        x_target_next = np.asarray(target_info.get("x_s"), float).reshape(n_x).copy()
+
+    step_info = {
+        "step": int(step_idx) if step_idx is not None else -1,
+        "success": False,
+        "method": None,
+        "target_mode": target_mode,
+        "lyapunov_mode": None,
+        "plant_mode": plant_mode,
+        "disturbance_after_step": disturbance_after_step,
+        "target_success": bool(target_info.get("success", False)),
+        "target_stage": target_info.get("solve_stage"),
+        "target_variant": target_info.get("target_variant"),
+        "x0_aug": x0_aug.copy(),
+        "y_sp": y_sp_k.copy(),
+        "yhat_now": yhat_now.copy(),
+        "innovation": None if innovation is None else innovation.copy(),
+        "use_target_output_for_tracking": bool(use_target_output_for_tracking),
+        "u_prev_dev": u_prev_dev.copy(),
+        "x_s": None if target_info.get("x_s") is None else np.asarray(target_info.get("x_s"), float).copy(),
+        "u_s": None if target_info.get("u_s") is None else np.asarray(target_info.get("u_s"), float).copy(),
+        "d_s": None if target_info.get("d_s") is None else np.asarray(target_info.get("d_s"), float).copy(),
+        "x_s_aug": None if target_info.get("x_s_aug") is None else np.asarray(target_info.get("x_s_aug"), float).copy(),
+        "y_s": None if target_info.get("y_s") is None else np.asarray(target_info.get("y_s"), float).copy(),
+        "y_target": None,
+        "y_s_minus_y_sp": None,
+        "y_target_minus_y_sp": None,
+        "status": None,
+        "message": None,
+        "fun": None,
+        "solver_nit": None,
+        "tracking_solver": None,
+        "tracking_error": None,
+        "alpha_terminal_raw": None,
+        "alpha_terminal": None,
+        "alpha_terminal_used": None,
+        "terminal_constraint_skipped": None,
+        "u_apply": None,
+        "target_rank_M": target_info.get("rank_M"),
+        "target_cond_M": target_info.get("cond_M"),
+        "target_cond_G": target_info.get("cond_G"),
+        "target_residual_total_norm": target_info.get("residual_total_norm"),
+        "target_exact_within_bounds": target_info.get("exact_within_bounds"),
+        "target_bounded_solution_used": target_info.get("bounded_solution_used"),
+        "target_u_ref": None
+        if target_info.get("u_ref") is None
+        else np.asarray(target_info.get("u_ref"), float).copy(),
+        "target_u_ref_weight": None
+        if target_info.get("u_ref_weight") is None
+        else np.asarray(target_info.get("u_ref_weight"), float).copy(),
+        "target_u_ref_active": target_info.get("u_ref_active"),
+        "target_u_ref_penalty": target_info.get("u_ref_penalty"),
+        "target_us_u_ref_inf": target_info.get("us_u_ref_inf"),
+        "target_x_ref": None
+        if target_info.get("x_ref") is None
+        else np.asarray(target_info.get("x_ref"), float).copy(),
+        "target_x_ref_weight": None
+        if target_info.get("x_ref_weight") is None
+        else np.asarray(target_info.get("x_ref_weight"), float).copy(),
+        "target_x_ref_active": target_info.get("x_ref_active"),
+        "target_x_ref_penalty": target_info.get("x_ref_penalty"),
+        "target_xs_x_ref_inf": target_info.get("xs_x_ref_inf"),
+        "target_bounded_active_lower_mask": None
+        if target_info.get("bounded_active_lower_mask") is None
+        else np.asarray(target_info.get("bounded_active_lower_mask"), bool).copy(),
+        "target_bounded_active_upper_mask": None
+        if target_info.get("bounded_active_upper_mask") is None
+        else np.asarray(target_info.get("bounded_active_upper_mask"), bool).copy(),
+        "target_exact_active_lower_mask": None
+        if target_info.get("exact_active_lower_mask") is None
+        else np.asarray(target_info.get("exact_active_lower_mask"), bool).copy(),
+        "target_exact_active_upper_mask": None
+        if target_info.get("exact_active_upper_mask") is None
+        else np.asarray(target_info.get("exact_active_upper_mask"), bool).copy(),
+        "slack_lyap": 0.0,
+        "slack_penalty": float(slack_penalty),
+        "objective_steady_input_cost": bool(getattr(LMPC_obj, "objective_steady_input_cost", False)),
+        "objective_terminal_cost": bool(getattr(LMPC_obj, "objective_terminal_cost", False)),
+    }
+    return {
+        "target_info": target_info,
+        "step_info": step_info,
+        "x_target_prev_success_next": x_target_next,
+        "yhat_now": yhat_now,
+        "innovation": innovation,
+    }
+
+
+def solve_direct_tracking_from_target(
+    *,
+    LMPC_obj,
+    x0_aug: np.ndarray,
+    y_sp_k: np.ndarray,
+    u_prev_dev: np.ndarray,
+    target_info: Dict[str, Any],
+    step_info: Optional[Dict[str, Any]],
+    IC_opt: np.ndarray,
+    bnds,
+    u_dev_min: np.ndarray,
+    u_dev_max: np.ndarray,
+    rho_lyap: float = 0.99,
+    lyap_eps: float = 1e-9,
+    lyapunov_mode: str = "hard",
+    use_target_output_for_tracking: bool = False,
+    skip_terminal_if_alpha_small: bool = True,
+    alpha_terminal_min: float = 1e-8,
+    use_target_on_solver_fail: bool = False,
+    slack_penalty: float = DEFAULT_DIRECT_SOFT_SLACK_PENALTY,
+    first_step_contraction_on: bool = True,
+    solver_options: Optional[Dict[str, Any]] = None,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    step_info = {} if step_info is None else dict(step_info)
+    step_info["lyapunov_mode"] = lyapunov_mode
+
+    x0_aug = np.asarray(x0_aug, dtype=float).reshape(-1)
+    y_sp_k = np.asarray(y_sp_k, dtype=float).reshape(-1)
+    u_prev_dev = np.asarray(u_prev_dev, dtype=float).reshape(-1)
+    u_dev_min = np.asarray(u_dev_min, dtype=float).reshape(-1)
+    u_dev_max = np.asarray(u_dev_max, dtype=float).reshape(-1)
+    IC_opt = np.asarray(IC_opt, dtype=float).copy()
+
+    if target_info.get("success", False) and target_info.get("x_s") is not None and target_info.get("u_s") is not None:
+        x_s = np.asarray(target_info["x_s"], float).reshape(-1)
+        u_s = np.asarray(target_info["u_s"], float).reshape(-1)
+        y_s = np.asarray(target_info["y_s"], float).reshape(-1)
+        y_target = y_s.copy() if use_target_output_for_tracking else y_sp_k.copy()
+
+        alpha_terminal_raw = compute_terminal_alpha_input_only(
+            P_x=LMPC_obj.P_x,
+            K_x=LMPC_obj.K_x,
+            u_s=u_s,
+            u_min=u_dev_min,
+            u_max=u_dev_max,
+            alpha_scale=1.0,
+        )
+        alpha_terminal = compute_terminal_alpha_input_only(
+            P_x=LMPC_obj.P_x,
+            K_x=LMPC_obj.K_x,
+            u_s=u_s,
+            u_min=u_dev_min,
+            u_max=u_dev_max,
+            alpha_scale=LMPC_obj.terminal_alpha_scale,
+        )
+        terminal_constraint_skipped = bool(
+            skip_terminal_if_alpha_small and alpha_terminal <= float(alpha_terminal_min)
+        )
+        terminal_set_on_prev = LMPC_obj.terminal_set_on
+        alpha_for_solver = None if terminal_constraint_skipped else float(alpha_terminal)
+        if terminal_constraint_skipped:
+            LMPC_obj.terminal_set_on = False
+
+        try:
+            sol = LMPC_obj.solve_tracking_mpc_step(
+                IC_opt=IC_opt,
+                bnds=bnds,
+                y_target=y_target,
+                u_prev_dev=u_prev_dev,
+                x0_aug=x0_aug,
+                x_s=x_s,
+                u_s=u_s,
+                alpha_terminal=alpha_for_solver,
+                rho_lyap=rho_lyap,
+                eps_lyap=lyap_eps,
+                first_step_contraction_on=first_step_contraction_on,
+                lyapunov_mode=lyapunov_mode,
+                slack_penalty=slack_penalty,
+                options=solver_options,
+            )
+        finally:
+            LMPC_obj.terminal_set_on = terminal_set_on_prev
+
+        step_info.update(
+            {
+                "status": getattr(sol, "status", None),
+                "message": getattr(sol, "message", None),
+                "fun": float(sol.fun) if getattr(sol, "fun", None) is not None else None,
+                "solver_nit": getattr(sol, "nit", None),
+                "tracking_solver": getattr(sol, "solver", None),
+                "tracking_error": getattr(sol, "error", None),
+                "alpha_terminal_raw": float(alpha_terminal_raw),
+                "alpha_terminal": float(alpha_terminal),
+                "alpha_terminal_used": None if alpha_for_solver is None else float(alpha_for_solver),
+                "terminal_constraint_skipped": terminal_constraint_skipped,
+                "y_target": y_target.copy(),
+                "y_s_minus_y_sp": y_s - y_sp_k,
+                "y_target_minus_y_sp": y_target - y_sp_k,
+            }
+        )
+
+        if getattr(sol, "success", False):
+            u_dev_apply = np.asarray(sol.x[: LMPC_obj.B.shape[1]], float).reshape(-1)
+            u_dev_apply = np.clip(u_dev_apply, u_dev_min, u_dev_max)
+            IC_opt_next = shift_input_guess(sol.x, LMPC_obj.B.shape[1], LMPC_obj.NC)
+            report = LMPC_obj.standard_tracking_report(
+                x_opt=sol.x,
+                x0_aug=x0_aug,
+                x_s=x_s,
+                u_s=u_s,
+                y_target=y_target,
+                u_prev_dev=u_prev_dev,
+                alpha_terminal=alpha_for_solver,
+                rho_lyap=rho_lyap,
+                eps_lyap=lyap_eps,
+                first_step_contraction_on=first_step_contraction_on,
+                lyapunov_mode=lyapunov_mode,
+                slack_lyap=getattr(sol, "slack_lyap", 0.0),
+                slack_penalty=slack_penalty,
+            )
+            step_info.update(
+                {
+                    "success": True,
+                    "method": "direct_lyapunov_mpc",
+                    "u_apply": u_dev_apply.copy(),
+                    **report,
+                }
+            )
+            return u_dev_apply, IC_opt_next, step_info
+
+        if use_target_on_solver_fail:
+            u_dev_apply = np.clip(u_s, u_dev_min, u_dev_max)
+            fail_method = "solver_fail_use_target"
+        else:
+            u_dev_apply = np.clip(u_prev_dev, u_dev_min, u_dev_max)
+            fail_method = "solver_fail_hold_prev"
+        IC_opt_next = np.tile(u_dev_apply, LMPC_obj.NC)
+        step_info.update({"method": fail_method, "u_apply": u_dev_apply.copy()})
+        return u_dev_apply, IC_opt_next, step_info
+
+    u_dev_apply = np.clip(u_prev_dev, u_dev_min, u_dev_max)
+    IC_opt_next = np.tile(u_dev_apply, LMPC_obj.NC)
+    step_info.update(
+        {
+            "method": "target_fail_hold_prev",
+            "u_apply": u_dev_apply.copy(),
+            "message": "target solve failed",
+        }
+    )
+    return u_dev_apply, IC_opt_next, step_info
+
+
 def run_direct_output_disturbance_lyapunov_mpc(
     system,
     LMPC_obj,
@@ -709,233 +1031,59 @@ def run_direct_output_disturbance_lyapunov_mpc(
     x_target_prev_success = None
 
     IC_opt = np.asarray(IC_opt, float).copy()
-    target_cfg = _target_config_dict(target_config)
-
     for step_idx in range(nFE):
         x0_aug = xhatdhat[:, step_idx].copy()
         scaled_current_input = apply_min_max(system.current_input, data_min[:n_inputs], data_max[:n_inputs])
         u_prev_dev = scaled_current_input - ss_scaled_inputs
         y_sp_k = get_y_sp_step(y_sp, step_idx, n_outputs)
         y_prev_scaled = apply_min_max(y_mpc[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
-        yhat_now = np.asarray(LMPC_obj.C @ x0_aug, float).reshape(-1)
-        innovation = y_prev_scaled - yhat_now
-
-        target_info = solve_output_disturbance_target(
-            LMPC_obj.A,
-            LMPC_obj.B,
-            LMPC_obj.C,
-            x0_aug,
-            y_sp_k,
+        step_context = prepare_direct_output_disturbance_step(
+            LMPC_obj=LMPC_obj,
+            x0_aug=x0_aug,
+            y_sp_k=y_sp_k,
+            u_prev_dev=u_prev_dev,
+            u_dev_min=u_dev_min,
+            u_dev_max=u_dev_max,
             target_mode=target_mode,
-            u_min=u_dev_min,
-            u_max=u_dev_max,
-            config=target_cfg,
-            H=target_H,
-            u_ref=u_prev_dev,
-            x_ref=x_target_prev_success,
+            target_config=target_config,
+            target_H=target_H,
+            x_target_prev_success=x_target_prev_success,
+            step_idx=step_idx,
+            y_prev_scaled=y_prev_scaled,
+            plant_mode=mode,
+            disturbance_after_step=disturbance_after_step,
+            use_target_output_for_tracking=use_target_output_for_tracking,
+            slack_penalty=slack_penalty,
         )
-        target_info = {} if target_info is None else dict(target_info)
-        target_info.update(
-            {
-                "step": int(step_idx),
-                "y_sp": np.asarray(y_sp_k, float).copy(),
-                "x0_aug": np.asarray(x0_aug, float).copy(),
-                "yhat_now": np.asarray(yhat_now, float).copy(),
-                "innovation": np.asarray(innovation, float).copy(),
-                "target_mode": target_mode,
-            }
-        )
+        target_info = step_context["target_info"]
         target_info_storage.append(target_info)
-        if target_info.get("success", False) and target_info.get("x_s") is not None:
-            x_target_prev_success = np.asarray(target_info.get("x_s"), float).reshape(n_x).copy()
+        x_target_prev_success = step_context["x_target_prev_success_next"]
+        step_info = step_context["step_info"]
+        yhat_now = step_context["yhat_now"]
+        innovation = step_context["innovation"]
 
-        step_info = {
-            "step": int(step_idx),
-            "success": False,
-            "method": None,
-            "target_mode": target_mode,
-            "lyapunov_mode": lyapunov_mode,
-            "plant_mode": mode,
-            "disturbance_after_step": disturbance_after_step,
-            "target_success": bool(target_info.get("success", False)),
-            "target_stage": target_info.get("solve_stage"),
-            "target_variant": target_info.get("target_variant"),
-            "x0_aug": x0_aug.copy(),
-            "y_sp": y_sp_k.copy(),
-            "yhat_now": yhat_now.copy(),
-            "innovation": innovation.copy(),
-            "use_target_output_for_tracking": bool(use_target_output_for_tracking),
-            "u_prev_dev": u_prev_dev.copy(),
-            "x_s": None if target_info.get("x_s") is None else np.asarray(target_info.get("x_s"), float).copy(),
-            "u_s": None if target_info.get("u_s") is None else np.asarray(target_info.get("u_s"), float).copy(),
-            "d_s": None if target_info.get("d_s") is None else np.asarray(target_info.get("d_s"), float).copy(),
-            "x_s_aug": None if target_info.get("x_s_aug") is None else np.asarray(target_info.get("x_s_aug"), float).copy(),
-            "y_s": None if target_info.get("y_s") is None else np.asarray(target_info.get("y_s"), float).copy(),
-            "y_target": None,
-            "y_s_minus_y_sp": None,
-            "y_target_minus_y_sp": None,
-            "status": None,
-            "message": None,
-            "fun": None,
-            "solver_nit": None,
-            "tracking_solver": None,
-            "tracking_error": None,
-            "alpha_terminal_raw": None,
-            "alpha_terminal": None,
-            "alpha_terminal_used": None,
-            "terminal_constraint_skipped": None,
-            "u_apply": None,
-            "target_rank_M": target_info.get("rank_M"),
-            "target_cond_M": target_info.get("cond_M"),
-            "target_cond_G": target_info.get("cond_G"),
-            "target_residual_total_norm": target_info.get("residual_total_norm"),
-            "target_exact_within_bounds": target_info.get("exact_within_bounds"),
-            "target_bounded_solution_used": target_info.get("bounded_solution_used"),
-            "target_u_ref": None
-            if target_info.get("u_ref") is None
-            else np.asarray(target_info.get("u_ref"), float).copy(),
-            "target_u_ref_weight": None
-            if target_info.get("u_ref_weight") is None
-            else np.asarray(target_info.get("u_ref_weight"), float).copy(),
-            "target_u_ref_active": target_info.get("u_ref_active"),
-            "target_u_ref_penalty": target_info.get("u_ref_penalty"),
-            "target_us_u_ref_inf": target_info.get("us_u_ref_inf"),
-            "target_x_ref": None
-            if target_info.get("x_ref") is None
-            else np.asarray(target_info.get("x_ref"), float).copy(),
-            "target_x_ref_weight": None
-            if target_info.get("x_ref_weight") is None
-            else np.asarray(target_info.get("x_ref_weight"), float).copy(),
-            "target_x_ref_active": target_info.get("x_ref_active"),
-            "target_x_ref_penalty": target_info.get("x_ref_penalty"),
-            "target_xs_x_ref_inf": target_info.get("xs_x_ref_inf"),
-            "target_bounded_active_lower_mask": None
-            if target_info.get("bounded_active_lower_mask") is None
-            else np.asarray(target_info.get("bounded_active_lower_mask"), bool).copy(),
-            "target_bounded_active_upper_mask": None
-            if target_info.get("bounded_active_upper_mask") is None
-            else np.asarray(target_info.get("bounded_active_upper_mask"), bool).copy(),
-            "target_exact_active_lower_mask": None
-            if target_info.get("exact_active_lower_mask") is None
-            else np.asarray(target_info.get("exact_active_lower_mask"), bool).copy(),
-            "target_exact_active_upper_mask": None
-            if target_info.get("exact_active_upper_mask") is None
-            else np.asarray(target_info.get("exact_active_upper_mask"), bool).copy(),
-            "slack_lyap": 0.0,
-            "slack_penalty": float(slack_penalty),
-            "objective_steady_input_cost": bool(getattr(LMPC_obj, "objective_steady_input_cost", False)),
-            "objective_terminal_cost": bool(getattr(LMPC_obj, "objective_terminal_cost", False)),
-        }
-
-        if target_info.get("success", False) and target_info.get("x_s") is not None and target_info.get("u_s") is not None:
-            x_s = np.asarray(target_info["x_s"], float).reshape(n_x)
-            u_s = np.asarray(target_info["u_s"], float).reshape(n_inputs)
-            d_s = np.asarray(target_info["d_s"], float).reshape(n_outputs)
-            y_s = np.asarray(target_info["y_s"], float).reshape(n_outputs)
-            y_target = y_s.copy() if use_target_output_for_tracking else y_sp_k.copy()
-
-            alpha_terminal_raw = compute_terminal_alpha_input_only(
-                P_x=LMPC_obj.P_x,
-                K_x=LMPC_obj.K_x,
-                u_s=u_s,
-                u_min=u_dev_min,
-                u_max=u_dev_max,
-                alpha_scale=1.0,
-            )
-            alpha_terminal = compute_terminal_alpha_input_only(
-                P_x=LMPC_obj.P_x,
-                K_x=LMPC_obj.K_x,
-                u_s=u_s,
-                u_min=u_dev_min,
-                u_max=u_dev_max,
-                alpha_scale=LMPC_obj.terminal_alpha_scale,
-            )
-            terminal_constraint_skipped = bool(
-                skip_terminal_if_alpha_small and alpha_terminal <= float(alpha_terminal_min)
-            )
-            terminal_set_on_prev = LMPC_obj.terminal_set_on
-            alpha_for_solver = None if terminal_constraint_skipped else float(alpha_terminal)
-            if terminal_constraint_skipped:
-                LMPC_obj.terminal_set_on = False
-
-            try:
-                sol = LMPC_obj.solve_tracking_mpc_step(
-                    IC_opt=IC_opt,
-                    bnds=bnds,
-                    y_target=y_target,
-                    u_prev_dev=u_prev_dev,
-                    x0_aug=x0_aug,
-                    x_s=x_s,
-                    u_s=u_s,
-                    alpha_terminal=alpha_for_solver,
-                    rho_lyap=rho_lyap,
-                    eps_lyap=lyap_eps,
-                    first_step_contraction_on=first_step_contraction_on,
-                    lyapunov_mode=lyapunov_mode,
-                    slack_penalty=slack_penalty,
-                    options=solver_options,
-                )
-            finally:
-                LMPC_obj.terminal_set_on = terminal_set_on_prev
-
-            step_info.update(
-                {
-                    "status": getattr(sol, "status", None),
-                    "message": getattr(sol, "message", None),
-                    "fun": float(sol.fun) if getattr(sol, "fun", None) is not None else None,
-                    "solver_nit": getattr(sol, "nit", None),
-                    "tracking_solver": getattr(sol, "solver", None),
-                    "tracking_error": getattr(sol, "error", None),
-                    "alpha_terminal_raw": float(alpha_terminal_raw),
-                    "alpha_terminal": float(alpha_terminal),
-                    "alpha_terminal_used": None if alpha_for_solver is None else float(alpha_for_solver),
-                    "terminal_constraint_skipped": terminal_constraint_skipped,
-                    "y_target": y_target.copy(),
-                    "y_s_minus_y_sp": y_s - y_sp_k,
-                    "y_target_minus_y_sp": y_target - y_sp_k,
-                }
-            )
-
-            if getattr(sol, "success", False):
-                u_dev_apply = np.asarray(sol.x[:n_inputs], float).reshape(-1)
-                u_dev_apply = np.clip(u_dev_apply, u_dev_min, u_dev_max)
-                IC_opt = shift_input_guess(sol.x, n_inputs, LMPC_obj.NC)
-                report = LMPC_obj.standard_tracking_report(
-                    x_opt=sol.x,
-                    x0_aug=x0_aug,
-                    x_s=x_s,
-                    u_s=u_s,
-                    y_target=y_target,
-                    u_prev_dev=u_prev_dev,
-                    alpha_terminal=alpha_for_solver,
-                    rho_lyap=rho_lyap,
-                    eps_lyap=lyap_eps,
-                    first_step_contraction_on=first_step_contraction_on,
-                    lyapunov_mode=lyapunov_mode,
-                    slack_lyap=getattr(sol, "slack_lyap", 0.0),
-                    slack_penalty=slack_penalty,
-                )
-                step_info.update(
-                    {
-                        "success": True,
-                        "method": "direct_lyapunov_mpc",
-                        "u_apply": u_dev_apply.copy(),
-                        **report,
-                    }
-                )
-            else:
-                if use_target_on_solver_fail:
-                    u_dev_apply = np.clip(u_s, u_dev_min, u_dev_max)
-                    fail_method = "solver_fail_use_target"
-                else:
-                    u_dev_apply = np.clip(u_prev_dev, u_dev_min, u_dev_max)
-                    fail_method = "solver_fail_hold_prev"
-                IC_opt = np.tile(u_dev_apply, LMPC_obj.NC)
-                step_info.update({"method": fail_method, "u_apply": u_dev_apply.copy()})
-        else:
-            u_dev_apply = np.clip(u_prev_dev, u_dev_min, u_dev_max)
-            IC_opt = np.tile(u_dev_apply, LMPC_obj.NC)
-            step_info.update({"method": "target_fail_hold_prev", "u_apply": u_dev_apply.copy(), "message": "target solve failed"})
+        u_dev_apply, IC_opt, step_info = solve_direct_tracking_from_target(
+            LMPC_obj=LMPC_obj,
+            x0_aug=x0_aug,
+            y_sp_k=y_sp_k,
+            u_prev_dev=u_prev_dev,
+            target_info=target_info,
+            step_info=step_info,
+            IC_opt=IC_opt,
+            bnds=bnds,
+            u_dev_min=u_dev_min,
+            u_dev_max=u_dev_max,
+            rho_lyap=rho_lyap,
+            lyap_eps=lyap_eps,
+            lyapunov_mode=lyapunov_mode,
+            use_target_output_for_tracking=use_target_output_for_tracking,
+            skip_terminal_if_alpha_small=skip_terminal_if_alpha_small,
+            alpha_terminal_min=alpha_terminal_min,
+            use_target_on_solver_fail=use_target_on_solver_fail,
+            slack_penalty=slack_penalty,
+            first_step_contraction_on=first_step_contraction_on,
+            solver_options=solver_options,
+        )
 
         u_scaled = u_dev_apply + ss_scaled_inputs
         u_phys = reverse_min_max(u_scaled, data_min[:n_inputs], data_max[:n_inputs])
@@ -1643,6 +1791,17 @@ def save_direct_lyapunov_comparison_artifacts(
     summary["plot_paths"] = plot_paths
     with open(comparison_summary_json, "w", encoding="utf-8") as f:
         json.dump(_jsonable(summary), f, indent=2)
+    figure_manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "recommended_figures": [
+            {"key": key, "path": path}
+            for key, path in plot_paths.items()
+            if path is not None and os.path.exists(path)
+        ],
+        "case_debug_dirs": summary["case_debug_dirs"],
+    }
+    with open(os.path.join(study_root, "figure_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_jsonable(figure_manifest), f, indent=2)
     return {
         "comparison_table_csv": comparison_csv,
         "comparison_table_pkl": comparison_pkl,
@@ -2109,6 +2268,24 @@ def save_direct_lyapunov_debug_artifacts(
         plot_direct_lyapunov_bundle(bundle, os.path.join(out_dir, "plots"), paper_style=False)
         if save_paper_plots:
             plot_direct_lyapunov_bundle(bundle, os.path.join(out_dir, "paper_plots"), paper_style=True)
+    figure_manifest = {
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "source": bundle.get("source"),
+        "recommended_figures": [
+            {
+                "key": "plots",
+                "path": os.path.join(out_dir, "plots"),
+                "description": "Scenario-level diagnostic plots.",
+            },
+            {
+                "key": "paper_plots",
+                "path": os.path.join(out_dir, "paper_plots"),
+                "description": "Paper-style scenario plots.",
+            },
+        ],
+    }
+    with open(os.path.join(out_dir, "figure_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(_jsonable(figure_manifest), f, indent=2)
     return out_dir
 
 

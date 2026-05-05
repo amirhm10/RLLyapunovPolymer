@@ -212,6 +212,14 @@ When writing or revising report text, use a simple academic tone.
 
 Avoid exaggerated claims.
 
+For Markdown math rendering:
+
+- never wrap LaTeX notation in backticks
+- use `$...$` for inline math such as `$\\hat d_k$` or `$y_{\\mathrm{sp}}$`
+- use `$$...$$` for display equations
+- avoid fenced `math` code blocks unless the renderer is known to support them
+- if a symbol is simple and rendering support is uncertain, prefer plain text over broken math
+
 Use this structure when appropriate:
 
 - Objective
@@ -279,6 +287,10 @@ Prefer direct explanations over fancy wording.
 Avoid unnecessary rewriting of the user's report. Make targeted edits unless the user asks for a full rewrite.
 
 Use LaTeX for equations.
+
+For Markdown reports, prefer markdown-safe LaTeX. Avoid matrix environments such as `bmatrix`, `pmatrix`, `array`, and large `aligned` blocks unless they are clearly necessary and known to render in the target preview. Prefer equivalent split equations written across separate `$$ ... $$` blocks, especially for MPC objectives, steady-state equations, and constraint sets.
+
+For Markdown tables, never place a literal pipe character `|` inside a table header or cell, including inside inline code or LaTeX. Rewrite expressions such as `|u_s-u_prev|_inf` as text like `inf-norm of u_s-u_prev`.
 
 Do not use hard-to-copy special symbols. Prefer ASCII text in normal prose.
 
