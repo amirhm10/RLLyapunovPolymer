@@ -161,6 +161,46 @@ The intended figure destination was `report/figures/`, but this repository's One
 
 ## 7. Literature connections
 
+### Parameter noise versus iid Gaussian action noise
+
+In the current direct RL notebooks, exploration is action-space noise:
+
+$$
+u_k = \pi_\theta(s_k) + \varepsilon_k, \qquad \varepsilon_k \sim \mathcal{N}(0,\sigma^2 I).
+$$
+
+This means a fresh random perturbation is injected at every control step. The consequences are:
+
+- exploration is temporally unstructured,
+- the perturbation does not depend on the policy parameters,
+- the same state visited twice can produce unrelated perturbations,
+- the resulting closed-loop behavior often looks like small jitter around the current policy.
+
+Parameter noise instead perturbs the policy itself:
+
+$$
+\tilde{\theta} = \theta + \Delta \theta, \qquad \Delta \theta \sim \mathcal{N}(0,\Sigma_\theta),
+$$
+
+and then actions are generated as
+
+$$
+u_k = \pi_{\tilde{\theta}}(s_k).
+$$
+
+The perturbation is therefore held fixed for a longer interval, typically an episode, rollout block, or sub-episode, before being resampled. The consequences are different:
+
+- exploration is temporally coherent,
+- different states are pushed in a related direction by the same perturbed policy,
+- the resulting behavior is trajectory-level exploration rather than stepwise jitter,
+- the controller can discover qualitatively different closed-loop strategies instead of only vibrating around the same one.
+
+This difference matters a lot in a safety-gated control problem. With iid Gaussian action noise, many exploratory moves look like small high-frequency perturbations that the gate may simply reject or wash out. With parameter noise, the proposed action sequence is more internally consistent, so the policy has a better chance of exploring a different region of the safe closed-loop behavior. This is the main reason Plappert et al. report that parameter noise can produce more consistent exploration than standard action-space noise.
+
+Source:
+
+- Plappert et al., "Parameter Space Noise for Exploration," arXiv:1706.01905. https://arxiv.org/abs/1706.01905
+
 ### AWAC: offline data should reduce the exploration burden of online RL
 
 Nair et al. argue that prior data should provide a starting point that mitigates exploration and sample-complexity challenges, while online learning then refines the policy. That fits this repository well: the direct Lyapunov MPC teacher is already a strong source of prior data, so the warm-start phase should exploit that more aggressively instead of relying on tiny policy noise alone.
@@ -213,15 +253,58 @@ The logic is:
 - change 3 prevents the actor from drifting too abruptly away from the good teacher manifold,
 - change 4 reduces critic target scale without changing the ordering of policies.
 
+### Recommended experiment B: parameter-noise schedule
+
+Your proposed schedule is scientifically reasonable, with one small adjustment.
+
+The strong version of the schedule is:
+
+1. warm start buffer-only phase: no policy exploration noise,
+2. BC phase: no policy exploration noise,
+3. after BC ends: turn on parameter noise for the online RL phase.
+
+I agree with that as the clean first experiment for this project, because the roles of the three phases are different:
+
+- warm start should fill replay with clean teacher trajectories,
+- BC should imitate the teacher distribution rather than corrupt it with noisy policy actions,
+- full RL is the first phase where genuine exploration is actually needed.
+
+So yes: "warm start with no noise, BC with no noise, then start parameter noise after BC" is a good baseline design here.
+
+The one caveat is replay coverage. If the warm-start teacher is completely deterministic and the disturbance/setpoint scenarios are not varied enough, the initial replay buffer may become too narrow. The safest way to address that is not to add Gaussian action jitter back into warm start, but to increase diversity through:
+
+- multiple setpoint schedules,
+- multiple disturbance realizations,
+- randomized initial conditions,
+- possibly a small number of parameter-noise episodes only after BC starts to fade.
+
+In other words, for this repository I would prefer:
+
+- deterministic teacher data for warm start,
+- deterministic teacher data for BC,
+- parameter noise only for full RL,
+- diversity coming from scenarios rather than from noisy teacher actions.
+
+### Practical parameter-noise recommendation
+
+For this safety-gated TD3 setup, a practical first implementation would be:
+
+1. keep the nominal actor parameters $\theta$ unchanged for evaluation and target-network updates,
+2. at the start of each RL episode or sub-episode, sample a perturbed actor $\tilde{\theta}$,
+3. use $\pi_{\tilde{\theta}}$ to generate behavior actions for that episode,
+4. keep the perturbation fixed over the episode,
+5. adapt the perturbation scale so that the average action deviation is moderate rather than extreme.
+
+That last point follows Plappert et al.: it is better to tune parameter noise through the induced action deviation than through a raw parameter standard deviation alone.
+
 ### Concrete parameter suggestion
 
 For a first pass:
 
-- warmup episodes 1-10: teacher-generated
-- BC episodes 11-30: keep current design
-- RL episodes 31-50: reset $\sigma$ to `0.06`
-- RL episodes 31-200: decay `0.06 -> 0.01`
-- BC anchor weight during episodes 31-50: linearly decay to zero
+- warmup episodes 1-10: teacher-generated, no policy noise
+- BC episodes 11-30: teacher-generated, no policy noise
+- RL episodes 31-50: parameter-noise exploration active, BC anchor weight decays to zero
+- RL episodes 51-200: parameter-noise scale gradually reduced as performance stabilizes
 - reward scale: `0.01`
 
 This is an inference from the current code and the cited papers, not a direct prescription copied from any one source.

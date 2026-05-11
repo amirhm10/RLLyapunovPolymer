@@ -19,6 +19,7 @@ The generated figure is also embedded directly in the report Markdown so the ana
 - Low warm-start reward is not only an exploration issue because the cold-start notebook also shows poor warmup reward while using the direct Lyapunov MPC teacher.
 - The current shaped reward is numerically harsh in the early phases, and the direct notebooks are not yet using the proposed `reward_scale=0.01`.
 - The strongest next experiment is a combined fix: teacher-seeded warmup, exploration reset at RL start, short-lived BC anchoring into early online RL, and reward scaling.
+- The report now includes a dedicated explanation of parameter noise versus iid Gaussian action noise and evaluates the proposed schedule of deterministic warm start and BC followed by parameter-noise exploration only in the full-RL phase.
 
 ## Validation
 
