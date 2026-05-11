@@ -147,6 +147,10 @@ I generated:
 
 - [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>)
 
+![Warm-start reward and effective exploration sigma](../warm_start_reward_and_sigma_2026-05-11.png)
+
+Figure 1. Episode-mean shaped reward for the pretrained and cold-start runs, together with the effective exploration schedule used by the current direct RL setup.
+
 This figure shows:
 
 - episode mean reward for pretrained and cold-start runs,
