@@ -752,6 +752,55 @@ def build_safety_filter_run_bundle(
         "actor_losses": None if extra is None or extra.get("actor_losses") is None else np.asarray(extra.get("actor_losses"), float),
         "critic_losses": None if extra is None or extra.get("critic_losses") is None else np.asarray(extra.get("critic_losses"), float),
     }
+    if steady_states is not None and data_min is not None and data_max is not None:
+        data_min = np.asarray(data_min, float)
+        data_max = np.asarray(data_max, float)
+        ss_inputs = np.asarray(steady_states["ss_inputs"], float).reshape(-1)
+        ss_outputs = np.asarray(steady_states["y_ss"], float).reshape(-1)
+        ss_scaled_u = apply_min_max(ss_inputs, data_min[:n_u], data_max[:n_u])
+        ss_scaled_y = apply_min_max(ss_outputs, data_min[n_u:], data_max[n_u:])
+        y_scale = data_max[n_u:] - data_min[n_u:]
+
+        bundle["u_target_phys_store"] = reverse_min_max(
+            bundle["u_target_dev_store"] + ss_scaled_u.reshape(1, -1),
+            data_min[:n_u],
+            data_max[:n_u],
+        )
+        bundle["y_sp_phys_store"] = reverse_min_max(
+            bundle["y_sp"] + ss_scaled_y.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        bundle["y_target_phys_store"] = reverse_min_max(
+            bundle["y_target_store"] + ss_scaled_y.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        bundle["r_target_phys_store"] = reverse_min_max(
+            bundle["r_target_store"] + ss_scaled_y.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        bundle["yhat_phys_store"] = reverse_min_max(
+            bundle["yhat"].T + ss_scaled_y.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
+        bundle["y_target_phys_dev_store"] = bundle["y_target_store"] * y_scale.reshape(1, -1)
+        bundle["r_target_phys_dev_store"] = bundle["r_target_store"] * y_scale.reshape(1, -1)
+        bundle["cx_s_phys_dev_store"] = bundle["cx_s_store"] * y_scale.reshape(1, -1)
+        bundle["cd_d_s_phys_dev_store"] = bundle["cd_d_s_store"] * y_scale.reshape(1, -1)
+    else:
+        bundle["u_target_phys_store"] = np.full_like(bundle["u_target_dev_store"], np.nan)
+        bundle["y_sp_phys_store"] = np.full_like(bundle["y_sp"], np.nan)
+        bundle["y_target_phys_store"] = np.full_like(bundle["y_target_store"], np.nan)
+        bundle["r_target_phys_store"] = np.full_like(bundle["r_target_store"], np.nan)
+        bundle["yhat_phys_store"] = np.full_like(bundle["yhat"].T, np.nan)
+        bundle["y_target_phys_dev_store"] = np.full_like(bundle["y_target_store"], np.nan)
+        bundle["r_target_phys_dev_store"] = np.full_like(bundle["r_target_store"], np.nan)
+        bundle["cx_s_phys_dev_store"] = np.full_like(bundle["cx_s_store"], np.nan)
+        bundle["cd_d_s_phys_dev_store"] = np.full_like(bundle["cd_d_s_store"], np.nan)
+
     bundle["summary"] = summarize_safety_filter_bundle(bundle)
     return bundle
 
@@ -792,6 +841,64 @@ def _physical_setpoint_steps(bundle):
         np.asarray(data_min, dtype=float)[n_u:],
         np.asarray(data_max, dtype=float)[n_u:],
     )
+
+
+def _output_deviation_steps_to_physical(bundle, values):
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+
+    data_min = bundle.get("data_min")
+    data_max = bundle.get("data_max")
+    if data_min is None or data_max is None:
+        return values.copy(), "scaled deviation"
+
+    n_u = int(np.asarray(bundle["u_applied_phys"], dtype=float).shape[1])
+    y_scale = np.asarray(data_max, dtype=float)[n_u:] - np.asarray(data_min, dtype=float)[n_u:]
+    return values * y_scale.reshape(1, -1), "physical deviation"
+
+
+def _output_deviation_steps_to_physical_absolute(bundle, values):
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+
+    steady_states = bundle.get("steady_states")
+    data_min = bundle.get("data_min")
+    data_max = bundle.get("data_max")
+    if steady_states is None or data_min is None or data_max is None:
+        return values.copy(), "scaled deviation"
+
+    n_u = int(np.asarray(bundle["u_applied_phys"], dtype=float).shape[1])
+    y_ss_scaled = apply_min_max(
+        np.asarray(steady_states["y_ss"], dtype=float).reshape(-1),
+        np.asarray(data_min, dtype=float)[n_u:],
+        np.asarray(data_max, dtype=float)[n_u:],
+    )
+    return (
+        reverse_min_max(
+            values + y_ss_scaled.reshape(1, -1),
+            np.asarray(data_min, dtype=float)[n_u:],
+            np.asarray(data_max, dtype=float)[n_u:],
+        ),
+        "physical units",
+    )
+
+
+def _bundle_output_plot_array(bundle, physical_key, deviation_key):
+    if physical_key in bundle:
+        arr = np.asarray(bundle[physical_key], dtype=float)
+        if arr.size and np.any(np.isfinite(arr)):
+            return arr.copy(), "physical units"
+    return _output_deviation_steps_to_physical_absolute(bundle, bundle[deviation_key])
+
+
+def _bundle_output_deviation_plot_array(bundle, physical_key, deviation_key):
+    if physical_key in bundle:
+        arr = np.asarray(bundle[physical_key], dtype=float)
+        if arr.size and np.any(np.isfinite(arr)):
+            return arr.copy(), "physical deviation"
+    return _output_deviation_steps_to_physical(bundle, bundle[deviation_key])
 
 
 def safety_output_rmse_post_step(bundle):
@@ -1367,23 +1474,24 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     selector_x_s_minus_xhat_inf = np.asarray(bundle["selector_x_s_minus_xhat_inf"], float)
     selector_x_s_minus_xprev_inf = np.asarray(bundle["selector_x_s_minus_xprev_inf"], float)
 
-    if bundle.get("steady_states") is not None and bundle.get("data_min") is not None and bundle.get("data_max") is not None:
-        steady_states = bundle["steady_states"]
-        data_min = bundle["data_min"]
-        data_max = bundle["data_max"]
-        u_ss_scaled = apply_min_max(steady_states["ss_inputs"], data_min[:u_applied_phys.shape[1]], data_max[:u_applied_phys.shape[1]])
-        y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[u_applied_phys.shape[1]:], data_max[u_applied_phys.shape[1]:])
-        u_target_plot = reverse_min_max(bundle["u_target_dev_store"] + u_ss_scaled, data_min[:u_applied_phys.shape[1]], data_max[:u_applied_phys.shape[1]])
-        y_sp_plot = reverse_min_max(y_sp + y_ss_scaled, data_min[u_applied_phys.shape[1]:], data_max[u_applied_phys.shape[1]:])
-        y_target_plot = reverse_min_max(y_target_store + y_ss_scaled, data_min[u_applied_phys.shape[1]:], data_max[u_applied_phys.shape[1]:])
-        r_target_plot = reverse_min_max(r_target_store + y_ss_scaled, data_min[u_applied_phys.shape[1]:], data_max[u_applied_phys.shape[1]:])
-        yhat_plot = reverse_min_max(bundle["yhat"].T + y_ss_scaled, data_min[u_applied_phys.shape[1]:], data_max[u_applied_phys.shape[1]:])
-    else:
-        u_target_plot = bundle["u_target_dev_store"]
-        y_sp_plot = y_sp
-        y_target_plot = y_target_store
-        r_target_plot = r_target_store
-        yhat_plot = bundle["yhat"].T
+    u_target_plot = np.asarray(bundle["u_target_phys_store"], float)
+    if not (u_target_plot.size and np.any(np.isfinite(u_target_plot))):
+        u_target_plot = np.asarray(bundle["u_target_dev_store"], float)
+
+    y_sp_plot, y_sp_unit_label = _bundle_output_plot_array(bundle, "y_sp_phys_store", "y_sp")
+    y_target_plot, y_target_unit_label = _bundle_output_plot_array(bundle, "y_target_phys_store", "y_target_store")
+    r_target_plot, _ = _bundle_output_plot_array(bundle, "r_target_phys_store", "r_target_store")
+    yhat_plot = np.asarray(bundle["yhat_phys_store"], float)
+    if not (yhat_plot.size and np.any(np.isfinite(yhat_plot))):
+        yhat_plot = np.asarray(bundle["yhat"], float).T
+
+    y_target_dev_plot, y_target_dev_unit_label = _bundle_output_deviation_plot_array(
+        bundle,
+        "y_target_phys_dev_store",
+        "y_target_store",
+    )
+    cx_s_plot, _ = _bundle_output_deviation_plot_array(bundle, "cx_s_phys_dev_store", "cx_s_store")
+    cd_d_s_plot, _ = _bundle_output_deviation_plot_array(bundle, "cd_d_s_phys_dev_store", "cd_d_s_store")
 
     time_y = np.arange(y_system.shape[0])
     time_u = np.arange(u_applied_phys.shape[0])
@@ -1508,7 +1616,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(time_vals, cx_data[idx, :], linewidth=2.0, color="tab:blue", label=f"Cx_s_{idx}")
             ax.plot(time_vals, cd_data[idx, :], linewidth=2.0, color="tab:orange", label=f"Cd_d_s_{idx}")
-            ax.plot(time_vals, y_data[idx, :], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_{idx}")
+            ax.plot(time_vals, y_data[idx, :], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_dev_{idx}")
             ax.grid(True, linestyle="--", alpha=0.35)
             ax.legend(loc="best")
             ax.set_xlabel("step")
@@ -1560,9 +1668,9 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     )
     _plot_decomposition_channels(
         os.path.join(state_target_dir, _paper_dirname("full_ys_decomposition", "fy_dec")),
-        cx_s_store.T,
-        cd_d_s_store.T,
-        y_target_plot.T,
+        cx_s_plot.T,
+        cd_d_s_plot.T,
+        y_target_dev_plot.T,
     )
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.2 * n_y), sharex=True)
@@ -1575,6 +1683,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.step(time_u, y_target_plot[:, idx], where="post", linewidth=2.0, linestyle="-.", color="tab:purple", label=f"y_s_{idx}")
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
+        ax.set_ylabel(y_target_unit_label)
     axes[-1].set_xlabel("step")
     plt.tight_layout()
     plt.savefig(plot_path("outputs_vs_ysp_vs_ys.png"), dpi=300, bbox_inches="tight")
@@ -1584,11 +1693,12 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     axes = np.atleast_1d(axes)
     for idx in range(n_y):
         ax = axes[idx]
-        ax.plot(time_u, cx_s_store[:, idx], linewidth=2.0, color="tab:blue", label=f"Cx_s_{idx}")
-        ax.plot(time_u, cd_d_s_store[:, idx], linewidth=2.0, color="tab:orange", label=f"Cd_d_s_{idx}")
-        ax.plot(time_u, y_target_plot[:, idx], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_{idx}")
+        ax.plot(time_u, cx_s_plot[:, idx], linewidth=2.0, color="tab:blue", label=f"Cx_s_{idx}")
+        ax.plot(time_u, cd_d_s_plot[:, idx], linewidth=2.0, color="tab:orange", label=f"Cd_d_s_{idx}")
+        ax.plot(time_u, y_target_dev_plot[:, idx], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_dev_{idx}")
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
+        ax.set_ylabel(y_target_dev_unit_label)
     axes[-1].set_xlabel("step")
     plt.tight_layout()
     plt.savefig(plot_path("ys_decomposition_summary.png"), dpi=300, bbox_inches="tight")
@@ -1767,8 +1877,9 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     y_system_last = y_system[:-1, :][start_idx:, :]
     u_applied_last = u_applied_phys[start_idx:, :]
     u_target_last = u_target_plot[start_idx:, :]
-    cx_s_last = cx_s_store[start_idx:, :].T if cx_s_store.size > 0 else cx_s_store
-    cd_d_s_last = cd_d_s_store[start_idx:, :].T if cd_d_s_store.size > 0 else cd_d_s_store
+    y_target_dev_last = y_target_dev_plot[start_idx:, :].T if y_target_dev_plot.size > 0 else y_target_dev_plot
+    cx_s_last = cx_s_plot[start_idx:, :].T if cx_s_plot.size > 0 else cx_s_plot
+    cd_d_s_last = cd_d_s_plot[start_idx:, :].T if cd_d_s_plot.size > 0 else cd_d_s_plot
     _plot_augmented_states(xhatdhat_last, "xhatdhat_last_episode.png")
     _plot_augmented_states(xhatdhat_last, "dhat_last_episode.png", dhat_only=True)
     _plot_state_target_channels(
@@ -1811,7 +1922,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         os.path.join(state_target_dir, _paper_dirname("last_episode_ys_decomposition", "ly_dec")),
         cx_s_last,
         cd_d_s_last,
-        y_target_last,
+        y_target_dev_last,
     )
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.2 * n_y), sharex=True)
@@ -1823,6 +1934,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.step(last_steps, y_target_last[idx, :], where="post", linewidth=2.0, linestyle="-.", color="tab:purple", label=f"y_s_{idx}")
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
+        ax.set_ylabel(y_target_unit_label)
     axes[-1].set_xlabel("step")
     plt.tight_layout()
     plt.savefig(plot_path("outputs_vs_ysp_vs_ys_last_episode.png"), dpi=300, bbox_inches="tight")
@@ -1834,9 +1946,10 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax = axes[idx]
         ax.plot(last_steps, cx_s_last[idx, :], linewidth=2.0, color="tab:blue", label=f"Cx_s_{idx}")
         ax.plot(last_steps, cd_d_s_last[idx, :], linewidth=2.0, color="tab:orange", label=f"Cd_d_s_{idx}")
-        ax.plot(last_steps, y_target_last[idx, :], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_{idx}")
+        ax.plot(last_steps, y_target_dev_last[idx, :], linewidth=2.0, linestyle="--", color="tab:green", label=f"y_s_dev_{idx}")
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend(loc="best")
+        ax.set_ylabel(y_target_dev_unit_label)
     axes[-1].set_xlabel("step")
     plt.tight_layout()
     plt.savefig(plot_path("ys_decomposition_summary_last_episode.png"), dpi=300, bbox_inches="tight")
