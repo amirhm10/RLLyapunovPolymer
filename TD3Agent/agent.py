@@ -58,6 +58,16 @@ class GaussianNoiseSchedule:
         raise ValueError("mode must be 'linear' | 'exp' | 'cosine'")
 
 
+@dataclass
+class ParameterNoiseAdaptation:
+    initial_std: float = 0.01
+    min_std: float = 0.002
+    max_std: float = 0.05
+    target_action_std: float = 0.05
+    adapt_up: float = 1.05
+    adapt_down: float = 0.95
+
+
 def col(x: torch.Tensor) -> torch.Tensor:
     return x if x.ndim == 2 else x.view(-1, 1)
 
@@ -162,9 +172,12 @@ class TD3Agent(nn.Module):
         self.critic_target = Critic(state_dim, action_dim, critic_hidden,
                                     activation=activation, use_layernorm=use_layernorm,
                                     dropout=dropout).to(self.device)
+        self.behavior_actor = deepcopy(self.actor).to(self.device)
+        self.behavior_actor.eval()
 
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
+        hard_update(self.behavior_actor, self.actor)
 
         # --- optimizers and loss function ---
         if use_adamw:
@@ -195,6 +208,12 @@ class TD3Agent(nn.Module):
             decay_steps=std_decay_steps, mode=std_decay_mode,
             decay_rate=std_decay_rate,
         )
+        self.param_noise_cfg = ParameterNoiseAdaptation()
+        self.param_noise_std = float(self.param_noise_cfg.initial_std)
+        self._parameter_noise_active = False
+        self._parameter_noise_last_action_deviation = 0.0
+        self._parameter_noise_last_resampled = False
+        self._behavior_noise_mode = "none"
 
     def freeze_actor(self) -> None:
         for p in self.actor.parameters():
@@ -223,6 +242,97 @@ class TD3Agent(nn.Module):
             a = a + torch.randn_like(a) * sigma_eval
         return a.clamp(-self.max_action, self.max_action).cpu().numpy()
 
+    def sync_behavior_actor(self) -> None:
+        hard_update(self.behavior_actor, self.actor)
+        self.behavior_actor.eval()
+
+    @torch.no_grad()
+    def clear_parameter_noise(self) -> None:
+        self.sync_behavior_actor()
+        self._parameter_noise_active = False
+        self._parameter_noise_last_resampled = False
+
+    @torch.no_grad()
+    def configure_parameter_noise(
+        self,
+        initial_std: Optional[float] = None,
+        min_std: Optional[float] = None,
+        max_std: Optional[float] = None,
+        target_action_std: Optional[float] = None,
+        adapt_up: Optional[float] = None,
+        adapt_down: Optional[float] = None,
+    ) -> None:
+        if initial_std is not None:
+            self.param_noise_cfg.initial_std = float(max(0.0, initial_std))
+        if min_std is not None:
+            self.param_noise_cfg.min_std = float(max(0.0, min_std))
+        if max_std is not None:
+            self.param_noise_cfg.max_std = float(max(self.param_noise_cfg.min_std, max_std))
+        if target_action_std is not None:
+            self.param_noise_cfg.target_action_std = float(max(0.0, target_action_std))
+        if adapt_up is not None:
+            self.param_noise_cfg.adapt_up = float(max(1.0, adapt_up))
+        if adapt_down is not None:
+            self.param_noise_cfg.adapt_down = float(min(1.0, max(0.0, adapt_down)))
+        self.param_noise_std = float(
+            np.clip(self.param_noise_std, self.param_noise_cfg.min_std, self.param_noise_cfg.max_std)
+        )
+
+    @torch.no_grad()
+    def resample_parameter_noise(self, std: Optional[float] = None) -> float:
+        if std is not None:
+            self.param_noise_std = float(std)
+        self.param_noise_std = float(
+            np.clip(self.param_noise_std, self.param_noise_cfg.min_std, self.param_noise_cfg.max_std)
+        )
+        self.sync_behavior_actor()
+        if self.param_noise_std <= 0.0:
+            self._parameter_noise_active = False
+            self._parameter_noise_last_resampled = True
+            return self.param_noise_std
+
+        with torch.no_grad():
+            vec = parameters_to_vector(list(self.behavior_actor.parameters()))
+            noise = torch.randn_like(vec) * float(self.param_noise_std)
+            vector_to_parameters(vec + noise, list(self.behavior_actor.parameters()))
+        self.behavior_actor.eval()
+        self._parameter_noise_active = True
+        self._parameter_noise_last_resampled = True
+        return self.param_noise_std
+
+    @torch.no_grad()
+    def adapt_parameter_noise(self, states: np.ndarray) -> float:
+        states = np.asarray(states, dtype=np.float32)
+        if states.size == 0:
+            self._parameter_noise_last_action_deviation = 0.0
+            return self.param_noise_std
+
+        s = torch.as_tensor(states, dtype=torch.float32, device=self.device)
+        nominal = self.actor(s)
+        perturbed = self.behavior_actor(s)
+        denom = max(float(self.max_action), 1e-6)
+        diff = (perturbed - nominal) / denom
+        deviation = torch.sqrt(torch.mean(diff * diff, dim=1)).mean().item()
+        self._parameter_noise_last_action_deviation = float(deviation)
+
+        if deviation < float(self.param_noise_cfg.target_action_std):
+            updated = float(self.param_noise_std) * float(self.param_noise_cfg.adapt_up)
+        else:
+            updated = float(self.param_noise_std) * float(self.param_noise_cfg.adapt_down)
+        self.param_noise_std = float(
+            np.clip(updated, self.param_noise_cfg.min_std, self.param_noise_cfg.max_std)
+        )
+        return self.param_noise_std
+
+    def get_behavior_noise_diagnostics(self) -> dict:
+        return {
+            "behavior_noise_mode": str(self._behavior_noise_mode),
+            "parameter_noise_active": bool(self._parameter_noise_active),
+            "parameter_noise_std": float(self.param_noise_std),
+            "parameter_noise_last_action_deviation": float(self._parameter_noise_last_action_deviation),
+            "parameter_noise_last_resampled": bool(self._parameter_noise_last_resampled),
+        }
+
     @torch.no_grad()
     def apply_exploration(
         self,
@@ -238,11 +348,42 @@ class TD3Agent(nn.Module):
         else:
             sigma = float(max(0.0, sigma_override))
 
+        self._behavior_noise_mode = "gaussian"
+        self._parameter_noise_last_resampled = False
         self._expl_sigma = sigma
         a = np.asarray(action, dtype=np.float32).copy()
         if sigma > 0.0:
             a = a + np.random.randn(*a.shape).astype(np.float32) * sigma
         return np.clip(a, -self.max_action, self.max_action)
+
+    @torch.no_grad()
+    def take_behavior_action(
+        self,
+        state: np.ndarray,
+        behavior_noise_mode: str = "gaussian",
+        sigma_override: Optional[float] = None,
+        advance_step: bool = True,
+    ) -> np.ndarray:
+        mode = str(behavior_noise_mode).strip().lower()
+        if advance_step:
+            self.steps += 1
+
+        s = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        if mode == "none":
+            self._behavior_noise_mode = "none"
+            self._parameter_noise_last_resampled = False
+            self._expl_sigma = 0.0
+            self._parameter_noise_active = False
+            return self.actor(s).detach().cpu().numpy().clip(-self.max_action, self.max_action)
+        if mode == "gaussian":
+            a = self.actor(s).detach().cpu().numpy()
+            return self.apply_exploration(a, sigma_override=sigma_override, advance_step=False)
+        if mode == "parameter":
+            self._behavior_noise_mode = "parameter"
+            self._expl_sigma = 0.0
+            a = self.behavior_actor(s).detach().cpu().numpy()
+            return a.clip(-self.max_action, self.max_action)
+        raise ValueError("behavior_noise_mode must be 'none', 'gaussian', or 'parameter'.")
 
     @torch.no_grad()
     def take_action(
@@ -259,6 +400,8 @@ class TD3Agent(nn.Module):
                 sigma_override=sigma_override,
                 advance_step=True,
             )
+        self._behavior_noise_mode = "none"
+        self._parameter_noise_last_resampled = False
         self._expl_sigma = 0.0
         return np.clip(a, -self.max_action, self.max_action)
 

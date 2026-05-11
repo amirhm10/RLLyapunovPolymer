@@ -454,6 +454,34 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback'."
         )
 
+    def _normalize_behavior_noise(name, default):
+        mode = str(cfg.get(name, default)).strip().lower()
+        if mode not in {"none", "gaussian", "parameter"}:
+            raise ValueError(
+                f"training_phase_config['{name}'] must be 'none', 'gaussian', or 'parameter'."
+            )
+        return mode
+
+    warmup_behavior_noise = _normalize_behavior_noise("warmup_behavior_noise", "gaussian")
+    bc_behavior_noise = _normalize_behavior_noise("bc_behavior_noise", "gaussian")
+    full_rl_behavior_noise = _normalize_behavior_noise("full_rl_behavior_noise", "gaussian")
+
+    if warmup_behavior_source == "direct_lyapunov_mpc" and warmup_behavior_noise == "parameter":
+        raise ValueError(
+            "training_phase_config['warmup_behavior_noise'] cannot be 'parameter' when "
+            "warmup_behavior_source='direct_lyapunov_mpc'."
+        )
+    if bc_behavior_noise == "parameter":
+        raise ValueError(
+            "training_phase_config['bc_behavior_noise'] cannot be 'parameter' because the BC phase uses teacher behavior."
+        )
+
+    parameter_noise_resample_scope = str(
+        cfg.get("parameter_noise_resample_scope", "cycle")
+    ).strip().lower()
+    if parameter_noise_resample_scope != "cycle":
+        raise ValueError("training_phase_config['parameter_noise_resample_scope'] must be 'cycle'.")
+
     return {
         "episode_unit": episode_unit,
         "warmup_buffer_only_episodes": warmup_episodes,
@@ -467,6 +495,16 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "exploration_decay_rate": float(cfg.get("exploration_decay_rate", 0.99992)),
         "bc_teacher_policy": teacher_policy,
         "warmup_behavior_source": warmup_behavior_source,
+        "warmup_behavior_noise": warmup_behavior_noise,
+        "bc_behavior_noise": bc_behavior_noise,
+        "full_rl_behavior_noise": full_rl_behavior_noise,
+        "parameter_noise_resample_scope": parameter_noise_resample_scope,
+        "parameter_noise_initial_std": float(cfg.get("parameter_noise_initial_std", 0.01)),
+        "parameter_noise_min_std": float(cfg.get("parameter_noise_min_std", 0.002)),
+        "parameter_noise_max_std": float(cfg.get("parameter_noise_max_std", 0.05)),
+        "parameter_noise_target_action_std": float(cfg.get("parameter_noise_target_action_std", 0.05)),
+        "parameter_noise_adapt_up": float(cfg.get("parameter_noise_adapt_up", 1.05)),
+        "parameter_noise_adapt_down": float(cfg.get("parameter_noise_adapt_down", 0.95)),
         "total_steps": max(1, int(n_steps)),
     }
 
@@ -500,11 +538,13 @@ def _phase_exploration_sigma(phase_cfg, step_idx, agent=None):
 def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if phase_cfg is None:
         training_update_mode = "no_learning_test" if test else ("buffer_only" if step_idx < warm_start_idx else "td3_full")
+        behavior_noise_mode = "none" if test else "gaussian"
         return {
             "policy_phase": "full_rl",
             "behavior_policy_source": "policy_eval" if test else "policy_explore",
+            "behavior_noise_mode": behavior_noise_mode,
             "use_teacher_behavior": False,
-            "explore_behavior": not test,
+            "explore_behavior": behavior_noise_mode != "none",
             "push_demo": False,
             "run_critic_only_update": False,
             "run_actor_bc_update": False,
@@ -515,26 +555,42 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if step_idx < int(phase_cfg["warmup_end_step"]):
         policy_phase = "warmup_buffer_only"
         use_teacher_behavior = phase_cfg["warmup_behavior_source"] == "direct_lyapunov_mpc"
+        behavior_noise_mode = "none" if test else str(phase_cfg.get("warmup_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "buffer_only"
     elif step_idx < int(phase_cfg["bc_end_step"]):
         policy_phase = "behavior_clone_teacher"
         use_teacher_behavior = True
+        behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "critic_td_plus_actor_bc"
     else:
         policy_phase = "full_rl"
         use_teacher_behavior = False
+        behavior_noise_mode = "none" if test else str(phase_cfg.get("full_rl_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "td3_full"
 
     if use_teacher_behavior:
-        behavior_policy_source = "direct_lyapunov_mpc_eval" if test else "direct_lyapunov_mpc_explore"
+        if test:
+            behavior_policy_source = "direct_lyapunov_mpc_eval"
+        elif behavior_noise_mode == "gaussian":
+            behavior_policy_source = "direct_lyapunov_mpc_gaussian"
+        else:
+            behavior_policy_source = "direct_lyapunov_mpc_nominal"
     else:
-        behavior_policy_source = "policy_eval" if test else "policy_explore"
+        if test:
+            behavior_policy_source = "policy_eval"
+        elif behavior_noise_mode == "parameter":
+            behavior_policy_source = "policy_parameter_noise"
+        elif behavior_noise_mode == "gaussian":
+            behavior_policy_source = "policy_explore"
+        else:
+            behavior_policy_source = "policy_nominal"
 
     return {
         "policy_phase": policy_phase,
         "behavior_policy_source": behavior_policy_source,
+        "behavior_noise_mode": behavior_noise_mode,
         "use_teacher_behavior": bool(use_teacher_behavior),
-        "explore_behavior": not test,
+        "explore_behavior": behavior_noise_mode != "none",
         "push_demo": bool(use_teacher_behavior and (not test)),
         "run_critic_only_update": (not test) and (policy_phase == "behavior_clone_teacher"),
         "run_actor_bc_update": (not test) and (policy_phase == "behavior_clone_teacher"),
@@ -543,10 +599,20 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     }
 
 
-def _annotate_training_phase_info(info, phase_state):
+def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["policy_phase"] = str(phase_state.get("policy_phase"))
     info["behavior_policy_source"] = str(phase_state.get("behavior_policy_source"))
+    info["behavior_noise_mode"] = str(phase_state.get("behavior_noise_mode", "none"))
     info["training_update_mode"] = str(phase_state.get("training_update_mode"))
+    if behavior_debug is not None:
+        info["parameter_noise_active"] = bool(behavior_debug.get("parameter_noise_active", False))
+        info["parameter_noise_std"] = float(behavior_debug.get("parameter_noise_std", 0.0))
+        info["parameter_noise_resampled_this_step"] = bool(
+            behavior_debug.get("parameter_noise_resampled_this_step", False)
+        )
+        info["behavior_action_pre_filter"] = np.asarray(
+            behavior_debug.get("behavior_action_pre_filter", []), float
+        ).reshape(-1).copy()
     return info
 
 
@@ -677,6 +743,16 @@ def run_rl_train(
         n_steps=nFE,
         projection_backend=projection_backend,
     )
+    if phase_cfg is not None and hasattr(agent, "configure_parameter_noise"):
+        agent.configure_parameter_noise(
+            initial_std=phase_cfg.get("parameter_noise_initial_std"),
+            min_std=phase_cfg.get("parameter_noise_min_std"),
+            max_std=phase_cfg.get("parameter_noise_max_std"),
+            target_action_std=phase_cfg.get("parameter_noise_target_action_std"),
+            adapt_up=phase_cfg.get("parameter_noise_adapt_up"),
+            adapt_down=phase_cfg.get("parameter_noise_adapt_down"),
+        )
+        agent.param_noise_std = float(phase_cfg.get("parameter_noise_initial_std", agent.param_noise_std))
 
     ss_scaled_u = apply_min_max(steady_states["ss_inputs"], data_min[:n_u], data_max[:n_u])
     ss_scaled_y = apply_min_max(steady_states["y_ss"], data_min[n_u:], data_max[n_u:])
@@ -819,6 +895,8 @@ def run_rl_train(
     prev_target_info = None
     last_verified_safe_dev = None
     direct_x_target_prev_success = None
+    last_param_noise_cycle_idx = None
+    param_noise_cycle_states = []
 
     for k in range(nFE):
         if k in test_train_dict:
@@ -850,10 +928,26 @@ def run_rl_train(
             phase_cfg=phase_cfg,
         )
         sigma_override = _phase_exploration_sigma(phase_cfg, k, agent=agent)
+        current_cycle_idx = int(k // max(int(time_in_sub_episodes), 1))
+        parameter_noise_resampled_this_step = False
 
         rl_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k], y_sp_k, u_prev_dev)
         precomputed_direct_step_context = None
         step_fallback_ic = fallback_ic
+
+        if (
+            (not test)
+            and phase_state.get("behavior_noise_mode") == "parameter"
+            and phase_state.get("run_td3_full_update", False)
+            and hasattr(agent, "resample_parameter_noise")
+        ):
+            if last_param_noise_cycle_idx != current_cycle_idx:
+                if len(param_noise_cycle_states) > 0 and hasattr(agent, "adapt_parameter_noise"):
+                    agent.adapt_parameter_noise(np.asarray(param_noise_cycle_states, dtype=np.float32))
+                agent.resample_parameter_noise()
+                param_noise_cycle_states = []
+                last_param_noise_cycle_idx = current_cycle_idx
+                parameter_noise_resampled_this_step = True
 
         if phase_state["use_teacher_behavior"]:
             precomputed_direct_step_context = prepare_direct_output_disturbance_step(
@@ -900,26 +994,36 @@ def run_rl_train(
                 step_fallback_ic = np.asarray(teacher_fallback_ic_next, float).reshape(-1).copy()
 
             teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
-            if phase_state["explore_behavior"]:
+            if phase_state["behavior_noise_mode"] == "gaussian":
                 action = agent.apply_exploration(
                     teacher_action,
                     sigma_override=sigma_override,
                     advance_step=True,
                 )
             else:
+                agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
+                agent._parameter_noise_last_resampled = False
                 agent._expl_sigma = 0.0
                 action = np.clip(teacher_action, -1.0, 1.0)
         elif test:
+            agent._behavior_noise_mode = "none"
+            agent._parameter_noise_last_resampled = False
             action = agent.act_eval(rl_state)
         else:
-            action = agent.take_action(
+            action = agent.take_behavior_action(
                 rl_state,
-                explore=phase_state["explore_behavior"],
+                behavior_noise_mode=phase_state["behavior_noise_mode"],
                 sigma_override=sigma_override,
             )
 
         action = np.asarray(action, float).reshape(-1)
         action = np.clip(action, -1.0, 1.0)
+        behavior_debug = agent.get_behavior_noise_diagnostics() if hasattr(agent, "get_behavior_noise_diagnostics") else {}
+        behavior_debug["parameter_noise_active"] = bool(
+            phase_state.get("behavior_noise_mode") == "parameter" and (not test)
+        )
+        behavior_debug["parameter_noise_resampled_this_step"] = bool(parameter_noise_resampled_this_step)
+        behavior_debug["behavior_action_pre_filter"] = action.copy()
         u_rl_dev = np.clip(map_to_bounds(action, u_min, u_max), u_min, u_max)
 
         if projection_backend == "legacy_augstate":
@@ -1081,7 +1185,7 @@ def run_rl_train(
                 }
                 last_verified_safe_dev = u_dev_safe.copy()
 
-            _annotate_training_phase_info(info, phase_state)
+            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
             lyap_info_storage.append(info)
 
             if use_lyap:
@@ -1150,6 +1254,12 @@ def run_rl_train(
                     next_state=next_state,
                     done=float(done),
                 )
+                if (
+                    phase_state.get("run_td3_full_update", False)
+                    and phase_state.get("behavior_noise_mode") == "parameter"
+                    and len(param_noise_cycle_states) < 256
+                ):
+                    param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
@@ -1481,7 +1591,7 @@ def run_rl_train(
             if info.get("verified", False):
                 last_verified_safe_dev = u_dev_safe.copy()
 
-            _annotate_training_phase_info(info, phase_state)
+            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
             lyap_info_storage.append(info)
 
             if use_lyap:
@@ -1543,6 +1653,12 @@ def run_rl_train(
                     next_state=next_state,
                     done=float(done),
                 )
+                if (
+                    phase_state.get("run_td3_full_update", False)
+                    and phase_state.get("behavior_noise_mode") == "parameter"
+                    and len(param_noise_cycle_states) < 256
+                ):
+                    param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
@@ -1969,7 +2085,7 @@ def run_rl_train(
             }
             last_verified_safe_dev = u_dev_safe.copy()
 
-        _annotate_training_phase_info(info, phase_state)
+        _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
         lyap_info_storage.append(info)
 
         if use_lyap:
@@ -2040,6 +2156,12 @@ def run_rl_train(
                 next_state=next_state,
                 done=float(done),
             )
+            if (
+                phase_state.get("run_td3_full_update", False)
+                and phase_state.get("behavior_noise_mode") == "parameter"
+                and len(param_noise_cycle_states) < 256
+            ):
+                param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
 
         if k in sub_changes:
             start = max(0, k - time_in_sub_episodes + 1)
