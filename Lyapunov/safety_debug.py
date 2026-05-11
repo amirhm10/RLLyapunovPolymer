@@ -50,6 +50,36 @@ _TARGET_STAGE_LABELS = [
     "frozen_dhat_bounded_fallback",
 ]
 
+_SAFETY_PAPER_FILENAME_MAP = {
+    "outputs_vs_ysp_vs_ys.png": "out_vs_ysp_ys.png",
+    "ys_decomposition_summary.png": "ys_dec_sum.png",
+    "outputs_vs_setpoint.png": "out_vs_sp.png",
+    "outputs_vs_setpoint_projection.png": "out_vs_sp_proj.png",
+    "applied_inputs.png": "u_applied.png",
+    "u_applied_vs_us.png": "u_vs_us.png",
+    "candidate_vs_safe_dev.png": "u_cand_vs_safe.png",
+    "lyapunov_values.png": "lyap_vals.png",
+    "first_step_contraction_diagnostics.png": "first_step_diag.png",
+    "outputs_vs_ysp_vs_ys_last_episode.png": "out_vs_ysp_ys_last.png",
+    "ys_decomposition_summary_last_episode.png": "ys_dec_sum_last.png",
+    "y_minus_ys_last_episode.png": "y_minus_ys_last.png",
+    "u_applied_vs_us_last_episode.png": "u_vs_us_last.png",
+    "lyapunov_last_episode.png": "lyap_last.png",
+    "lyapunov_margin.png": "lyap_margin.png",
+    "target_selector_metrics.png": "target_metrics.png",
+    "selector_objective_terms.png": "selector_obj_terms.png",
+    "selector_x_penalties.png": "selector_x_pen.png",
+    "selector_x_gaps.png": "selector_x_gaps.png",
+    "selector_residuals.png": "selector_resid.png",
+    "y_minus_ys.png": "y_minus_ys.png",
+    "target_selector_status.png": "target_status.png",
+    "qcqp_status.png": "qcqp_status.png",
+    "reward_trace.png": "reward_trace.png",
+    "correction_modes.png": "correction_modes.png",
+    "solver_status_counts.png": "solver_status_counts.png",
+    "fallback_solver_status_counts.png": "fallback_solver_counts.png",
+}
+
 
 def _jsonable(value):
     if isinstance(value, np.ndarray):
@@ -61,6 +91,18 @@ def _jsonable(value):
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
     return value
+
+
+def _safety_plot_filename(filename, *, paper_style=False):
+    filename = str(filename)
+    if not paper_style:
+        return filename
+    return _SAFETY_PAPER_FILENAME_MAP.get(filename, filename)
+
+
+def _safety_plot_path(output_dir, filename, *, paper_style=False):
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, _safety_plot_filename(filename, paper_style=paper_style))
 
 
 def _array_or_none(info, key):
@@ -1196,7 +1238,16 @@ def _project_safety_debug_max_path_len(
         paper_root = str(paper_plot_subdir)
         rel_paths.extend(
             [
-                os.path.join(paper_root, "safety_selector", "first_step_contraction_diagnostics.png"),
+                os.path.join(
+                    paper_root,
+                    "safety_selector",
+                    _safety_plot_filename("first_step_contraction_diagnostics.png", paper_style=True),
+                ),
+                os.path.join(
+                    paper_root,
+                    "safety_selector",
+                    _safety_plot_filename("ys_decomposition_summary_last_episode.png", paper_style=True),
+                ),
                 os.path.join(paper_root, "safety_selector", "last_episode_summary", "episode_001_last.png"),
             ]
         )
@@ -1258,6 +1309,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
 
     os.makedirs(output_dir, exist_ok=True)
     paper_mode = "paper_plots" in os.path.normpath(output_dir).lower()
+    plot_path = lambda filename: _safety_plot_path(output_dir, filename, paper_style=paper_mode)
 
     y_system = bundle["y_system"]
     u_applied_phys = bundle["u_applied_phys"]
@@ -1525,7 +1577,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "outputs_vs_ysp_vs_ys.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("outputs_vs_ysp_vs_ys.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.2 * n_y), sharex=True)
@@ -1539,7 +1591,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "ys_decomposition_summary.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("ys_decomposition_summary.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     plt.figure(figsize=(10, 6))
@@ -1550,7 +1602,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         plt.grid(True, linestyle="--", alpha=0.35)
         plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "outputs_vs_setpoint.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("outputs_vs_setpoint.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     fig, axes = plt.subplots(y_system.shape[1] + 1, 1, figsize=(10, 3.0 * (y_system.shape[1] + 1)), sharex=False)
@@ -1591,7 +1643,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     ax.grid(True, linestyle="--", alpha=0.35)
     ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "outputs_vs_setpoint_projection.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("outputs_vs_setpoint_projection.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     plt.figure(figsize=(10, 5))
@@ -1600,7 +1652,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "applied_inputs.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("applied_inputs.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     fig, axes = plt.subplots(u_applied_phys.shape[1], 1, figsize=(10, 3.0 * u_applied_phys.shape[1]), sharex=True)
@@ -1612,7 +1664,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "u_applied_vs_us.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("u_applied_vs_us.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     plt.figure(figsize=(10, 5))
@@ -1622,7 +1674,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "candidate_vs_safe_dev.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("candidate_vs_safe_dev.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1631,7 +1683,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "lyapunov_values.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("lyapunov_values.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     if np.any(np.isfinite(V_next_first)) or np.any(np.isfinite(contraction_margin)):
@@ -1696,7 +1748,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         axes[2].legend()
         axes[2].set_xlabel("step")
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "first_step_contraction_diagnostics.png"), dpi=300, bbox_inches="tight")
+        plt.savefig(plot_path("first_step_contraction_diagnostics.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
     last_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
@@ -1773,7 +1825,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "outputs_vs_ysp_vs_ys_last_episode.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("outputs_vs_ysp_vs_ys_last_episode.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.2 * n_y), sharex=True)
@@ -1787,7 +1839,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.legend(loc="best")
     axes[-1].set_xlabel("step")
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "ys_decomposition_summary_last_episode.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("ys_decomposition_summary_last_episode.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.0 * n_y), sharex=True)
@@ -1800,7 +1852,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "y_minus_ys_last_episode.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("y_minus_ys_last_episode.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     fig, axes = plt.subplots(u_applied_phys.shape[1], 1, figsize=(10, 3.0 * u_applied_phys.shape[1]), sharex=True)
@@ -1812,7 +1864,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "u_applied_vs_us_last_episode.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("u_applied_vs_us_last_episode.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
     V_final_last = final_lyap_value[start_idx:]
     delta_V_last = np.full_like(V_final_last, np.nan)
@@ -1829,7 +1881,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     axes[1].grid(True, linestyle="--", alpha=0.35)
     axes[1].legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "lyapunov_last_episode.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("lyapunov_last_episode.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     plt.figure(figsize=(10, 5))
@@ -1839,7 +1891,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "lyapunov_margin.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("lyapunov_margin.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1850,7 +1902,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "target_selector_metrics.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("target_selector_metrics.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 6))
@@ -1863,7 +1915,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "selector_objective_terms.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("selector_objective_terms.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1873,7 +1925,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "selector_x_penalties.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("selector_x_penalties.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1882,7 +1934,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "selector_x_gaps.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("selector_x_gaps.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1891,7 +1943,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "selector_residuals.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("selector_residuals.png"), dpi=300, bbox_inches="tight")
     plt.close()
 
     fig, axes = plt.subplots(n_y, 1, figsize=(10, 3.0 * n_y), sharex=True)
@@ -1905,7 +1957,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         ax.grid(True, linestyle="--", alpha=0.35)
         ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "y_minus_ys.png"), dpi=300, bbox_inches="tight")
+    plt.savefig(plot_path("y_minus_ys.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     if not paper_mode:
@@ -1928,7 +1980,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         axes[2].grid(True, linestyle="--", alpha=0.35)
         axes[2].legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "target_selector_status.png"), dpi=300, bbox_inches="tight")
+        plt.savefig(plot_path("target_selector_status.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
@@ -1969,7 +2021,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         axes[2].grid(True, linestyle="--", alpha=0.35)
         axes[2].legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "qcqp_status.png"), dpi=300, bbox_inches="tight")
+        plt.savefig(plot_path("qcqp_status.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
 
         plt.figure(figsize=(10, 5))
@@ -1977,7 +2029,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
         plt.grid(True, linestyle="--", alpha=0.35)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "reward_trace.png"), dpi=300, bbox_inches="tight")
+        plt.savefig(plot_path("reward_trace.png"), dpi=300, bbox_inches="tight")
         plt.close()
 
     episode_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
@@ -2233,7 +2285,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
             plt.bar(labels, values)
             plt.xticks(rotation=30, ha="right")
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "correction_modes.png"), dpi=300, bbox_inches="tight")
+            plt.savefig(plot_path("correction_modes.png"), dpi=300, bbox_inches="tight")
             plt.close()
 
         solver_counts = bundle["summary"].get("solver_status_counts", {})
@@ -2244,7 +2296,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
             plt.bar(labels, values)
             plt.xticks(rotation=30, ha="right")
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "solver_status_counts.png"), dpi=300, bbox_inches="tight")
+            plt.savefig(plot_path("solver_status_counts.png"), dpi=300, bbox_inches="tight")
             plt.close()
 
         fallback_counts = bundle["summary"].get("fallback_solver_status_counts", {})
@@ -2255,7 +2307,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
             plt.bar(labels, values)
             plt.xticks(rotation=30, ha="right")
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "fallback_solver_status_counts.png"), dpi=300, bbox_inches="tight")
+            plt.savefig(plot_path("fallback_solver_status_counts.png"), dpi=300, bbox_inches="tight")
             plt.close()
 
 
