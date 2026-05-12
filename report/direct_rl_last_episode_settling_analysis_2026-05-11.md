@@ -4,173 +4,168 @@ Date: 2026-05-11
 
 ## Scope
 
-This note analyzes two questions for the direct safety-gate RL notebooks:
+This rewritten note updates the earlier settling analysis using the newer direct safety-gate RL runs with `rho_lyap = 0.99`.
 
-1. Why does the last episode appear not to reach and settle at the setpoint?
-2. Is noise being added in the last episode?
+The two questions remain:
 
-The analysis uses the `research-result-loop` workflow and focuses on:
+1. Why did the final episode appear not to settle in the earlier runs?
+2. Is the final episode still receiving exploration noise?
+
+The new evidence comes from:
+
+- pretrained latest complete run: `20260511_171056`
+- cold-start latest complete run: `20260511_170643`
+
+and is compared against the earlier runs used in the previous version of this note:
+
+- pretrained earlier comparison run: `20260511_104912`
+- cold-start earlier comparison run: `20260511_104852`
+
+## Files inspected
 
 - [DirectLyapunovSafetyGateRL_Pretrained.ipynb](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/DirectLyapunovSafetyGateRL_Pretrained.ipynb>)
 - [DirectLyapunovSafetyGateRL_ColdStart.ipynb](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/DirectLyapunovSafetyGateRL_ColdStart.ipynb>)
 - [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>)
 - [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>)
+- [pretrained rho=0.99 comparison table](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_pretrained/20260511_171056/comparison_table.csv>)
+- [cold-start rho=0.99 comparison table](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start/20260511_170643/comparison_table.csv>)
+- [pretrained rho=0.98 comparison table](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_pretrained/20260511_104912/comparison_table.csv>)
+- [cold-start rho=0.98 comparison table](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start/20260511_104852/comparison_table.csv>)
 
-## 1. Files inspected
+## What changed between the old and new comparison sets
 
-- [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>)
-- [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>)
-- [TD3Agent/agent.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/TD3Agent/agent.py>)
-- [pretrained old run bundle](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_pretrained/20260511_012037/sf_5aabb97c/bundle.pkl>)
-- [pretrained latest accessible run bundle](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_pretrained/20260511_104912/sf_5aabb97c/bundle.pkl>)
-- [cold-start old run bundle](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start/20260511_012047/sf_5aabb97c/bundle.pkl>)
-- [cold-start latest accessible run bundle](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Data/debug_exports/rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start/20260511_104852/sf_5aabb97c/bundle.pkl>)
+The relevant configuration change is not inferred from notebook memory. It is recorded directly inside the saved bundles:
 
-## 2. What the current method is doing
+- earlier comparison runs: `rho_lyap = 0.98`
+- newer comparison runs: `rho_lyap = 0.99`
 
-Each RL study runs 200 cycles, and each cycle has 800 control steps because the schedule contains two 400-step setpoints.
+So this update is specifically a `rho_lyap` comparison, not a vague "latest run" comparison.
 
-The most important scheduling fact is in [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>): the final cycle is always forced to be a test cycle by
+## Last-episode noise question
 
-$$
-\texttt{test\_cycle[-1] = True}.
-$$
+The answer is still no at the code-path level.
 
-Then in [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>), the test flag is used to disable behavior noise in the phase resolver. Under the current implementation:
+The final cycle is forced to be a test cycle in [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>), and test cycles map to deterministic behavior in [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>).
 
-- warm start test behavior uses no noise,
-- BC test behavior uses no noise,
-- full RL test behavior also uses no noise.
+So the final episode should still be interpreted as deterministic evaluation, not as an exploratory rollout.
 
-So the last episode is intended to be a deterministic evaluation episode, not an exploratory episode.
+One remaining limitation is that the exported safety step tables still do not include an explicit `behavior_noise_mode` column, so this remains a code-level conclusion rather than a direct saved-column confirmation.
 
-## 3. Mathematical interpretation
+## Main updated conclusion
 
-Let the final cycle be indexed by $k \in \{159200,\dots,159999\}$ for a 200-cycle, 800-step-per-cycle run. The observed plant output is $y_k$, and the scheduled reference is $y_{\mathrm{sp},k}$.
+The new `rho_lyap = 0.99` results materially change the earlier interpretation.
 
-The key distinction is:
+For the bounded-hard cases that originally motivated the settling concern, `rho_lyap = 0.99` clearly improves final-episode settling, especially for output 2. That means your hypothesis was directionally right: the older non-settling behavior was significantly influenced by the contraction setting.
 
-- training cycles may use exploratory behavior policy $\pi_{\mathrm{beh}}$,
-- the final test cycle uses deterministic evaluation behavior.
+However, the effect is not universal across all four-method variants:
 
-So if the last cycle does not settle well, that effect should be interpreted as
+- bounded-hard improves in both pretrained and cold-start
+- several other second-setpoint tails also improve
+- some first-setpoint tails worsen
+- the combined `u_prev + x_s_prev` case does not improve consistently
 
-$$
-y_k \not\to y_{\mathrm{sp},k}
-$$
+So `rho_lyap = 0.99` is a major part of the story, but not the only part.
 
-under the learned deterministic policy plus the safety filter, not as a consequence of active last-episode exploration noise.
+## Figure
 
-## 4. Main result interpretation
+The figure below compares final-episode tail-settling error for output 2 across all four cases, for pretrained and cold-start, under `rho_lyap = 0.98` versus `rho_lyap = 0.99`.
 
-### Q1. Are we adding noise in the last episode?
+![Final-episode settling comparison for rho](../last_episode_settling_rho99_compare_2026-05-11.png)
 
-For the current committed code, no.
+Figure 1. Final-episode tail mean absolute error to raw setpoint for output 2. Lower is better.
 
-The reason is structural, not inferential:
+## Quantitative results
 
-- [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>) forces the final cycle to be a test cycle.
-- [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>) maps test cycles to `behavior_noise_mode = "none"`.
+### Bounded-hard case: clear improvement with `rho_lyap = 0.99`
 
-So if you rerun the notebooks on the current code, the final episode should be noise-free.
+Final 50-step tail MAE to raw setpoint for output 2:
 
-One caveat: the latest accessible saved step tables I could inspect were generated before the new noise-diagnostic columns were added, so I cannot prove this from those old CSV fields directly. But the current code path is unambiguous.
-
-### Q2. Does the last episode actually fail to settle?
-
-For the bounded-hard case shared between the older and newer accessible runs, the quantitative evidence does not show a dramatic final-episode settling collapse.
-
-For episode 200 of the bounded-hard case:
-
-| Run | Reward mean | Fallback count | Output RMSE mean |
-| --- | ---: | ---: | ---: |
-| Pretrained old | -3.903 | 49 | 0.2349 |
-| Pretrained latest accessible | -2.906 | 52 | 0.1934 |
-| Cold-start old | -3.756 | 45 | 0.2063 |
-| Cold-start latest accessible | -3.146 | 51 | 0.2005 |
-
-So on episode-level RMSE, the latest accessible bounded-hard runs are roughly comparable or slightly better, not worse.
-
-However, there is evidence of changed terminal behavior in the last episode when we inspect tail errors more closely.
-
-Tail mean absolute error over the last 50 steps of each 400-step setpoint segment in episode 200:
-
-| Run | Segment 1 tail MAE, output 1 | Segment 1 tail MAE, output 2 | Segment 2 tail MAE, output 1 | Segment 2 tail MAE, output 2 |
+| Study | Seg 1, rho=0.98 | Seg 1, rho=0.99 | Seg 2, rho=0.98 | Seg 2, rho=0.99 |
 | --- | ---: | ---: | ---: | ---: |
-| Pretrained old | 0.0210 | 0.0700 | 0.0691 | 0.1897 |
-| Pretrained latest accessible | 0.0436 | 0.1433 | 0.0237 | 0.1542 |
-| Cold-start old | 0.0261 | 0.2019 | 0.0510 | 0.1687 |
-| Cold-start latest accessible | 0.0244 | 0.1650 | 0.0239 | 0.1740 |
+| Pretrained | 0.1431 | 0.0732 | 0.1593 | 0.1312 |
+| Cold start | 0.1631 | 0.0981 | 0.1682 | 0.0744 |
+
+This is the strongest updated result in the note. The bounded-hard final episode is substantially better with `rho_lyap = 0.99`, especially in the cold-start second setpoint segment.
+
+### Segment-2 tail settling across all cases
+
+Final 50-step tail MAE to raw setpoint for output 2:
+
+| Case | Pretrained rho=0.98 | Pretrained rho=0.99 | Cold rho=0.98 | Cold rho=0.99 |
+| --- | ---: | ---: | ---: | ---: |
+| `bounded_hard` | 0.1593 | 0.1312 | 0.1682 | 0.0744 |
+| `bounded_hard_u_prev_0p1` | 0.1380 | 0.1040 | 0.0527 | 0.0348 |
+| `bounded_hard_xs_prev_0p1` | 0.0893 | 0.0577 | 0.0412 | 0.1565 |
+| `bounded_hard_u_prev_0p1_xs_prev_0p1` | 0.0699 | 0.0618 | 0.0318 | 0.1028 |
 
 Interpretation:
 
-- The pretrained latest accessible run is worse in the first setpoint tail than the earlier run, especially for output 2.
-- The cold-start latest accessible run is mixed rather than uniformly worse.
-- The effect is therefore not "the last episode is broken everywhere." It is more subtle: the terminal behavior changed, but not in a way consistent with active noise injection in the last episode.
+- In the second setpoint tail, `rho_lyap = 0.99` improves 6 of 8 study-case combinations.
+- The clearest improvements are the bounded-hard cases and the pretrained `u_prev` and `x_s_prev` cases.
+- The two regressions are both in cold-start regularized variants:
+  - `bounded_hard_xs_prev_0p1`
+  - `bounded_hard_u_prev_0p1_xs_prev_0p1`
 
-## 5. Bugs, inconsistencies, or risks found
+### Segment-1 tail settling is more mixed
 
-### Risk 1: last-episode noise is not the cause
+For the first setpoint tail, `rho_lyap = 0.99` improves only 3 of 8 study-case combinations.
 
-The final cycle is explicitly marked as test, so the last-episode settling issue should not be blamed on behavior noise in the last episode itself.
+That means the benefit of higher `rho_lyap` is more consistent near the second final target than near the first final target.
 
-### Risk 2: the learned policy entering the final test cycle may be worse
+### Whole-run metrics can disagree with final-episode settling
 
-A deterministic final episode can still settle worse if the actor has drifted to a poorer policy by the time training reaches cycle 200. In that case, the symptom appears only at evaluation time even though the root cause came from earlier training episodes.
+Two cases are especially important here:
 
-### Risk 3: fallback interaction may mask the true source
+- pretrained `bounded_hard_u_prev_0p1` with `rho_lyap = 0.99`
+- cold-start `bounded_hard_u_prev_0p1_xs_prev_0p1` with `rho_lyap = 0.99`
 
-Episode 200 still contains nontrivial fallback counts, around 45 to 52 for the bounded-hard case. So the last-episode shape is not purely the raw actor policy. It is the actor plus the safety-gate correction path. A perceived lack of settling could therefore come from:
+Their whole-run averages are poor:
 
-- degraded actor candidate quality,
-- more frequent fallback usage,
-- or a different pattern of accepted-versus-corrected actions near the terminal setpoint.
+- pretrained `u_prev`: `reward_mean = -346.7`, `output_rmse_mean = 7.31`
+- cold-start combined: `reward_mean = -581.2`, `output_rmse_mean = 9.48`
 
-### Risk 4: the saved accessible runs do not yet expose the new noise diagnostics
+But that does **not** mean the final episode tail is equally poor in every segment. So for this report's question, whole-run reward is a misleading proxy. The settling question has to be answered from the final-episode tail itself.
 
-The latest accessible bundles I inspected predate the new per-step fields such as `behavior_noise_mode` and `parameter_noise_std`. That limits direct post hoc auditing of exactly what happened in those older saved trajectories.
+## Scientific interpretation
 
-## 6. Figure and report updates made
+The updated evidence supports the following interpretation:
 
-Generated figure:
+1. The earlier report was too cautious to center `rho_lyap` because it only had the `rho_lyap = 0.98` comparison set.
+2. With the newer `rho_lyap = 0.99` runs available, the bounded-hard settling issue is clearly reduced.
+3. So `rho_lyap` was indeed one of the important causes of the observed non-settling.
+4. But the regularized variants still show case-dependent behavior, which means the final-episode shape is still also influenced by target regularization, accepted-versus-corrected action mix, and fallback interaction.
 
-- [last_episode_settling_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_compare_2026-05-11.png>)
+## Updated answer to the two original questions
 
-![Last episode settling comparison](../last_episode_settling_compare_2026-05-11.png)
+### 1. Why were we not reaching and settling in the last episode?
 
-Figure 1. Last-episode output traces for the bounded-hard case, comparing the older accessible runs against the later accessible runs for the pretrained and cold-start studies.
+For the bounded-hard family, the new evidence indicates that `rho_lyap = 0.98` was a meaningful part of the problem. Increasing it to `0.99` improves the final tail noticeably.
 
-## 7. Literature connections
+For the regularized variants, the answer is more nuanced. Some improve with `rho_lyap = 0.99`, while others do not. So those cases still have additional structure beyond the contraction factor alone.
 
-No external literature was needed for this diagnosis. This note is based on local implementation inspection and saved run analysis.
+### 2. Are we adding noise in the last episode?
 
-## 8. Recommended next experiment
+Still no by design. The last episode is intended to be deterministic evaluation.
 
-The most useful next check is not another broad rerun. It is a targeted audit run using the current code so the new diagnostics are actually present in the saved step table.
+## Recommended next step
 
-Specifically:
+The most useful next experiment is now narrower than before.
 
-1. rerun one pretrained case and one cold-start case,
-2. inspect the final 800 steps,
-3. confirm directly from the saved per-step diagnostics that:
-   - `behavior_noise_mode == "none"` during episode 200,
-   - `parameter_noise_active == False` during episode 200,
-   - fallback counts and accepted-candidate counts near the final setpoint match the visual behavior.
+Instead of asking whether the final episode is noisy, the better question is:
 
-That would close the current observability gap in the older saved bundles.
+- why do the cold-start `x_s_prev` and combined regularized cases fail to benefit from `rho_lyap = 0.99` the way bounded-hard does?
 
-## 9. Remaining uncertainty
+The next targeted audit should therefore compare, for those two remaining problematic variants:
 
-The main uncertainty is that the latest saved bundles I could inspect were generated before the new behavior-noise diagnostic fields existed. So the answer to question 2 is code-level certain, but not yet corroborated by a new saved step-table trace from the updated implementation.
+1. target mismatch near the last 100 steps,
+2. accepted-candidate versus fallback counts in the last episode,
+3. whether the selected target is moving more than in the improved bounded-hard case.
 
-## 10. Files changed
+## Files changed
 
 - [report/direct_rl_last_episode_settling_analysis_2026-05-11.md](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/report/direct_rl_last_episode_settling_analysis_2026-05-11.md>)
-- [last_episode_settling_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_compare_2026-05-11.png>)
+- [last_episode_settling_rho99_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_rho99_compare_2026-05-11.png>)
 
-## 11. How to verify the analysis
+## Bottom line
 
-1. Open [utils/helpers.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/utils/helpers.py>) and confirm the final cycle is forced to test.
-2. Open [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>) and confirm test cycles map to `behavior_noise_mode = "none"`.
-3. Open [last_episode_settling_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_compare_2026-05-11.png>) and compare the last-episode tails.
-4. If you rerun the notebooks now, inspect the saved step table for episode 200 and confirm the new behavior-noise fields are zero or inactive there.
+The new complete `rho_lyap = 0.99` runs support your hypothesis for the main bounded-hard settling issue. The earlier apparent last-episode non-settling was significantly tied to using `rho_lyap = 0.98`. But `rho_lyap = 0.99` is not a complete universal fix, because a subset of the regularized variants still shows mixed or worse tail behavior.
