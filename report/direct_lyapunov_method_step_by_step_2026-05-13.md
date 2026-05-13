@@ -20,8 +20,7 @@ Important scope note:
 That distinction matters because the focused frozen-output notebook uses a specific direct-MPC configuration with:
 
 - `rho_lyap = 0.98`
-- `objective_steady_input_cost = False`
-- `objective_terminal_cost = False`
+- `Rdu_diag = [1, 1]`
 - `first_step_contraction_on = True`
 
 while the newer four-method and RL notebooks reuse the same direct solver structure but with later study settings such as `rho_lyap = 0.99`.
@@ -382,19 +381,15 @@ If the RL candidate is rejected, the supervisor calls the direct Lyapunov tracki
 
 The fallback solves a finite-horizon optimization over an input sequence $\{u_0,\dots,u_{N_C-1}\}$ and a predicted state trajectory $\{z_1,\dots,z_{N_P}\}$.
 
-In general the solver supports an objective of the form
+For the direct method documented here, the fallback objective is
 
 $$
 \min
 \sum_{i=0}^{N_P-1}\|y_{k+i+1} - y_{\mathrm{target},k}\|_{Q_y}^2
 +
-\mathbf{1}_{S_u}\sum_{i=0}^{N_C-1}\|u_i-u_{s,k}\|_{S_u}^2
-+
 \|u_0-u_{k-1}\|_{R_{\Delta u}}^2
 +
 \sum_{i=1}^{N_C-1}\|u_i-u_{i-1}\|_{R_{\Delta u}}^2
-+
-\mathbf{1}_{P}\|x_{N_P}-x_{s,k}\|_{P_x}^2
 $$
 
 subject to
@@ -421,25 +416,10 @@ $$
 (x_1 - x_{s,k})^\top P_x (x_1 - x_{s,k}) \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
 
-However, the active notebook configuration matters here.
-
 For [DirectLyapunovMPC_FrozenOutputDisturbance.ipynb](../DirectLyapunovMPC_FrozenOutputDisturbance.ipynb) and for the current four-method and RL direct notebooks, the direct solver is built with:
 
-- `objective_steady_input_cost = False`
-- `objective_terminal_cost = False`
 - `Rdu_diag = [1, 1]`
 - `first_step_contraction_on = True`
-
-and in hard mode the solver explicitly zeros the steady-input objective term and the terminal-cost objective term before solving. So the active hard-mode direct MPC objective in these notebooks reduces to:
-
-$$
-\min
-\sum_{i=0}^{N_P-1}\|y_{k+i+1} - y_{\mathrm{target},k}\|_{Q_y}^2
-+
-\|u_0-u_{k-1}\|_{R_{\Delta u}}^2
-+
-\sum_{i=1}^{N_C-1}\|u_i-u_{i-1}\|_{R_{\Delta u}}^2
-$$
 
 subject to:
 

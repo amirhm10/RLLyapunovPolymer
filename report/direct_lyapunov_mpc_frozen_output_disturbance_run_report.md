@@ -178,9 +178,8 @@ All four cases share the same plant, disturbance schedule, setpoint schedule, ho
 
 - `use_target_output_for_tracking=False`
 - `use_target_on_solver_fail=False`
-- `objective_steady_input_cost=False`
-- `objective_terminal_cost=False`
-- `terminal_cost_scale=0.0`
+- `Rdu_diag=[1.0, 1.0]`
+- `first_step_contraction_on=True`
 
 Therefore solver failures hold the previous input and are logged through the `method_counts` and `solver_status_counts` fields. The comparison artifacts saved at the timestamped study root are:
 

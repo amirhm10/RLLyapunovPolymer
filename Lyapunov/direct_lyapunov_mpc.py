@@ -164,12 +164,6 @@ def _as_scalar_float(value: Any, name: str) -> float:
 
 
 class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapunovMpcSolver):
-    def _objective_steady_input_cost_on(self) -> bool:
-        return bool(getattr(self, "objective_steady_input_cost", False))
-
-    def _objective_terminal_cost_on(self) -> bool:
-        return bool(getattr(self, "objective_terminal_cost", False))
-
     def _evaluate_soft_tracking_solution(
         self,
         *,
@@ -292,37 +286,6 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
         options=None,
     ):
         lyapunov_mode = _as_mode(lyapunov_mode, ("hard", "soft"), "lyapunov_mode")
-        if lyapunov_mode == "hard":
-            original_su_mat = self.Su_mat
-            original_terminal_cost_scale = self.terminal_cost_scale
-            if not self._objective_steady_input_cost_on():
-                self.Su_mat = np.zeros_like(self.Su_mat)
-            if not self._objective_terminal_cost_on():
-                self.terminal_cost_scale = 0.0
-            try:
-                result = super().solve_tracking_mpc_step(
-                    IC_opt=IC_opt,
-                    bnds=bnds,
-                    y_target=y_target,
-                    u_prev_dev=u_prev_dev,
-                    x0_aug=x0_aug,
-                    x_s=x_s,
-                    u_s=u_s,
-                    alpha_terminal=alpha_terminal,
-                    rho_lyap=rho_lyap,
-                    eps_lyap=eps_lyap,
-                    first_step_contraction_on=first_step_contraction_on,
-                    options=options,
-                )
-            finally:
-                self.Su_mat = original_su_mat
-                self.terminal_cost_scale = original_terminal_cost_scale
-            result.lyapunov_mode = "hard"
-            result.slack_lyap = 0.0
-            result.slack_penalty = float(slack_penalty)
-            result.relaxed_contraction_satisfied = result.first_step_contraction_satisfied
-            result.relaxed_contraction_violation = result.contraction_constraint_violation
-            return result
 
         if not HAS_CVXPY:
             raise ImportError("CVXPY is required for the direct Lyapunov MPC solver.")
@@ -346,10 +309,11 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
             and np.isfinite(float(alpha_terminal))
         )
         active_first_step_contraction = bool(first_step_contraction_on)
+        use_soft_slack = bool(lyapunov_mode == "soft" and active_first_step_contraction)
 
         u_var = cp.Variable((self.NC, self.n_u))
         x_var = cp.Variable((self.n_aug, self.NP + 1))
-        lyap_slack = cp.Variable(nonneg=True)
+        lyap_slack = cp.Variable(nonneg=True) if use_soft_slack else None
 
         constraints = [x_var[:, 0] == x0_aug]
         if lower is not None:
@@ -372,10 +336,6 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
                 y_expr = y_expr + self.D @ u_var[ctrl_idx, :]
             objective += cp.quad_form(y_expr - y_target, self.Qy_mat)
 
-        if self._objective_steady_input_cost_on():
-            for ctrl_idx in range(self.NC):
-                objective += cp.quad_form(u_var[ctrl_idx, :] - u_s, self.Su_mat)
-
         if self.Rdu_mat is not None:
             objective += cp.quad_form(u_var[0, :] - u_prev_dev, self.Rdu_mat)
             for ctrl_idx in range(1, self.NC):
@@ -383,8 +343,6 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
 
         terminal_error = x_var[:self.n_x, self.NP] - x_s
         terminal_value_expr = cp.quad_form(terminal_error, self.P_x)
-        if self._objective_terminal_cost_on():
-            objective += self.terminal_cost_scale * terminal_value_expr
         if active_terminal_constraint:
             constraints.append(terminal_value_expr <= float(alpha_terminal))
 
@@ -393,9 +351,13 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
             V_bound = float(lyapunov_bound(V_k, rho=rho_lyap, eps_lyap=eps_lyap))
             first_step_error = x_var[:self.n_x, 1] - x_s
             first_step_value_expr = cp.quad_form(first_step_error, self.P_x)
-            constraints.append(first_step_value_expr <= V_bound + lyap_slack)
+            if use_soft_slack:
+                constraints.append(first_step_value_expr <= V_bound + lyap_slack)
+            else:
+                constraints.append(first_step_value_expr <= V_bound)
 
-        objective += float(slack_penalty) * lyap_slack
+        if use_soft_slack:
+            objective += float(slack_penalty) * lyap_slack
         problem = cp.Problem(cp.Minimize(objective), constraints)
 
         ic_flat = np.asarray(IC_opt, float).reshape(-1)
@@ -409,10 +371,14 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
                 pass
 
         if solver_pref_override is None:
-            solver_pref = self.solver_pref_conic
+            needs_conic = bool(active_terminal_constraint or active_first_step_contraction)
+            solver_pref = self.solver_pref_conic if needs_conic else self.solver_pref_qp
         else:
             solver_pref = solver_pref_override
-        solver_sequence = tracking_solver_sequence(True, solver_pref=solver_pref)
+        solver_sequence = tracking_solver_sequence(
+            bool(active_terminal_constraint or active_first_step_contraction),
+            solver_pref=solver_pref,
+        )
 
         last_status = None
         last_solver = None
@@ -435,26 +401,45 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
                 last_nit = _extract_num_iters(problem)
                 if problem.value is not None:
                     last_objective = float(problem.value)
-                if u_var.value is None or x_var.value is None or lyap_slack.value is None:
+                if u_var.value is None or x_var.value is None:
+                    continue
+                if use_soft_slack and lyap_slack is not None and lyap_slack.value is None:
                     continue
 
                 u_value = np.asarray(u_var.value, float)
                 x_value = np.asarray(x_var.value, float)
-                last_slack = float(np.asarray(lyap_slack.value).item())
-                last_eval = self._evaluate_soft_tracking_solution(
-                    u_sequence=u_value,
-                    x_pred=x_value,
-                    x0_aug=x0_aug,
-                    x_s=x_s,
-                    lower=lower,
-                    upper=upper,
-                    alpha_terminal=alpha_terminal,
-                    terminal_constraint_active=active_terminal_constraint,
-                    rho_lyap=rho_lyap,
-                    eps_lyap=eps_lyap,
-                    slack_lyap=last_slack,
-                    status=problem.status,
-                )
+                if use_soft_slack and lyap_slack is not None:
+                    last_slack = float(np.asarray(lyap_slack.value).item())
+                    last_eval = self._evaluate_soft_tracking_solution(
+                        u_sequence=u_value,
+                        x_pred=x_value,
+                        x0_aug=x0_aug,
+                        x_s=x_s,
+                        lower=lower,
+                        upper=upper,
+                        alpha_terminal=alpha_terminal,
+                        terminal_constraint_active=active_terminal_constraint,
+                        rho_lyap=rho_lyap,
+                        eps_lyap=eps_lyap,
+                        slack_lyap=last_slack,
+                        status=problem.status,
+                    )
+                else:
+                    last_slack = 0.0
+                    last_eval = self._evaluate_tracking_solution_with_contraction(
+                        u_sequence=u_value,
+                        x_pred=x_value,
+                        x0_aug=x0_aug,
+                        x_s=x_s,
+                        lower=lower,
+                        upper=upper,
+                        alpha_terminal=alpha_terminal,
+                        terminal_constraint_active=active_terminal_constraint,
+                        first_step_contraction_on=active_first_step_contraction,
+                        rho_lyap=rho_lyap,
+                        eps_lyap=eps_lyap,
+                        status=problem.status,
+                    )
                 if problem.status in _OPTIMAL_STATUSES and last_eval["accepted"]:
                     return SimpleNamespace(
                         success=True,
@@ -476,11 +461,17 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
                         contraction_margin=last_eval["contraction_margin"],
                         first_step_contraction_satisfied=last_eval["first_step_contraction_satisfied"],
                         contraction_constraint_violation=last_eval["contraction_constraint_violation"],
-                        lyapunov_mode="soft",
+                        lyapunov_mode=lyapunov_mode,
                         slack_lyap=last_slack,
                         slack_penalty=float(slack_penalty),
-                        relaxed_contraction_satisfied=last_eval["relaxed_contraction_satisfied"],
-                        relaxed_contraction_violation=last_eval["relaxed_contraction_violation"],
+                        relaxed_contraction_satisfied=
+                        last_eval["relaxed_contraction_satisfied"]
+                        if use_soft_slack
+                        else last_eval["first_step_contraction_satisfied"],
+                        relaxed_contraction_violation=
+                        last_eval["relaxed_contraction_violation"]
+                        if use_soft_slack
+                        else last_eval["contraction_constraint_violation"],
                     )
             except Exception as exc:
                 last_error = repr(exc)
@@ -517,15 +508,23 @@ class DirectOutputDisturbanceLyapunovMpcSolver(FirstStepContractionTrackingLyapu
             contraction_constraint_violation=None
             if last_eval is None
             else last_eval["contraction_constraint_violation"],
-            lyapunov_mode="soft",
+            lyapunov_mode=lyapunov_mode,
             slack_lyap=0.0 if last_slack is None else float(last_slack),
             slack_penalty=float(slack_penalty),
             relaxed_contraction_satisfied=None
             if last_eval is None
-            else last_eval["relaxed_contraction_satisfied"],
+            else (
+                last_eval["relaxed_contraction_satisfied"]
+                if use_soft_slack
+                else last_eval["first_step_contraction_satisfied"]
+            ),
             relaxed_contraction_violation=None
             if last_eval is None
-            else last_eval["relaxed_contraction_violation"],
+            else (
+                last_eval["relaxed_contraction_violation"]
+                if use_soft_slack
+                else last_eval["contraction_constraint_violation"]
+            ),
         )
 
 
@@ -545,9 +544,6 @@ def design_direct_lyapunov_mpc_solver(
     Rdu_diag=None,
     terminal_set_on=True,
     terminal_alpha_scale=1.0,
-    terminal_cost_scale=1.0,
-    objective_steady_input_cost=False,
-    objective_terminal_cost=False,
     D=None,
     solver_pref_qp=None,
     solver_pref_conic=None,
@@ -579,22 +575,14 @@ def design_direct_lyapunov_mpc_solver(
         Rdu_diag=Rdu_diag,
         terminal_set_on=terminal_set_on,
         terminal_alpha_scale=terminal_alpha_scale,
-        terminal_cost_scale=terminal_cost_scale,
+        terminal_cost_scale=0.0,
         D=D,
         solver_pref_qp=solver_pref_qp,
         solver_pref_conic=solver_pref_conic,
     )
-    solver.objective_steady_input_cost = bool(objective_steady_input_cost)
-    solver.objective_terminal_cost = bool(objective_terminal_cost)
     if return_design:
         design = dict(design_debug)
         design.update({"P_x": np.asarray(P_x, float).copy(), "K_x": np.asarray(K_x, float).copy(), "Su_diag_used": Su_used})
-        design.update(
-            {
-                "objective_steady_input_cost": bool(objective_steady_input_cost),
-                "objective_terminal_cost": bool(objective_terminal_cost),
-            }
-        )
         return solver, design
     return solver
 
@@ -764,8 +752,6 @@ def prepare_direct_output_disturbance_step(
         else np.asarray(target_info.get("exact_active_upper_mask"), bool).copy(),
         "slack_lyap": 0.0,
         "slack_penalty": float(slack_penalty),
-        "objective_steady_input_cost": bool(getattr(LMPC_obj, "objective_steady_input_cost", False)),
-        "objective_terminal_cost": bool(getattr(LMPC_obj, "objective_terminal_cost", False)),
     }
     return {
         "target_info": target_info,
@@ -1263,8 +1249,6 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "contraction_constraint_violation": info.get("contraction_constraint_violation"),
             "slack_lyap": info.get("slack_lyap"),
             "slack_penalty": info.get("slack_penalty"),
-            "objective_steady_input_cost": info.get("objective_steady_input_cost"),
-            "objective_terminal_cost": info.get("objective_terminal_cost"),
             "relaxed_contraction_satisfied": info.get("relaxed_contraction_satisfied"),
             "relaxed_contraction_violation": info.get("relaxed_contraction_violation"),
             "reward": info.get("reward"),

@@ -57,8 +57,7 @@ So the comparisons below are mechanistic and directional. They are not all apple
 The saved direct result bundle analyzed in this report comes from an earlier ten-case matrix, not the older four-case matrix. The saved run settings used for the analysis below are:
 
 - `use_target_output_for_tracking = True`
-- `objective_steady_input_cost = False`
-- `objective_terminal_cost = False`
+- direct objective = tracking + `Rdu`
 - `plant_mode = "nominal"`
 - `n_tests = 2`
 - `set_points_len = 1500`
