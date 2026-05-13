@@ -12,6 +12,20 @@ This note reconstructs, mathematically and step by step, the direct Lyapunov con
 
 The goal here is not result interpretation. The goal is to write down what the implemented algorithm actually is, in the same order as the code executes it, and in notation that we can later extend or modify.
 
+Important scope note:
+
+- this note was written from the three notebooks listed above
+- it was not a line-by-line reconstruction of [DirectLyapunovMPC_FrozenOutputDisturbance.ipynb](../DirectLyapunovMPC_FrozenOutputDisturbance.ipynb)
+
+That distinction matters because the focused frozen-output notebook uses a specific direct-MPC configuration with:
+
+- `rho_lyap = 0.98`
+- `objective_steady_input_cost = False`
+- `objective_terminal_cost = False`
+- `first_step_contraction_on = True`
+
+while the newer four-method and RL notebooks reuse the same direct solver structure but with later study settings such as `rho_lyap = 0.99`.
+
 ## Files inspected
 
 - [Simulation/run_rl_lyapunov.py](../Simulation/run_rl_lyapunov.py)
@@ -41,6 +55,8 @@ The difference between the three notebooks is only where the candidate action co
   the candidate comes from a TD3 actor initialized from MPC-style pretraining.
 - `DirectLyapunovSafetyGateRL_ColdStart.ipynb`:
   the candidate comes from a TD3 actor that starts with teacher-driven warmup and then online RL.
+
+The focused notebook [DirectLyapunovMPC_FrozenOutputDisturbance.ipynb](../DirectLyapunovMPC_FrozenOutputDisturbance.ipynb) should be treated as a closely related but separate reconstruction target. It uses the same direct target-selector path and the same first-step-contraction direct MPC solver family, but it is a direct-MPC-only notebook and not an RL-gate notebook.
 
 ## 2. Coordinate system and notation
 
@@ -295,7 +311,7 @@ $$
 V_{\mathrm{bound},k} = \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
 
-The candidate is accepted if and only if all three tests pass:
+The gate code can support three tests:
 
 $$
 u_{\min} \le u_k^{\mathrm{RL}} \le u_{\max}
@@ -309,17 +325,32 @@ $$
 V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
 
-In the current notebooks:
+But the current pretrained and cold-start direct-gate notebooks do not pass `du_min` or `du_max` into `run_rl_train(...)`. So for the saved RL notebooks covered by this note, the active acceptance test is only:
+
+$$
+u_{\min} \le u_k^{\mathrm{RL}} \le u_{\max}
+$$
+
+and
+
+$$
+V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
+$$
+
+So there is no hard move-bound check active in the present RL safety layer. The move-size effect enters through the direct MPC objective and the reward, not through an activated `\Delta u` safety constraint.
+
+In the RL notebooks covered here:
 
 - $\rho = 0.99$
 - $\varepsilon_{\mathrm{lyap}} = 10^{-9}$
 
-and the gate returns explicit reject reasons:
+When move bounds are not activated, the practical reject reasons reduce to:
 
 - `input_bounds`
-- `move_bounds`
 - `lyapunov`
 - `target_unavailable`
+
+The `move_bounds` path exists in the generic implementation, but it is not active in the current direct-gate notebook calls.
 
 ## 8. Step D: direct Lyapunov MPC fallback
 
@@ -327,7 +358,7 @@ If the RL candidate is rejected, the supervisor calls the direct Lyapunov tracki
 
 The fallback solves a finite-horizon optimization over an input sequence $\{u_0,\dots,u_{N_C-1}\}$ and a predicted state trajectory $\{z_1,\dots,z_{N_P}\}$.
 
-The implemented objective is of the form
+In general the solver supports an objective of the form
 
 $$
 \min
@@ -365,6 +396,35 @@ $$
 $$
 (x_1 - x_{s,k})^\top P_x (x_1 - x_{s,k}) \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
+
+However, the active notebook configuration matters here.
+
+For [DirectLyapunovMPC_FrozenOutputDisturbance.ipynb](../DirectLyapunovMPC_FrozenOutputDisturbance.ipynb) and for the current four-method and RL direct notebooks, the direct solver is built with:
+
+- `objective_steady_input_cost = False`
+- `objective_terminal_cost = False`
+- `Rdu_diag = [1, 1]`
+- `first_step_contraction_on = True`
+
+and in hard mode the solver explicitly zeros the steady-input objective term and the terminal-cost objective term before solving. So the active hard-mode direct MPC objective in these notebooks reduces to:
+
+$$
+\min
+\sum_{i=0}^{N_P-1}\|y_{k+i+1} - y_{\mathrm{target},k}\|_{Q_y}^2
++
+\|u_0-u_{k-1}\|_{R_{\Delta u}}^2
++
+\sum_{i=1}^{N_C-1}\|u_i-u_{i-1}\|_{R_{\Delta u}}^2
+$$
+
+subject to:
+
+- plant dynamics
+- input bounds
+- terminal set constraint when active
+- first-step Lyapunov contraction constraint
+
+So for the active direct notebooks, the Lyapunov term is not an objective penalty. It appears as a first-step constraint, which is the formulation you described.
 
 The most important target-definition choice is
 
@@ -521,7 +581,6 @@ Given current observer estimate zhat_k, previous input u_{k-1}, and setpoint y_s
 4. Evaluate the candidate:
       accept if
       - input bounds hold
-      - move bounds hold
       - V_{k+1}^cand <= rho V_k + eps_lyap
 
 5. If RL candidate is rejected, solve direct tracking MPC around the selected target.
