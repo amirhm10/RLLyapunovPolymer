@@ -18,3 +18,47 @@ report/*.fls
 report/*.log
 report/*.out
 report/*.toc
+
+# Generated run/debug exports
+Data/debug_exports/
+Data/mpc_offsetfree_steady_state_debug/
+agent_result/
+mpc_result/
+safety_filter_debug/
+direct_lyapunov_mpc/
+
+# Generated figures and result snapshots
+report/figures/
+report/*.pdf
+last_episode*.png
+warm_start_reward_and_sigma_*.png
+pretrained_anchor_bias_tracking_*.png
+direct_four_method_disturbance_last_episode_target_vs_setpoint_*.png
+
+# Slide/build outputs and preview renders
+MACC2026/*.pdf
+MACC2026/*.aux
+MACC2026/*.bbl
+MACC2026/*.blg
+MACC2026/*.log
+MACC2026/*.nav
+MACC2026/*.out
+MACC2026/*.snm
+MACC2026/*.toc
+MACC2026/Figures/*.png
+MACC2026/*check*.png
+MACC2026/*_page*.png
+MACC2026/Poster slides/
+StatsControl2026/*.pdf
+StatsControl2026/*.aux
+StatsControl2026/*.log
+StatsControl2026/*.nav
+StatsControl2026/*.out
+StatsControl2026/*.snm
+StatsControl2026/*.toc
+StatsControl2026/rl_math_check*.png
+
+# Local validation caches
+.pycache_tmp/
+.pycache_validation/
+pycache_validation/
