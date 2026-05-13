@@ -26,6 +26,30 @@ That distinction matters because the focused frozen-output notebook uses a speci
 
 while the newer four-method and RL notebooks reuse the same direct solver structure but with later study settings such as `rho_lyap = 0.99`.
 
+## Current alignment verdict
+
+Relative to the formulation you described, the RL notebooks are only partially aligned.
+
+What is aligned:
+
+- the online RL safety gate checks one-step contraction only, not a multi-step Lyapunov decrease
+- the current RL notebook calls do not activate any hard `\Delta u` safety bound, because they do not pass `du_min` or `du_max`
+- the direct fallback objective is the MPC tracking objective with move suppression, not a Lyapunov objective penalty
+- the direct fallback is called with `first_step_contraction_on = True`
+
+What is not fully aligned yet:
+
+- the direct fallback solver is still constructed with `terminal_set_on = True` in the RL notebooks
+- therefore the fallback path may still enforce a terminal-set constraint unless it is skipped online because `\alpha` is too small
+
+So if the intended method statement is:
+
+$$
+\text{MPC objective} + \text{first-step contraction check only},
+$$
+
+then the current RL notebooks match that statement on the candidate-action gate and on the objective terms, but not perfectly on the fallback constraints because the terminal set is still enabled in the solver construction.
+
 ## Files inspected
 
 - [Simulation/run_rl_lyapunov.py](../Simulation/run_rl_lyapunov.py)
@@ -311,7 +335,7 @@ $$
 V_{\mathrm{bound},k} = \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
 
-The gate code can support three tests:
+The generic gate code can support three tests:
 
 $$
 u_{\min} \le u_k^{\mathrm{RL}} \le u_{\max}
@@ -325,7 +349,7 @@ $$
 V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
 $$
 
-But the current pretrained and cold-start direct-gate notebooks do not pass `du_min` or `du_max` into `run_rl_train(...)`. So for the saved RL notebooks covered by this note, the active acceptance test is only:
+But the current pretrained and cold-start direct-gate notebooks do not pass `du_min` or `du_max` into `run_rl_train(...)`. So for the saved RL notebooks covered by this note, the active acceptance test is only the first-step candidate check:
 
 $$
 u_{\min} \le u_k^{\mathrm{RL}} \le u_{\max}
@@ -421,10 +445,40 @@ subject to:
 
 - plant dynamics
 - input bounds
-- terminal set constraint when active
 - first-step Lyapunov contraction constraint
+- terminal set constraint only if the terminal-set path remains active
 
-So for the active direct notebooks, the Lyapunov term is not an objective penalty. It appears as a first-step constraint, which is the formulation you described.
+So for the active direct notebooks, the Lyapunov term is not an objective penalty. It appears as a first-step constraint.
+
+This is the exact objective-side formulation you described:
+
+$$
+\text{tracking cost} + \text{move penalty},
+$$
+
+with Lyapunov used as a first-step acceptability condition rather than as an added objective term.
+
+The one remaining mismatch is constraint-side rather than objective-side:
+
+- in the frozen-output direct notebook and in the current RL notebooks, the solver is created with `terminal_set_on = True`
+- inside the online step, that terminal constraint is skipped only when the computed `\alpha` is very small
+
+Therefore the present RL fallback is not literally "first-step contraction and nothing else" in every step. It is better described as:
+
+$$
+\text{tracking cost} + \text{move penalty}
+$$
+
+subject to first-step contraction, and sometimes also a terminal-set constraint.
+
+If you want the method statement to be exactly
+
+$$
+\text{tracking cost} + \text{move penalty}
+\quad\text{subject only to first-step contraction},
+$$
+
+then the report should treat that as the intended simplified formulation, while also noting that the current RL notebook construction still leaves `terminal_set_on=True`.
 
 The most important target-definition choice is
 
