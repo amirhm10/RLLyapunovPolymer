@@ -22,10 +22,12 @@ report/*.toc
 # Generated run/debug exports
 Data/debug_exports/
 Data/mpc_offsetfree_steady_state_debug/
+Data/standard_lyap_first_step_contraction/
 agent_result/
 mpc_result/
 safety_filter_debug/
 direct_lyapunov_mpc/
+results/
 
 # Generated figures and result snapshots
 report/figures/
