@@ -8,6 +8,7 @@ Added a new consolidated report:
 
 and updated:
 
+- [AGENTS.md](../AGENTS.md)
 - [report/README.md](../report/README.md)
 
 ## What the new report covers
@@ -25,6 +26,8 @@ and updated:
 - The online BC phase stores the executed safe action in both the replay buffer and BC buffer, not the raw teacher action before filtering.
 - The Lyapunov certificate is centered on the admissible steady target, while the reward and current tracking objective still reference the raw requested setpoint.
 - The current direct RL notebook calls do not activate hard move-bound checks in the gate.
+- The report was reformatted to avoid LaTeX math delimiters in `.md` files and use Markdown-safe plain text or fenced `text` blocks instead.
+- `AGENTS.md` now explicitly tells future report-writing tasks not to use `$...$` or `$$...$$` inside Markdown reports.
 
 ## Validation
 
