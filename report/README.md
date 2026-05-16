@@ -1,6 +1,8 @@
 # Report Directory
 
 ## Canonical Current Documents
+- `direct_lyapunov_direct_and_rl_method_2026-05-16.md`
+  Consolidated mathematical and algorithmic report for the current direct Lyapunov method family, covering direct-only MPC, direct safety-gated RL in pretrained and cold-start modes, and the distinction between offline pretraining BC and online teacher BC.
 - `direct_lyapunov_mpc_frozen_output_disturbance_run_report.md`
   Browsable report for the direct frozen-output-disturbance Lyapunov MPC four-scenario notebook, including the April 23, 2026 diagnostic run interpretation, copied figures, ablation comparison, and literature context.
 - `direct_lyapunov_mpc_frozen_output_disturbance.tex`
