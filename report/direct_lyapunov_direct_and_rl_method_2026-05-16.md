@@ -17,6 +17,8 @@ It also explains how behavioral cloning works in two different places in this co
 
 The goal is to be mathematically explicit and implementation-faithful. This report follows the code paths that are active now, rather than describing an idealized variant.
 
+Equation-style statements below use standard Markdown math notation.
+
 ## Primary files inspected
 
 - [DirectLyapunovMPC_FourMethodDisturbance.ipynb](../DirectLyapunovMPC_FourMethodDisturbance.ipynb)
@@ -66,10 +68,8 @@ For [DirectLyapunovSafetyGateRL_ColdStart.ipynb](../DirectLyapunovSafetyGateRL_C
 
 The current direct study helpers define a two-setpoint disturbance study with:
 
-```text
-y_sp^(1) = [4.5; 324.0]
-y_sp^(2) = [3.4; 321.0]
-```
+- first setpoint $y_{\mathrm{sp}}^{(1)} = [4.5,\ 324.0]^\top$
+- second setpoint $y_{\mathrm{sp}}^{(2)} = [3.4,\ 321.0]^\top$
 
 repeated over `n_tests = 200` cycles with `set_points_len = 800` time steps per setpoint block.
 
@@ -106,20 +106,16 @@ The implementation works mostly in scaled deviation coordinates.
 
 Let:
 
-- `x_k in R^{n_x}` be the physical plant state in controller coordinates
-- `d_k in R^{n_y}` be the output-disturbance state
-- `z_k = [x_k; d_k]` be the augmented state
-- `zhat_k = [xhat_k; dhat_k]` be the observer estimate
-- `u_k in R^{n_u}` be the deviation input
-- `y_k in R^{n_y}` be the deviation output
-- `y_{sp,k} in R^{n_y}` be the requested output setpoint
-- `(x_{s,k}, u_{s,k}, d_{s,k}, y_{s,k})` be the direct steady target selected at time step `k`
+- $x_k \in \mathbb{R}^{n_x}$ be the physical plant state in controller coordinates
+- $d_k \in \mathbb{R}^{n_y}$ be the output-disturbance state
+- $z_k = [x_k;\ d_k]$ be the augmented state
+- $\hat z_k = [\hat x_k;\ \hat d_k]$ be the observer estimate
+- $u_k \in \mathbb{R}^{n_u}$ be the deviation input
+- $y_k \in \mathbb{R}^{n_y}$ be the deviation output
+- $y_{\mathrm{sp},k} \in \mathbb{R}^{n_y}$ be the requested output setpoint
+- $(x_{s,k}, u_{s,k}, d_{s,k}, y_{s,k})$ be the direct steady target selected at time step $k$
 
-The Lyapunov layer uses the physical-state error only:
-
-```text
-e_{x,k} = xhat_k - x_{s,k}.
-```
+The Lyapunov layer uses only the physical-state tracking error, $e_{x,k} = \hat x_k - x_{s,k}$.
 
 The current RL interface uses:
 
@@ -137,66 +133,49 @@ The direct notebooks call `load_and_prepare_system_data(...)` with:
 
 The effective linear augmented model used by the direct target and direct RL logic is:
 
-```text
+$$
 x_{k+1} = A x_k + B u_k
-```
+$$
 
-```text
+$$
 d_{k+1} = d_k
-```
+$$
 
-```text
-y_k = C x_k + d_k.
-```
+$$
+y_k = C x_k + d_k
+$$
 
 So the disturbance is frozen in the output equation and does not drive the physical-state dynamics.
 
 The observer update used in the rollout is:
 
-```text
-zhat_{k+1}
+$$
+\hat z_{k+1}
 =
-A_{aug} zhat_k
+A_{\mathrm{aug}} \hat z_k
 +
-B_{aug} u_k
+B_{\mathrm{aug}} u_k
 +
-L(y_k - C_{aug} zhat_k).
-```
+L \left( y_k - C_{\mathrm{aug}} \hat z_k \right).
+$$
 
 This is the common backbone for both the direct-only and RL-gated paths.
 
 ## 5. RL state and action map
 
-The RL state is built by [utils/helpers.py](../utils/helpers.py) as:
-
-```text
-s_k = S(zhat_k, y_{sp,k}, u_{k-1})
-```
+The RL state is built by [utils/helpers.py](../utils/helpers.py) as $s_k = S(\hat z_k, y_{\mathrm{sp},k}, u_{k-1})$,
 
 where each channel is min-max mapped into `[-1,1]`.
 
-More explicitly:
+More explicitly, $s_k$ is the concatenation of three min-max normalized blocks:
 
-```text
-s_k =
-[
-2((zhat_k - z_{min}) / (z_{max} - z_{min})) - 1;
-2((y_{sp,k} - y_{sp,min}) / (y_{sp,max} - y_{sp,min})) - 1;
-2((u_{k-1} - u_{min}) / (u_{max} - u_{min})) - 1
-].
-```
+- normalized observer state: $2 \bigl( (\hat z_k - z_{\min}) / (z_{\max} - z_{\min}) \bigr) - 1$
+- normalized setpoint: $2 \bigl( (y_{\mathrm{sp},k} - y_{\mathrm{sp},\min}) / (y_{\mathrm{sp},\max} - y_{\mathrm{sp},\min}) \bigr) - 1$
+- normalized previous input: $2 \bigl( (u_{k-1} - u_{\min}) / (u_{\max} - u_{\min}) \bigr) - 1$
 
-The actor outputs
+The actor outputs $a_k = \pi_\theta(s_k)$, with each action channel constrained to $[-1, 1]$.
 
-```text
-a_k = pi_theta(s_k) in [-1,1]^{n_u}.
-```
-
-That action is mapped back into the admissible deviation-input box:
-
-```text
-u_k^{RL} = T(a_k),
-```
+That action is mapped back into the admissible deviation-input box as $u_k^{\mathrm{RL}} = T(a_k)$,
 
 where the code uses an affine map from `[-1,1]` to `[u_{min}, u_{max}]`.
 
@@ -208,9 +187,9 @@ This is the logic in [DirectLyapunovMPC_FourMethodDisturbance.ipynb](../DirectLy
 
 At each time step the controller forms:
 
-- the augmented estimate `zhat_k`
-- the previous input `u_{k-1}`
-- the requested setpoint `y_{sp,k}`
+- the augmented estimate $\hat z_k$
+- the previous input $u_{k-1}$
+- the requested setpoint $y_{\mathrm{sp},k}$
 
 These are the inputs to the direct target selector.
 
@@ -218,147 +197,135 @@ These are the inputs to the direct target selector.
 
 The direct selector first tries to find an admissible steady target satisfying:
 
-```text
+$$
 (I-A)x_{s,k} - B u_{s,k} = 0
-```
+$$
 
-```text
-C x_{s,k} = y_{sp,k} - dhat_k
-```
+$$
+C x_{s,k} = y_{\mathrm{sp},k} - \hat d_k
+$$
 
-```text
-d_{s,k} = dhat_k
-```
+$$
+d_{s,k} = \hat d_k
+$$
 
-```text
+$$
 y_{s,k} = C x_{s,k} + d_{s,k}.
-```
+$$
 
 If the exact target is not input-feasible, the selector solves a bounded least-squares problem:
 
-```text
-min_{x_s,u_s}
-||
-[
-(I-A)x_s - B u_s;
-C x_s - (y_{sp,k} - dhat_k)
-]
-||_2^2
-+
-||u_s - u_{ref}||_{W_u}^2
-+
-||x_s - x_{ref}||_{W_x}^2
-```
+Define the target-selector cost as four pieces:
 
-subject to:
+$$
+\left\| (I-A)x_s - B u_s \right\|_2^2
++
+\left\| Cx_s - \left( y_{\mathrm{sp},k} - \hat d_k \right) \right\|_2^2
++
+\left\| u_s - u_{\mathrm{ref}} \right\|_{W_u}^2
++
+\left\| x_s - x_{\mathrm{ref}} \right\|_{W_x}^2
+$$
 
-```text
-u_{min} <= u_s <= u_{max}.
-```
+The selector minimizes that sum subject to the box constraint $u_{\min} \le u_s \le u_{\max}$.
 
 In the current direct notebooks:
 
-- `bounded_hard` means `W_u = 0` and `W_x = 0`
+- `bounded_hard` means $W_u = 0$ and $W_x = 0$
 - the mixed case uses both an input anchor and a state anchor
-- `u_ref` is the previous applied input
-- `x_ref` is the previously successful target state
+- $u_{\mathrm{ref}}$ is the previous applied input
+- $x_{\mathrm{ref}}$ is the previously successful target state
 
 ### 6.3 Step 3: construct the Lyapunov certificate
 
-The direct method uses a physical-state Lyapunov function:
+The direct method uses the physical-state Lyapunov function
 
-```text
-V(e_x) = e_x^T P_x e_x.
-```
+$$
+V(e_x) = e_x^\top P_x e_x.
+$$
 
 The matrix `P_x` comes from the discrete algebraic Riccati equation based on:
 
-```text
-Q_x = C^T Q_y C + eps I,
-```
+$$
+Q_x = C^\top Q_y C + \varepsilon I,
+$$
 
 with a corresponding local feedback gain
 
-```text
-K_x = -(R_u + B^T P_x B)^{-1} B^T P_x A.
-```
+$$
+K_x = -\left( R_u + B^\top P_x B \right)^{-1} B^\top P_x A.
+$$
 
-The one-step contraction bound is:
+The one-step contraction bound is
 
-```text
-V_{k+1} <= rho V_k + eps_{lyap}.
-```
+$$
+V_{k+1} \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
+$$
 
-The terminal admissible-level parameter is computed from the input headroom around `u_s`:
+The terminal admissible-level parameter is computed from the input headroom around $u_s$:
 
-```text
-alpha
+$$
+\alpha
 =
-min_i
-(
-((min(u_{max,i} - u_{s,i}, u_{s,i} - u_{min,i})) / (gamma_i))
-)^2,
-```
+\min_i
+\left(
+\frac{
+\min \left( u_{\max,i} - u_{s,i},\ u_{s,i} - u_{\min,i} \right)
+}{
+\gamma_i
+}
+\right)^2,
+$$
 
-where `gamma_i^2 = k_i P_x^{-1} k_i^T` for row `k_i` of `K_x`.
+where $\gamma_i^2 = k_i P_x^{-1} k_i^\top$ for row $k_i$ of $K_x$.
 
 ### 6.4 Step 4: solve the direct tracking MPC
 
-After target selection, the no-RL notebook solves the direct tracking MPC:
+After target selection, the no-RL notebook solves a direct tracking MPC with stage cost
 
-```text
-min_{{u_i},{z_i}}
-sum_{i=0}^{N_P-1}
-||y_{k+i+1} - y_{target,k}||_{Q_y}^2
+$$
+\sum_{i=0}^{N_P-1} \left\| y_{k+i+1} - y_{\mathrm{target},k} \right\|_{Q_y}^2
 +
-||u_0 - u_{k-1}||_{R_Delta_u}^2
+\left\| u_0 - u_{k-1} \right\|_{R_{\Delta u}}^2
 +
-sum_{i=1}^{N_C-1}||u_i - u_{i-1}||_{R_Delta_u}^2
-```
+\sum_{i=1}^{N_C-1} \left\| u_i - u_{i-1} \right\|_{R_{\Delta u}}^2.
+$$
 
-subject to:
+The optimization is subject to:
 
-```text
-z_{i+1} = A_{aug} z_i + B_{aug} u_{min(i,N_C-1)}
-```
+$$
+z_{i+1} = A_{\mathrm{aug}} z_i + B_{\mathrm{aug}} u_{\min(i, N_C-1)}
+$$
 
-```text
-u_{min} <= u_i <= u_{max}
-```
+and
+
+$$
+u_{\min} \le u_i \le u_{\max}.
+$$
 
 and, when active,
 
-```text
-(x_1 - x_{s,k})^T P_x (x_1 - x_{s,k})
-<=
-rho V_k + eps_{lyap}
-```
+$$
+(x_1 - x_{s,k})^\top P_x (x_1 - x_{s,k}) \le \rho V_k + \varepsilon_{\mathrm{lyap}}
+$$
 
 and sometimes also
 
-```text
-(x_{N_P} - x_{s,k})^T P_x (x_{N_P} - x_{s,k}) <= alpha_k.
-```
+$$
+(x_{N_P} - x_{s,k})^\top P_x (x_{N_P} - x_{s,k}) \le \alpha_k.
+$$
 
-An important implementation detail is:
-
-```text
-y_{target,k} =
-
-y_{s,k}, if target-output tracking is enabled;
-y_{sp,k}, otherwise.
-
-```
+An important implementation detail is that $y_{\mathrm{target},k}$ is chosen as $y_{s,k}$ if target-output tracking is enabled, and $y_{\mathrm{sp},k}$ otherwise.
 
 The current direct notebooks set:
 
-```text
-y_{target,k} = y_{sp,k},
-```
+$$
+y_{\mathrm{target},k} = y_{\mathrm{sp},k},
+$$
 
 because `use_target_output_for_tracking = False`.
 
-So the Lyapunov certificate is centered on `(x_s,u_s)`, while the tracking objective still pulls toward the raw requested setpoint.
+So the Lyapunov certificate is centered on $(x_s, u_s)$, while the tracking objective still pulls toward the raw requested setpoint.
 
 ### 6.5 Step 5: apply, update, and score
 
@@ -378,11 +345,7 @@ Both RL notebooks use the same online direct safety architecture.
 
 ### 7.1 Step 1: build the RL state
 
-The code forms:
-
-```text
-s_k = S(zhat_k, y_{sp,k}, u_{k-1}).
-```
+The code forms $s_k = S(\hat z_k, y_{\mathrm{sp},k}, u_{k-1})$.
 
 ### 7.2 Step 2: generate a candidate action
 
@@ -391,19 +354,15 @@ Depending on the training phase, the candidate comes from either:
 - the TD3 actor
 - or a teacher action computed by direct Lyapunov MPC
 
-In either case the behavior is expressed first in actor coordinates `a_k in [-1,1]^{n_u}` and then mapped to the physical controller coordinates:
+In either case the behavior is expressed first in actor coordinates $a_k \in [-1,1]^{n_u}$ and then mapped to the physical controller coordinates:
 
-```text
-u_k^{cand} = T(a_k).
-```
+$$
+u_k^{\mathrm{cand}} = T(a_k).
+$$
 
 ### 7.3 Step 3: recompute the direct steady target
 
-Before the candidate is judged, the gate recomputes:
-
-```text
-(x_{s,k}, u_{s,k}, d_{s,k}, y_{s,k}).
-```
+Before the candidate is judged, the gate recomputes $(x_{s,k}, u_{s,k}, d_{s,k}, y_{s,k})$.
 
 So the candidate is never checked against an old nominal target. It is checked against the target selected from the current observer state and the current requested setpoint.
 
@@ -411,53 +370,26 @@ So the candidate is never checked against an old nominal target. It is checked a
 
 The candidate check in [Lyapunov/lyapunov_core.py](../Lyapunov/lyapunov_core.py) predicts the next physical-state error:
 
-```text
-e_{x,k+1}^{cand} = A e_{x,k} + B(u_k^{cand} - u_{s,k}).
-```
+$$
+e_{x,k+1}^{\mathrm{cand}} = A e_{x,k} + B \left( u_k^{\mathrm{cand}} - u_{s,k} \right).
+$$
 
 Then it computes:
 
-```text
-V_k = e_{x,k}^T P_x e_{x,k}
-```
-
-```text
-V_{k+1}^{cand}
-=
-(e_{x,k+1}^{cand})^T
-P_x
-e_{x,k+1}^{cand}
-```
-
-```text
-V_{bound,k} = rho V_k + eps_{lyap}.
-```
+- current certificate value: $V_k = e_{x,k}^\top P_x e_{x,k}$
+- candidate next-step value: $V_{k+1}^{\mathrm{cand}} = (e_{x,k+1}^{\mathrm{cand}})^\top P_x e_{x,k+1}^{\mathrm{cand}}$
+- admissible bound: $V_{\mathrm{bound},k} = \rho V_k + \varepsilon_{\mathrm{lyap}}$
 
 The candidate is accepted if all active tests pass:
 
-```text
-u_{min} <= u_k^{cand} <= u_{max}
-```
-
-```text
-Delta u_{min} <= u_k^{cand} - u_{k-1} <= Delta u_{max}
-```
-
-```text
-V_{k+1}^{cand} <= rho V_k + eps_{lyap}.
-```
+- input bounds: $u_{\min} \le u_k^{\mathrm{cand}} \le u_{\max}$
+- move bounds, if enabled: $\Delta u_{\min} \le u_k^{\mathrm{cand}} - u_{k-1} \le \Delta u_{\max}$
+- Lyapunov test: $V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon_{\mathrm{lyap}}$
 
 For the current direct RL notebooks, `du_min` and `du_max` are not passed, so the active checks reduce to:
 
-```text
-u_{min} <= u_k^{cand} <= u_{max}
-```
-
-and
-
-```text
-V_{k+1}^{cand} <= rho V_k + eps_{lyap}.
-```
+- $u_{\min} \le u_k^{\mathrm{cand}} \le u_{\max}$
+- $V_{k+1}^{\mathrm{cand}} \le \rho V_k + \varepsilon_{\mathrm{lyap}}$
 
 So the current reject reasons are effectively:
 
@@ -469,21 +401,21 @@ So the current reject reasons are effectively:
 
 If the candidate passes:
 
-```text
-u_k^{safe} = u_k^{cand}.
-```
+$$
+u_k^{\mathrm{safe}} = u_k^{\mathrm{cand}}.
+$$
 
 If the candidate fails, the supervisor calls the same direct tracking MPC described in Section 6 and uses its first move:
 
-```text
-u_k^{safe} = u_k^{MPC}.
-```
+$$
+u_k^{\mathrm{safe}} = u_k^{\mathrm{MPC}}.
+$$
 
 If the direct target solve fails or the fallback solve fails, the current code holds the previous input:
 
-```text
-u_k^{safe} = u_{k-1}.
-```
+$$
+u_k^{\mathrm{safe}} = u_{k-1}.
+$$
 
 ### 7.6 Step 6: plant step, observer update, reward, and replay
 
@@ -497,19 +429,14 @@ After the safe action is chosen, the code:
 
 The reward is computed against the raw requested setpoint:
 
-```text
-e_{y,k+1} = y_{k+1} - y_{sp,k}
-```
-
-```text
-Delta u_k = u_k^{safe} - u_{k-1}.
-```
+- output error: $e_{y,k+1} = y_{k+1} - y_{\mathrm{sp},k}$
+- move increment: $\Delta u_k = u_k^{\mathrm{safe}} - u_{k-1}$
 
 The stored next RL state is:
 
-```text
-s_{k+1} = S(zhat_{k+1}, y_{sp,k}, u_k^{safe}).
-```
+$$
+s_{k+1} = S(\hat z_{k+1}, y_{\mathrm{sp},k}, u_k^{\mathrm{safe}}).
+$$
 
 The code intentionally keeps the same active setpoint `y_{sp,k}` at the transition boundary so the action, reward, and next state all refer to the same task definition.
 
@@ -532,70 +459,51 @@ The direct RL notebooks use `make_reward_fn_relative_QR(...)` with:
 
 For each output channel `i`, the physical tolerance band is:
 
-```text
-b_i^{phys} =
-max(k_{rel,i}|y_{sp,i}^{phys}|, b_{i,floor}^{phys}).
-```
+$$
+b_i^{\mathrm{phys}} = \max \left( k_{\mathrm{rel},i} \left| y_{\mathrm{sp},i}^{\mathrm{phys}} \right|,\ b_{i,\mathrm{floor}}^{\mathrm{phys}} \right).
+$$
 
 After scaling into controller coordinates:
 
-```text
-b_i = ((b_i^{phys}) / (Delta y_i))
-tau_i = 0.7 b_i.
-```
+- scaled band width: $b_i = b_i^{\mathrm{phys}} / \Delta y_i$
+- smoothing width: $\tau_i = 0.7 b_i$
 
 The smooth inside-band gate is:
 
-```text
-s_i = sigma(((b_i - |e_i|) / (tau_i))),
-```
+$$
+s_i = \sigma \left( \frac{b_i - |e_i|}{\tau_i} \right),
+$$
 
 and for the current `geom` choice:
 
-```text
-w_{in} =
-(prod_i s_i)^{1/n_y}.
-```
+$$
+w_{\mathrm{in}} = \left( \prod_i s_i \right)^{1/n_y}.
+$$
 
 The quadratic error and move penalties are:
 
-```text
-J_e = sum_i Q_i e_i^2,
-J_u = sum_j R_j (Delta u_j)^2.
-```
+- output-tracking penalty: $J_e = \sum_i Q_i e_i^2$
+- move penalty: $J_u = \sum_j R_j (\Delta u_j)^2$
 
 The code then adds linear penalties near and outside the band and an inside-band bonus. With
 
-```text
-z_i = ((|e_i|) / (b_i)),
-```
+$$
+z_i = \frac{|e_i|}{b_i},
+$$
 
 the exponential bonus shape is:
 
-```text
-phi(z_i) =
-((e^{-k z_i} - e^{-k}) / (1 - e^{-k})),
+$$
+\phi(z_i) = \frac{e^{-k z_i} - e^{-k}}{1 - e^{-k}},
+\qquad
 k = 12.
-```
+$$
 
 The final reward is:
 
-```text
-r_k
-=
--
-(
-J_{e,eff}
-+
-J_u
-+
-J_{out}
-+
-J_{in}
-)
-+
-J_{bonus}.
-```
+$$
+r_k = -\left( J_{e,\mathrm{eff}} + J_u + J_{\mathrm{out}} + J_{\mathrm{in}} \right) + J_{\mathrm{bonus}}.
+$$
 
 So the direct RL agent is not optimizing the Lyapunov value directly. It is optimizing a shaped tracking-and-move reward while the gate enforces Lyapunov admissibility.
 
@@ -603,10 +511,8 @@ So the direct RL agent is not optimizing the Lyapunov value directly. It is opti
 
 The notebook [DirectLyapunovSafetyGateRL_Pretrained.ipynb](../DirectLyapunovSafetyGateRL_Pretrained.ipynb) loads a TD3 checkpoint:
 
-```text
-theta <- theta_{loaded},
-phi <- phi_{loaded},
-```
+- actor parameters are initialized from `theta_loaded`
+- critic parameters are initialized from `phi_loaded`
 
 by calling `case_agent.load(agent_path)`.
 
@@ -631,13 +537,9 @@ The notebook still uses an online teacher phase:
 
 So the pretrained notebook is not "checkpoint then immediate pure TD3". It is:
 
-```text
-loaded TD3 weights
- +
-20 teacher-driven BC cycles
- +
-full RL under the direct gate.
-```
+- loaded TD3 weights
+- then 20 teacher-driven BC cycles
+- then full RL under the direct gate
 
 ## 10. Cold-start direct RL notebook
 
@@ -652,9 +554,7 @@ Its current phase schedule is also:
 
 So the currently saved cold-start notebook begins with:
 
-```text
-theta_0 and phi_0 are random
-```
+randomly initialized $\theta_0$ and $\phi_0$,
 
 and then immediately enters the teacher-driven behavioral-cloning phase.
 
@@ -673,67 +573,58 @@ This repository uses the phrase "behavioral cloning" in two distinct ways.
 
 This notebook creates a large synthetic dataset using an MPC teacher.
 
-The helper [utils/td3_helpers.py](../utils/td3_helpers.py) samples random tuples:
+The helper [utils/td3_helpers.py](../utils/td3_helpers.py) samples random tuples
 
-```text
-(x_d, y_{sp}, u_{prev})
-```
+$$
+(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}})
+$$
 
 and solves an MPC problem to get the teacher first move:
 
-```text
-u_MPC = pi_MPC(x_d, y_{sp}, u_{prev}).
-```
+$$
+u_{\mathrm{MPC}} = \pi_{\mathrm{MPC}}(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}}).
+$$
 
-The offline replay state is built as:
+The offline replay state is built as
 
-```text
-s = S(x_d, y_{sp}, u_{prev})
-```
+$$
+s = S(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}})
+$$
 
 and the label action is the scaled MPC move:
 
-```text
-a_star = S_u(u_MPC).
-```
+$$
+a^\star = S_u(u_{\mathrm{MPC}}).
+$$
 
 The notebook fills about 4.9 million generic samples and 100,000 near-steady-state samples, then trains in two stages.
 
 Stage 1: actor behavioral cloning
 
-```text
-min_theta
-E_{(s,a_star)}
-[
-||pi_theta(s) - a_star||_2^2
-].
-```
+The actor is trained by minimizing the mean-squared imitation loss
+
+$$
+\left\| \pi_\theta(s) - a^\star \right\|_2^2
+$$
+
+over the offline dataset.
 
 This is exactly what `TD3Agent.pretrain_from_buffer(...)` does in its actor stage.
 
 Stage 2: critic TD fitting with the actor frozen
 
-```text
-y = r + gamma Q_{phi^-}(s', pi_{theta^-}(s'))
-```
+The frozen-actor TD target is
 
-```text
-min_phi
-E
-[
-ell_{Huber}(Q_{phi,1}(s,a), y)
-+
-ell_{Huber}(Q_{phi,2}(s,a), y)
-].
-```
+$$
+y = r + \gamma Q_{\phi^-}\!\left( s', \pi_{\theta^-}(s') \right).
+$$
+
+The critic is then trained by minimizing the summed Huber losses of the two TD3 critics against that target.
 
 So the offline pretraining notebook is best described as:
 
-```text
-supervised imitation of MPC
- +
-offline critic fitting,
-```
+- supervised imitation of MPC
+- followed by offline critic fitting
 
 not as online RL on the plant.
 
@@ -759,22 +650,23 @@ At each step:
 
 The teacher action before noise is:
 
-```text
-a_k^{teacher} = T^{-1}(u_k^{direct}).
-```
+$$
+a_k^{\mathrm{teacher}} = T^{-1}(u_k^{\mathrm{direct}}).
+$$
 
 If Gaussian teacher noise is active:
 
-```text
-a_tilde_k^{teacher} = a_k^{teacher} + eps_k
-eps_k ~ N(0,sigma_{BC}^2 I).
-```
+$$
+\tilde a_k^{\mathrm{teacher}} = a_k^{\mathrm{teacher}} + \varepsilon_k,
+\qquad
+\varepsilon_k \sim \mathcal{N}(0, \sigma_{\mathrm{BC}}^2 I).
+$$
 
 After mapping, clipping, and safety checking, the executed safe action is:
 
-```text
-a_k^{used} = T^{-1}(u_k^{safe}).
-```
+$$
+a_k^{\mathrm{used}} = T^{-1}(u_k^{\mathrm{safe}}).
+$$
 
 This is the important implementation detail:
 
@@ -783,49 +675,45 @@ This is the important implementation detail:
 
 not the raw teacher action before filtering.
 
-So the online BC data pair is:
+So the online BC data pair is
 
-```text
-(s_k, a_k^{used}).
-```
+$$
+(s_k, a_k^{\mathrm{used}}).
+$$
 
 The BC buffer insertion is:
 
-```text
-D_{BC} <- D_{BC} union {(s_k, a_k^{used})}.
-```
+$$
+\mathcal{D}_{\mathrm{BC}}
+\leftarrow
+\mathcal{D}_{\mathrm{BC}} \cup \left\{ (s_k, a_k^{\mathrm{used}}) \right\}.
+$$
 
-The actor BC update is:
+The actor BC update minimizes the mean-squared imitation loss
 
-```text
-min_theta
-E_{(s,a)~D_{BC}}
-[
-||pi_theta(s) - a||_2^2
-].
-```
+$$
+\left\| \pi_\theta(s) - a \right\|_2^2
+$$
+
+over samples drawn from $\mathcal{D}_{\mathrm{BC}}$.
 
 The code performs this actor imitation step four times per plant step in the BC phase because:
 
 - `bc_actor_updates_per_step = 4`
 
-At the same time, the ordinary replay buffer receives:
+At the same time, the ordinary replay buffer receives
 
-```text
-(s_k, a_k^{used}, r_k, s_{k+1}, 0).
-```
+$$
+(s_k, a_k^{\mathrm{used}}, r_k, s_{k+1}, 0).
+$$
 
 and the critic is updated with TD targets while the actor is updated only by BC, not by the TD3 policy-gradient step.
 
 So the online BC phase is:
 
-```text
-teacher-generated plant interaction
- +
-critic TD learning
- +
-actor MSE imitation of executed safe actions.
-```
+- teacher-generated plant interaction
+- critic TD learning
+- actor MSE imitation of executed safe actions
 
 That is different from the offline pretraining notebook even though both are called behavioral cloning.
 
@@ -840,23 +728,19 @@ Once the step index passes the BC block:
 
 Now the actor generates the candidate directly, exploration switches to the full-RL schedule, and TD3 runs in the usual way:
 
-```text
-grad_theta J
-approx
-grad_theta Q_{phi,1}(s,pi_theta(s)).
-```
+the actor update follows the usual TD3 policy-gradient idea, approximately ascending
+
+$$
+Q_{\phi,1}\!\left( s, \pi_\theta(s) \right)
+$$
+
+with respect to $\theta$.
 
 But the direct gate remains active, so the plant still receives:
 
-```text
-u_k^{safe}
-=
-
-u_k^{RL}, if accepted;
-u_k^{direct}, if rejected and fallback succeeds;
-u_{k-1}, if the fallback path fails.
-
-```
+- $u_k^{\mathrm{RL}}$ if the RL candidate is accepted
+- $u_k^{\mathrm{direct}}$ if the RL candidate is rejected and the fallback succeeds
+- $u_{k-1}$ if the fallback path fails
 
 ## 13. Pretrained versus cold-start: the clean comparison
 
@@ -864,15 +748,15 @@ The current pretrained and cold-start direct RL notebooks differ mainly in initi
 
 Pretrained:
 
-```text
-(theta_0,phi_0) = (theta_{checkpoint}, phi_{checkpoint})
-```
+$$
+(\theta_0, \phi_0) = (\theta_{\mathrm{checkpoint}}, \phi_{\mathrm{checkpoint}})
+$$
 
 Cold-start:
 
-```text
-(theta_0,phi_0) = (theta_{random}, phi_{random})
-```
+$$
+(\theta_0, \phi_0) = (\theta_{\mathrm{random}}, \phi_{\mathrm{random}})
+$$
 
 After initialization, both notebooks currently run:
 
@@ -880,41 +764,19 @@ After initialization, both notebooks currently run:
 - twenty teacher-driven BC cycles
 - then full RL under the same direct gate
 
-So the real experimental question is not just:
+So the real experimental question is not just `pretrained vs cold-start`
 
-```text
-pretrained vs cold-start
-```
-
-but more precisely:
-
-```text
-pretrained initialization plus online teacher BC
- vs
-random initialization plus online teacher BC.
-```
+but more precisely `pretrained initialization plus online teacher BC` versus `random initialization plus online teacher BC`.
 
 ## 14. Important implementation caveats
 
 ### 14.1 The certificate target and the tracking target are not identical
 
-The current direct notebooks certify contraction around:
+The current direct notebooks certify contraction around $(x_s, u_s)$,
 
-```text
-(x_s, u_s),
-```
+but the direct tracking objective and the reward both still reference $y_{\mathrm{sp}}$,
 
-but the direct tracking objective and the reward both still reference:
-
-```text
-y_{sp},
-```
-
-not necessarily:
-
-```text
-y_s.
-```
+not necessarily $y_s$.
 
 So when the admissible target differs from the requested raw setpoint, the controller can be Lyapunov-consistent and still show raw-setpoint offset or jitter.
 
@@ -940,51 +802,38 @@ The repository also contains [pretraining_rl_controller.ipynb](../pretraining_rl
 
 The direct-only notebook is:
 
-```text
-At each step:
-1. estimate zhat_k
+1. estimate $\hat z_k$
 2. solve the direct steady target
 3. solve the direct Lyapunov tracking MPC
 4. apply the first move
-5. update observer and logs
-```
+5. update the observer and logs
 
 The direct RL notebooks are:
 
-```text
-At each step:
-1. estimate zhat_k and build RL state s_k
+1. estimate $\hat z_k$ and build the RL state $s_k$
 2. generate a candidate action from either the teacher or the actor
 3. recompute the direct steady target
 4. check the candidate against bounds and first-step Lyapunov contraction
 5. if accepted, apply it
 6. if rejected, solve the direct fallback MPC and apply that result
-7. update observer, reward, replay, and learning phase logic
-```
+7. update the observer, reward, replay, and learning-phase logic
 
 The offline pretraining notebook is:
 
-```text
 1. sample synthetic states, setpoints, and previous inputs
 2. label them with MPC first moves
-3. train the actor by MSE imitation
+3. train the actor by mean-squared imitation
 4. freeze the actor and train the critic by TD targets
 5. save the checkpoint
-```
 
 ## 16. Final interpretation
 
 The current direct method family is best understood as a layered architecture:
 
-```text
-direct admissible target selection
-->
-physical-state Lyapunov certificate
-->
-tracking MPC fallback
-->
-optional TD3 candidate policy.
-```
+- direct admissible target selection
+- then a physical-state Lyapunov certificate
+- then a tracking-MPC fallback layer
+- and, optionally, a TD3 candidate policy in front of that safety stack
 
 Without RL, the controller simply uses the direct target plus the direct Lyapunov MPC solve every step.
 
