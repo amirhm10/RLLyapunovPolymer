@@ -120,7 +120,7 @@ The Lyapunov layer uses only the physical-state tracking error, $e_{x,k} = \hat 
 The current RL interface uses:
 
 - RL state dimension `n_aug + n_y + n_u`
-- RL action dimension `n_u`
+- RL action dimension $n_u$
 
 so the actor sees the augmented observer state, the raw requested setpoint, and the previous applied input.
 
@@ -133,31 +133,17 @@ The direct notebooks call `load_and_prepare_system_data(...)` with:
 
 The effective linear augmented model used by the direct target and direct RL logic is:
 
-$$
-x_{k+1} = A x_k + B u_k
-$$
+$$ x_{k+1} = A x_k + B u_k $$
 
-$$
-d_{k+1} = d_k
-$$
+$$ d_{k+1} = d_k $$
 
-$$
-y_k = C x_k + d_k
-$$
+$$ y_k = C x_k + d_k $$
 
 So the disturbance is frozen in the output equation and does not drive the physical-state dynamics.
 
 The observer update used in the rollout is:
 
-$$
-\hat z_{k+1}
-=
-A_{\mathrm{aug}} \hat z_k
-+
-B_{\mathrm{aug}} u_k
-+
-L \left( y_k - C_{\mathrm{aug}} \hat z_k \right).
-$$
+$$ \hat z_{k+1} = A_{\mathrm{aug}} \hat z_k + B_{\mathrm{aug}} u_k + L \left( y_k - C_{\mathrm{aug}} \hat z_k \right). $$
 
 This is the common backbone for both the direct-only and RL-gated paths.
 
@@ -197,35 +183,19 @@ These are the inputs to the direct target selector.
 
 The direct selector first tries to find an admissible steady target satisfying:
 
-$$
-(I-A)x_{s,k} - B u_{s,k} = 0
-$$
+$$ (I-A)x_{s,k} - B u_{s,k} = 0 $$
 
-$$
-C x_{s,k} = y_{\mathrm{sp},k} - \hat d_k
-$$
+$$ C x_{s,k} = y_{\mathrm{sp},k} - \hat d_k $$
 
-$$
-d_{s,k} = \hat d_k
-$$
+$$ d_{s,k} = \hat d_k $$
 
-$$
-y_{s,k} = C x_{s,k} + d_{s,k}.
-$$
+$$ y_{s,k} = C x_{s,k} + d_{s,k}. $$
 
 If the exact target is not input-feasible, the selector solves a bounded least-squares problem:
 
 Define the target-selector cost as four pieces:
 
-$$
-\left\| (I-A)x_s - B u_s \right\|_2^2
-+
-\left\| Cx_s - \left( y_{\mathrm{sp},k} - \hat d_k \right) \right\|_2^2
-+
-\left\| u_s - u_{\mathrm{ref}} \right\|_{W_u}^2
-+
-\left\| x_s - x_{\mathrm{ref}} \right\|_{W_x}^2
-$$
+$$ \left\| (I-A)x_s - B u_s \right\|_2^2 + \left\| Cx_s - \left( y_{\mathrm{sp},k} - \hat d_k \right) \right\|_2^2 + \left\| u_s - u_{\mathrm{ref}} \right\|_{W_u}^2 + \left\| x_s - x_{\mathrm{ref}} \right\|_{W_x}^2 $$
 
 The selector minimizes that sum subject to the box constraint $u_{\min} \le u_s \le u_{\max}$.
 
@@ -240,42 +210,23 @@ In the current direct notebooks:
 
 The direct method uses the physical-state Lyapunov function
 
-$$
-V(e_x) = e_x^\top P_x e_x.
-$$
+$$ V(e_x) = e_x^\top P_x e_x. $$
 
-The matrix `P_x` comes from the discrete algebraic Riccati equation based on:
+The matrix $P_x$ comes from the discrete algebraic Riccati equation based on:
 
-$$
-Q_x = C^\top Q_y C + \varepsilon I,
-$$
+$$ Q_x = C^\top Q_y C + \varepsilon I. $$
 
 with a corresponding local feedback gain
 
-$$
-K_x = -\left( R_u + B^\top P_x B \right)^{-1} B^\top P_x A.
-$$
+$$ K_x = -\left( R_u + B^\top P_x B \right)^{-1} B^\top P_x A. $$
 
 The one-step contraction bound is
 
-$$
-V_{k+1} \le \rho V_k + \varepsilon_{\mathrm{lyap}}.
-$$
+$$ V_{k+1} \le \rho V_k + \varepsilon_{\mathrm{lyap}}. $$
 
 The terminal admissible-level parameter is computed from the input headroom around $u_s$:
 
-$$
-\alpha
-=
-\min_i
-\left(
-\frac{
-\min \left( u_{\max,i} - u_{s,i},\ u_{s,i} - u_{\min,i} \right)
-}{
-\gamma_i
-}
-\right)^2,
-$$
+$$ \alpha = \min_i \left( \frac{\min \left( u_{\max,i} - u_{s,i},\ u_{s,i} - u_{\min,i} \right)}{\gamma_i} \right)^2. $$
 
 where $\gamma_i^2 = k_i P_x^{-1} k_i^\top$ for row $k_i$ of $K_x$.
 
@@ -283,45 +234,29 @@ where $\gamma_i^2 = k_i P_x^{-1} k_i^\top$ for row $k_i$ of $K_x$.
 
 After target selection, the no-RL notebook solves a direct tracking MPC with stage cost
 
-$$
-\sum_{i=0}^{N_P-1} \left\| y_{k+i+1} - y_{\mathrm{target},k} \right\|_{Q_y}^2
-+
-\left\| u_0 - u_{k-1} \right\|_{R_{\Delta u}}^2
-+
-\sum_{i=1}^{N_C-1} \left\| u_i - u_{i-1} \right\|_{R_{\Delta u}}^2.
-$$
+$$ \sum_{i=0}^{N_P-1} \left\| y_{k+i+1} - y_{\mathrm{target},k} \right\|_{Q_y}^2 + \left\| u_0 - u_{k-1} \right\|_{R_{\Delta u}}^2 + \sum_{i=1}^{N_C-1} \left\| u_i - u_{i-1} \right\|_{R_{\Delta u}}^2. $$
 
 The optimization is subject to:
 
-$$
-z_{i+1} = A_{\mathrm{aug}} z_i + B_{\mathrm{aug}} u_{\min(i, N_C-1)}
-$$
+$$ z_{i+1} = A_{\mathrm{aug}} z_i + B_{\mathrm{aug}} u_{\min(i, N_C-1)} $$
 
 and
 
-$$
-u_{\min} \le u_i \le u_{\max}.
-$$
+$$ u_{\min} \le u_i \le u_{\max}. $$
 
 and, when active,
 
-$$
-(x_1 - x_{s,k})^\top P_x (x_1 - x_{s,k}) \le \rho V_k + \varepsilon_{\mathrm{lyap}}
-$$
+$$ (x_1 - x_{s,k})^\top P_x (x_1 - x_{s,k}) \le \rho V_k + \varepsilon_{\mathrm{lyap}} $$
 
 and sometimes also
 
-$$
-(x_{N_P} - x_{s,k})^\top P_x (x_{N_P} - x_{s,k}) \le \alpha_k.
-$$
+$$ (x_{N_P} - x_{s,k})^\top P_x (x_{N_P} - x_{s,k}) \le \alpha_k. $$
 
 An important implementation detail is that $y_{\mathrm{target},k}$ is chosen as $y_{s,k}$ if target-output tracking is enabled, and $y_{\mathrm{sp},k}$ otherwise.
 
 The current direct notebooks set:
 
-$$
-y_{\mathrm{target},k} = y_{\mathrm{sp},k},
-$$
+$$ y_{\mathrm{target},k} = y_{\mathrm{sp},k}. $$
 
 because `use_target_output_for_tracking = False`.
 
@@ -329,7 +264,7 @@ So the Lyapunov certificate is centered on $(x_s, u_s)$, while the tracking obje
 
 ### 6.5 Step 5: apply, update, and score
 
-Once the direct MPC returns a first move `u_k`:
+Once the direct MPC returns a first move $u_k$:
 
 1. convert the scaled deviation move back to physical inputs
 2. apply it to the plant
@@ -356,9 +291,7 @@ Depending on the training phase, the candidate comes from either:
 
 In either case the behavior is expressed first in actor coordinates $a_k \in [-1,1]^{n_u}$ and then mapped to the physical controller coordinates:
 
-$$
-u_k^{\mathrm{cand}} = T(a_k).
-$$
+$$ u_k^{\mathrm{cand}} = T(a_k). $$
 
 ### 7.3 Step 3: recompute the direct steady target
 
@@ -370,9 +303,7 @@ So the candidate is never checked against an old nominal target. It is checked a
 
 The candidate check in [Lyapunov/lyapunov_core.py](../Lyapunov/lyapunov_core.py) predicts the next physical-state error:
 
-$$
-e_{x,k+1}^{\mathrm{cand}} = A e_{x,k} + B \left( u_k^{\mathrm{cand}} - u_{s,k} \right).
-$$
+$$ e_{x,k+1}^{\mathrm{cand}} = A e_{x,k} + B \left( u_k^{\mathrm{cand}} - u_{s,k} \right). $$
 
 Then it computes:
 
@@ -401,21 +332,15 @@ So the current reject reasons are effectively:
 
 If the candidate passes:
 
-$$
-u_k^{\mathrm{safe}} = u_k^{\mathrm{cand}}.
-$$
+$$ u_k^{\mathrm{safe}} = u_k^{\mathrm{cand}}. $$
 
 If the candidate fails, the supervisor calls the same direct tracking MPC described in Section 6 and uses its first move:
 
-$$
-u_k^{\mathrm{safe}} = u_k^{\mathrm{MPC}}.
-$$
+$$ u_k^{\mathrm{safe}} = u_k^{\mathrm{MPC}}. $$
 
 If the direct target solve fails or the fallback solve fails, the current code holds the previous input:
 
-$$
-u_k^{\mathrm{safe}} = u_{k-1}.
-$$
+$$ u_k^{\mathrm{safe}} = u_{k-1}. $$
 
 ### 7.6 Step 6: plant step, observer update, reward, and replay
 
@@ -434,9 +359,7 @@ The reward is computed against the raw requested setpoint:
 
 The stored next RL state is:
 
-$$
-s_{k+1} = S(\hat z_{k+1}, y_{\mathrm{sp},k}, u_k^{\mathrm{safe}}).
-$$
+$$ s_{k+1} = S(\hat z_{k+1}, y_{\mathrm{sp},k}, u_k^{\mathrm{safe}}). $$
 
 The code intentionally keeps the same active setpoint `y_{sp,k}` at the transition boundary so the action, reward, and next state all refer to the same task definition.
 
@@ -457,11 +380,9 @@ The direct RL notebooks use `make_reward_fn_relative_QR(...)` with:
 - `bonus_kind = "exp"`
 - `bonus_k = 12.0`
 
-For each output channel `i`, the physical tolerance band is:
+For each output channel $i$, the physical tolerance band is:
 
-$$
-b_i^{\mathrm{phys}} = \max \left( k_{\mathrm{rel},i} \left| y_{\mathrm{sp},i}^{\mathrm{phys}} \right|,\ b_{i,\mathrm{floor}}^{\mathrm{phys}} \right).
-$$
+$$ b_i^{\mathrm{phys}} = \max \left( k_{\mathrm{rel},i} \left| y_{\mathrm{sp},i}^{\mathrm{phys}} \right|,\ b_{i,\mathrm{floor}}^{\mathrm{phys}} \right). $$
 
 After scaling into controller coordinates:
 
@@ -470,15 +391,11 @@ After scaling into controller coordinates:
 
 The smooth inside-band gate is:
 
-$$
-s_i = \sigma \left( \frac{b_i - |e_i|}{\tau_i} \right),
-$$
+$$ s_i = \sigma \left( \frac{b_i - |e_i|}{\tau_i} \right). $$
 
 and for the current `geom` choice:
 
-$$
-w_{\mathrm{in}} = \left( \prod_i s_i \right)^{1/n_y}.
-$$
+$$ w_{\mathrm{in}} = \left( \prod_i s_i \right)^{1/n_y}. $$
 
 The quadratic error and move penalties are:
 
@@ -487,23 +404,15 @@ The quadratic error and move penalties are:
 
 The code then adds linear penalties near and outside the band and an inside-band bonus. With
 
-$$
-z_i = \frac{|e_i|}{b_i},
-$$
+$$ z_i = \frac{|e_i|}{b_i}, $$
 
 the exponential bonus shape is:
 
-$$
-\phi(z_i) = \frac{e^{-k z_i} - e^{-k}}{1 - e^{-k}},
-\qquad
-k = 12.
-$$
+$$ \phi(z_i) = \frac{e^{-k z_i} - e^{-k}}{1 - e^{-k}}, \qquad k = 12. $$
 
 The final reward is:
 
-$$
-r_k = -\left( J_{e,\mathrm{eff}} + J_u + J_{\mathrm{out}} + J_{\mathrm{in}} \right) + J_{\mathrm{bonus}}.
-$$
+$$ r_k = -\left( J_{e,\mathrm{eff}} + J_u + J_{\mathrm{out}} + J_{\mathrm{in}} \right) + J_{\mathrm{bonus}}. $$
 
 So the direct RL agent is not optimizing the Lyapunov value directly. It is optimizing a shaped tracking-and-move reward while the gate enforces Lyapunov admissibility.
 
@@ -511,8 +420,8 @@ So the direct RL agent is not optimizing the Lyapunov value directly. It is opti
 
 The notebook [DirectLyapunovSafetyGateRL_Pretrained.ipynb](../DirectLyapunovSafetyGateRL_Pretrained.ipynb) loads a TD3 checkpoint:
 
-- actor parameters are initialized from `theta_loaded`
-- critic parameters are initialized from `phi_loaded`
+- actor parameters are initialized from $\theta_{\mathrm{loaded}}$
+- critic parameters are initialized from $\phi_{\mathrm{loaded}}$
 
 by calling `case_agent.load(agent_path)`.
 
@@ -575,27 +484,19 @@ This notebook creates a large synthetic dataset using an MPC teacher.
 
 The helper [utils/td3_helpers.py](../utils/td3_helpers.py) samples random tuples
 
-$$
-(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}})
-$$
+$$ (x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}}) $$
 
 and solves an MPC problem to get the teacher first move:
 
-$$
-u_{\mathrm{MPC}} = \pi_{\mathrm{MPC}}(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}}).
-$$
+$$ u_{\mathrm{MPC}} = \pi_{\mathrm{MPC}}(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}}). $$
 
 The offline replay state is built as
 
-$$
-s = S(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}})
-$$
+$$ s = S(x_d, y_{\mathrm{sp}}, u_{\mathrm{prev}}) $$
 
 and the label action is the scaled MPC move:
 
-$$
-a^\star = S_u(u_{\mathrm{MPC}}).
-$$
+$$ a^\star = S_u(u_{\mathrm{MPC}}). $$
 
 The notebook fills about 4.9 million generic samples and 100,000 near-steady-state samples, then trains in two stages.
 
@@ -603,9 +504,7 @@ Stage 1: actor behavioral cloning
 
 The actor is trained by minimizing the mean-squared imitation loss
 
-$$
-\left\| \pi_\theta(s) - a^\star \right\|_2^2
-$$
+$$ \left\| \pi_\theta(s) - a^\star \right\|_2^2 $$
 
 over the offline dataset.
 
@@ -615,9 +514,7 @@ Stage 2: critic TD fitting with the actor frozen
 
 The frozen-actor TD target is
 
-$$
-y = r + \gamma Q_{\phi^-}\!\left( s', \pi_{\theta^-}(s') \right).
-$$
+$$ y = r + \gamma Q_{\phi^-}\!\left( s', \pi_{\theta^-}(s') \right). $$
 
 The critic is then trained by minimizing the summed Huber losses of the two TD3 critics against that target.
 
@@ -650,23 +547,15 @@ At each step:
 
 The teacher action before noise is:
 
-$$
-a_k^{\mathrm{teacher}} = T^{-1}(u_k^{\mathrm{direct}}).
-$$
+$$ a_k^{\mathrm{teacher}} = T^{-1}(u_k^{\mathrm{direct}}). $$
 
 If Gaussian teacher noise is active:
 
-$$
-\tilde a_k^{\mathrm{teacher}} = a_k^{\mathrm{teacher}} + \varepsilon_k,
-\qquad
-\varepsilon_k \sim \mathcal{N}(0, \sigma_{\mathrm{BC}}^2 I).
-$$
+$$ \tilde a_k^{\mathrm{teacher}} = a_k^{\mathrm{teacher}} + \varepsilon_k, \qquad \varepsilon_k \sim \mathcal{N}(0, \sigma_{\mathrm{BC}}^2 I). $$
 
 After mapping, clipping, and safety checking, the executed safe action is:
 
-$$
-a_k^{\mathrm{used}} = T^{-1}(u_k^{\mathrm{safe}}).
-$$
+$$ a_k^{\mathrm{used}} = T^{-1}(u_k^{\mathrm{safe}}). $$
 
 This is the important implementation detail:
 
@@ -677,23 +566,15 @@ not the raw teacher action before filtering.
 
 So the online BC data pair is
 
-$$
-(s_k, a_k^{\mathrm{used}}).
-$$
+$$ (s_k, a_k^{\mathrm{used}}). $$
 
 The BC buffer insertion is:
 
-$$
-\mathcal{D}_{\mathrm{BC}}
-\leftarrow
-\mathcal{D}_{\mathrm{BC}} \cup \left\{ (s_k, a_k^{\mathrm{used}}) \right\}.
-$$
+$$ \mathcal{D}_{\mathrm{BC}} \leftarrow \mathcal{D}_{\mathrm{BC}} \cup \left\{ (s_k, a_k^{\mathrm{used}}) \right\}. $$
 
 The actor BC update minimizes the mean-squared imitation loss
 
-$$
-\left\| \pi_\theta(s) - a \right\|_2^2
-$$
+$$ \left\| \pi_\theta(s) - a \right\|_2^2 $$
 
 over samples drawn from $\mathcal{D}_{\mathrm{BC}}$.
 
@@ -703,9 +584,7 @@ The code performs this actor imitation step four times per plant step in the BC 
 
 At the same time, the ordinary replay buffer receives
 
-$$
-(s_k, a_k^{\mathrm{used}}, r_k, s_{k+1}, 0).
-$$
+$$ (s_k, a_k^{\mathrm{used}}, r_k, s_{k+1}, 0). $$
 
 and the critic is updated with TD targets while the actor is updated only by BC, not by the TD3 policy-gradient step.
 
@@ -730,9 +609,7 @@ Now the actor generates the candidate directly, exploration switches to the full
 
 the actor update follows the usual TD3 policy-gradient idea, approximately ascending
 
-$$
-Q_{\phi,1}\!\left( s, \pi_\theta(s) \right)
-$$
+$$ Q_{\phi,1}\!\left( s, \pi_\theta(s) \right) $$
 
 with respect to $\theta$.
 
@@ -748,15 +625,11 @@ The current pretrained and cold-start direct RL notebooks differ mainly in initi
 
 Pretrained:
 
-$$
-(\theta_0, \phi_0) = (\theta_{\mathrm{checkpoint}}, \phi_{\mathrm{checkpoint}})
-$$
+$$ (\theta_0, \phi_0) = (\theta_{\mathrm{checkpoint}}, \phi_{\mathrm{checkpoint}}) $$
 
 Cold-start:
 
-$$
-(\theta_0, \phi_0) = (\theta_{\mathrm{random}}, \phi_{\mathrm{random}})
-$$
+$$ (\theta_0, \phi_0) = (\theta_{\mathrm{random}}, \phi_{\mathrm{random}}) $$
 
 After initialization, both notebooks currently run:
 
@@ -786,7 +659,7 @@ The generic gate supports `Delta u` checks, but the current notebook calls do no
 
 ### 14.3 The direct fallback still has terminal-set machinery available
 
-The current solver is created with `terminal_set_on = True`. The implementation may skip the terminal constraint online when the computed `alpha` is too small, but the fallback is not literally "first-step contraction only" in every step.
+The current solver is created with `terminal_set_on = True`. The implementation may skip the terminal constraint online when the computed $\alpha$ is too small, but the fallback is not literally "first-step contraction only" in every step.
 
 ### 14.4 The pretrained checkpoint origin is only partially verified
 
@@ -853,15 +726,9 @@ The disturbed no-RL notebook now has a clearer diagnosis than when this report w
 Two issues are active at the same time:
 
 1. the tracking MPC still uses the raw setpoint because `use_target_output_for_tracking = False`, even though the Lyapunov certificate is built around the admissible target $(x_s, u_s)$;
-2. the simulated disturbance changes plant quantities such as `Qi`, `Qs`, and `hA`, while the direct observer and target solver still assume a frozen output-disturbance model
+2. the simulated disturbance changes plant quantities such as $Q_i$, $Q_s$, and $hA$, while the direct observer and target solver still assume a frozen output-disturbance model
 
-$$
-x_{k+1} = A x_k + B u_k,
-\qquad
-d_{k+1} = d_k,
-\qquad
-y_k = C x_k + d_k.
-$$
+$$ x_{k+1} = A x_k + B u_k, \qquad d_{k+1} = d_k, \qquad y_k = C x_k + d_k. $$
 
 So, under disturbance, the controller is not only chasing the wrong tracking reference. It is also estimating the wrong disturbance structure.
 
@@ -874,11 +741,7 @@ That explains the main empirical pattern:
 
 Across the saved disturbed 3200-step sweeps available on May 17, 2026, the best current no-RL disturbed case is the mixed regularization case with
 
-$$
-u_{\mathrm{ref}}\text{ weight} = 0.1,
-\qquad
-x_s\text{ weight} = 0.1.
-$$
+$$ u_{\mathrm{ref}}\text{ weight} = 0.1, \qquad x_s\text{ weight} = 0.1. $$
 
 That case improves reward, raw tracking error, and solver success simultaneously relative to `bounded_hard`.
 
@@ -893,5 +756,5 @@ For this repository, the recommended order is:
 1. rerun the disturbed direct notebook with `use_target_output_for_tracking = True`;
 2. start from the saved-best disturbed regularization pair `(0.1, 0.1)`;
 3. if the controller then settles to $y_s$ but not to raw $y_{\mathrm{sp}}$, redesign the disturbance model rather than only the MPC weights;
-4. replace the pure output-disturbance augmentation with a disturbance model consistent with the actual disturbance channel, or explicitly treat `Qi`, `Qs`, and `hA` as measured disturbances or scheduling variables;
+4. replace the pure output-disturbance augmentation with a disturbance model consistent with the actual disturbance channel, or explicitly treat $Q_i$, $Q_s$, and $hA$ as measured disturbances or scheduling variables;
 5. if needed after that, move from the present nominal tracking MPC plus Lyapunov first-step contraction toward a robust tracking MPC formulation.
