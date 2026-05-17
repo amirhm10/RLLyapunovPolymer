@@ -845,3 +845,53 @@ Behavioral cloning then appears in two different roles:
 - online, to make the actor imitate safe teacher-driven actions during the early direct RL phase
 
 That is the clearest way to read the current implementation mathematically and algorithmically.
+
+## 17. Why the no-RL direct method degrades under disturbance
+
+The disturbed no-RL notebook now has a clearer diagnosis than when this report was first written.
+
+Two issues are active at the same time:
+
+1. the tracking MPC still uses the raw setpoint because `use_target_output_for_tracking = False`, even though the Lyapunov certificate is built around the admissible target $(x_s, u_s)$;
+2. the simulated disturbance changes plant quantities such as `Qi`, `Qs`, and `hA`, while the direct observer and target solver still assume a frozen output-disturbance model
+
+$$
+x_{k+1} = A x_k + B u_k,
+\qquad
+d_{k+1} = d_k,
+\qquad
+y_k = C x_k + d_k.
+$$
+
+So, under disturbance, the controller is not only chasing the wrong tracking reference. It is also estimating the wrong disturbance structure.
+
+That explains the main empirical pattern:
+
+- nominal runs can look acceptable;
+- disturbed runs may not settle even when the same Lyapunov logic is used;
+- moderate target regularization helps;
+- but target regularization alone is not the full structural fix.
+
+Across the saved disturbed 3200-step sweeps available on May 17, 2026, the best current no-RL disturbed case is the mixed regularization case with
+
+$$
+u_{\mathrm{ref}}\text{ weight} = 0.1,
+\qquad
+x_s\text{ weight} = 0.1.
+$$
+
+That case improves reward, raw tracking error, and solver success simultaneously relative to `bounded_hard`.
+
+The detailed disturbed-case diagnosis, sweep summary, figure, and literature-backed remedy path are documented here:
+
+- [direct_lyapunov_disturbance_gap_analysis_2026-05-17.md](./direct_lyapunov_disturbance_gap_analysis_2026-05-17.md)
+
+## 18. Practical remedy path
+
+For this repository, the recommended order is:
+
+1. rerun the disturbed direct notebook with `use_target_output_for_tracking = True`;
+2. start from the saved-best disturbed regularization pair `(0.1, 0.1)`;
+3. if the controller then settles to $y_s$ but not to raw $y_{\mathrm{sp}}$, redesign the disturbance model rather than only the MPC weights;
+4. replace the pure output-disturbance augmentation with a disturbance model consistent with the actual disturbance channel, or explicitly treat `Qi`, `Qs`, and `hA` as measured disturbances or scheduling variables;
+5. if needed after that, move from the present nominal tracking MPC plus Lyapunov first-step contraction toward a robust tracking MPC formulation.
