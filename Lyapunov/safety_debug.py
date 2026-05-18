@@ -1,8 +1,8 @@
 import csv
-import hashlib
 import json
 import os
 import pickle
+import re
 from datetime import datetime
 
 import numpy as np
@@ -23,14 +23,6 @@ except Exception:
 
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.plot_style import paper_plot_context
-
-try:
-    from Plotting_fns.rl_plots import save_rl_summary_plots_from_bundle
-
-    HAS_RL_SUMMARY_PLOTS = True
-except Exception:
-    save_rl_summary_plots_from_bundle = None
-    HAS_RL_SUMMARY_PLOTS = False
 
 
 _TARGET_STAGE_CODE_MAP = {
@@ -75,10 +67,28 @@ _SAFETY_PAPER_FILENAME_MAP = {
     "target_selector_status.png": "target_status.png",
     "qcqp_status.png": "qcqp_status.png",
     "reward_trace.png": "reward_trace.png",
+    "reward_average_summary.png": "reward_avg_sum.png",
     "correction_modes.png": "correction_modes.png",
     "solver_status_counts.png": "solver_status_counts.png",
     "fallback_solver_status_counts.png": "fallback_solver_counts.png",
 }
+
+_SAFETY_COMPARISON_FILENAME_MAP = {
+    "comparison_outputs_last_episode.png": "cmp_out_last.png",
+    "comparison_inputs_last_episode.png": "cmp_in_last.png",
+    "comparison_contraction_margin_last_episode.png": "cmp_lyap_last.png",
+    "comparison_reward_mean.png": "cmp_reward.png",
+    "comparison_average_episode_reward.png": "cmp_avg_ep_reward.png",
+    "comparison_output_rmse.png": "cmp_out_rmse.png",
+    "comparison_rates.png": "cmp_rates.png",
+    "comparison_correction_modes.png": "cmp_modes.png",
+    "comparison_executed_action_gap_box.png": "cmp_gap_box.png",
+    "comparison_fallback_count_per_episode_box.png": "cmp_fallback_box.png",
+    "comparison_target_diagnostics.png": "cmp_target_diag.png",
+}
+
+_WINDOWS_PATH_SOFT_LIMIT = 240
+_EXPORT_PROFILES = {"debug", "compact"}
 
 
 def _jsonable(value):
@@ -93,6 +103,138 @@ def _jsonable(value):
     return value
 
 
+def _is_csv_scalar(value):
+    if value is None:
+        return True
+    if isinstance(value, (str, bool, int, float, np.bool_, np.integer, np.floating)):
+        return True
+    return False
+
+
+def _scalar_only_records(rows):
+    return [
+        {key: value for key, value in row.items() if _is_csv_scalar(value)}
+        for row in rows
+    ]
+
+
+_SAFETY_STEP_VECTOR_DETAIL_COLUMNS = {
+    "selector_objective_terms",
+    "selector_Qr_diag_used",
+    "selector_R_u_ref_diag_used",
+    "selector_R_delta_u_sel_diag_used",
+    "selector_Q_delta_x_diag_used",
+    "selector_Q_x_ref_diag_used",
+    "selector_Qx_base_diag_used",
+    "selector_Rdu_diag_used",
+    "u_cand",
+    "u_constrained_mpc",
+    "u_safe",
+    "u_prev",
+    "u_s",
+    "u_fallback_mpc",
+    "target_u_ref",
+    "target_u_ref_weight",
+    "target_x_ref",
+    "target_x_ref_weight",
+    "mpc_tracking_target",
+    "qcqp_tracking_target",
+    "y_s",
+    "r_s",
+    "x_s",
+    "d_s",
+    "cx_s",
+    "cd_d_s",
+    "solver_residuals",
+    "upstream_candidate_info",
+}
+
+_SAFETY_COMPACT_STEP_COLUMNS = [
+    "step",
+    "source",
+    "accepted",
+    "verified",
+    "correction_mode",
+    "safety_active",
+    "diagnostic_only",
+    "diagnostic_candidate_accepted",
+    "diagnostic_unsafe",
+    "diagnostic_unstable",
+    "actual_intervention",
+    "projection_active",
+    "fallback_mpc_active",
+    "fallback_verified",
+    "fallback_solver_status",
+    "reward",
+    "reward_base",
+    "reward_augmented",
+    "fallback_penalty",
+    "weighted_correction_gap",
+    "reward_fallback_active",
+    "solver_status",
+    "qcqp_attempted",
+    "qcqp_solved",
+    "qcqp_hard_accepted",
+    "constrained_mpc_attempted",
+    "constrained_mpc_solved",
+    "constrained_mpc_applied",
+    "V_k",
+    "V_next_first",
+    "V_bound",
+    "contraction_margin",
+    "contraction_margin_applied",
+    "first_step_contraction_satisfied",
+    "first_step_contraction_satisfied_applied",
+    "final_lyap_margin",
+    "lyap_acceptance_mode",
+    "target_success",
+    "target_failure",
+    "target_stage",
+    "target_source",
+    "effective_target_success",
+    "effective_target_source",
+    "effective_target_stage",
+    "effective_target_reused",
+    "target_mismatch_inf",
+    "target_quality_ok",
+    "target_quality_bypass",
+    "target_quality_reason",
+    "target_rate_inf",
+    "target_error_inf",
+    "target_slack_inf",
+    "selector_status",
+    "selector_stage",
+    "target_cond_M",
+    "target_cond_G",
+    "target_residual_total_norm",
+    "target_us_u_ref_inf",
+    "target_xs_x_ref_inf",
+    "selector_x_s_minus_xhat_inf",
+    "selector_x_s_minus_xprev_inf",
+    "selector_u_s_minus_uapplied_inf",
+    "selector_u_s_minus_uprev_inf",
+    "executed_action_gap_inf",
+]
+
+
+def _filter_safety_step_records(records, export_profile="debug"):
+    profile = _normalize_export_profile(export_profile)
+    scalar_records = _scalar_only_records(records)
+    filtered = []
+    for row in scalar_records:
+        if profile == "compact":
+            filtered.append({key: row.get(key) for key in _SAFETY_COMPACT_STEP_COLUMNS if key in row})
+        else:
+            filtered.append(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in _SAFETY_STEP_VECTOR_DETAIL_COLUMNS
+                }
+            )
+    return filtered
+
+
 def _safety_plot_filename(filename, *, paper_style=False):
     filename = str(filename)
     if not paper_style:
@@ -103,6 +245,60 @@ def _safety_plot_filename(filename, *, paper_style=False):
 def _safety_plot_path(output_dir, filename, *, paper_style=False):
     os.makedirs(output_dir, exist_ok=True)
     return os.path.join(output_dir, _safety_plot_filename(filename, paper_style=paper_style))
+
+
+def _max_joined_path_len(base_dir, rel_paths):
+    return max(len(os.path.join(base_dir, rel_path)) for rel_path in rel_paths)
+
+
+def _maybe_windows_short_filename(output_dir, filename, short_name_map):
+    filename = str(filename)
+    if os.name != "nt":
+        return filename
+    if len(os.path.join(output_dir, filename)) <= _WINDOWS_PATH_SOFT_LIMIT:
+        return filename
+    return short_name_map.get(filename, filename)
+
+
+def _safety_plot_rel_paths(*, short_paths):
+    state_target_dir = "st" if short_paths else "state_target_channels"
+    last_xhat_dir = "lx_xs" if short_paths else "last_episode_xhat_vs_xs"
+    last_decomp_dir = "ly_dec" if short_paths else "last_episode_ys_decomposition"
+    episode_samples_dir = "ep_samples" if short_paths else "episode_samples_by_tens"
+    last_episode_dir = "last_ep" if short_paths else "last_episode_summary"
+    return [
+        "summary.json",
+        "arrays.npz",
+        os.path.join(
+            "plots",
+            state_target_dir,
+            last_decomp_dir,
+            "ys_decomposition_0.png",
+        ),
+        os.path.join(
+            "plots",
+            state_target_dir,
+            last_xhat_dir,
+            "xhat_0_vs_x_s_eff_0.png",
+        ),
+        os.path.join(
+            "plots",
+            _safety_plot_filename(
+                "outputs_vs_ysp_vs_ys_last_episode.png",
+                paper_style=short_paths,
+            ),
+        ),
+        os.path.join(
+            "plots",
+            episode_samples_dir,
+            "ep_001_001_010.png" if short_paths else "episode_001_from_001_010.png",
+        ),
+        os.path.join(
+            "plots",
+            last_episode_dir,
+            "ep_001_last.png" if short_paths else "episode_001_last.png",
+        ),
+    ]
 
 
 def _array_or_none(info, key):
@@ -160,6 +356,99 @@ def _safe_nanmin(values):
     return float(np.min(finite))
 
 
+def _safe_nansum(values):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.sum(finite))
+
+
+def _normalize_export_profile(export_profile):
+    profile = str(export_profile or "debug").strip().lower()
+    if profile not in _EXPORT_PROFILES:
+        raise ValueError(f"Unknown export_profile={export_profile!r}. Expected one of {sorted(_EXPORT_PROFILES)}.")
+    return profile
+
+
+def _sanitize_method_slug(value, *, default="method", max_len=80):
+    text = str(value or default).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    if not text:
+        text = default
+    return _truncate_path_component(text, max_len=max_len)
+
+
+def _moving_average(values, window):
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return arr
+    window = max(int(window), 1)
+    finite = np.where(np.isfinite(arr), arr, np.nan)
+    out = np.full(arr.shape, np.nan, dtype=float)
+    for idx in range(arr.size):
+        start = max(0, idx - window + 1)
+        chunk = finite[start : idx + 1]
+        valid = chunk[np.isfinite(chunk)]
+        if valid.size:
+            out[idx] = float(np.mean(valid))
+    return out
+
+
+def _safety_active_flags_from_bundle(bundle, *, tol=1.0e-10):
+    u_safe = np.asarray(bundle.get("u_safe_dev_store", []), dtype=float)
+    u_cand = np.asarray(bundle.get("u_cand_dev_store", []), dtype=float)
+    n = max(u_safe.shape[0] if u_safe.ndim >= 1 else 0, u_cand.shape[0] if u_cand.ndim >= 1 else 0)
+    if n <= 0:
+        n = len(bundle.get("correction_modes", []))
+    active = np.zeros(n, dtype=float)
+    if u_safe.ndim == 2 and u_cand.ndim == 2 and u_safe.shape == u_cand.shape:
+        active = np.maximum(active, (np.nanmax(np.abs(u_safe - u_cand), axis=1) > float(tol)).astype(float))
+    projection = np.asarray(bundle.get("projection_active_flags", []), dtype=float).reshape(-1)
+    fallback = np.asarray(bundle.get("fallback_verified_flags", []), dtype=float).reshape(-1)
+    constrained = np.asarray(bundle.get("constrained_mpc_applied_flags", []), dtype=float).reshape(-1)
+    for flags in (projection, fallback, constrained):
+        use = min(active.size, flags.size)
+        if use:
+            active[:use] = np.maximum(active[:use], np.nan_to_num(flags[:use], nan=0.0))
+    inactive_modes = {"", "none", "None", "accepted_candidate", "mpc_only_diagnostic_bypass"}
+    for idx, mode in enumerate(bundle.get("correction_modes", [])[: active.size]):
+        mode_text = str(mode)
+        if mode_text not in inactive_modes:
+            active[idx] = 1.0
+    return active
+
+
+def _diagnostic_safety_active_flags_from_bundle(bundle):
+    diagnostic = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
+    contraction = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
+    n = max(diagnostic.size, contraction.size)
+    if n <= 0:
+        return np.zeros(0, dtype=float)
+    out = np.zeros(n, dtype=float)
+    if diagnostic.size:
+        out[: diagnostic.size] = np.maximum(out[: diagnostic.size], np.nan_to_num(diagnostic, nan=0.0))
+    if contraction.size:
+        out[: contraction.size] = np.maximum(out[: contraction.size], np.nan_to_num(contraction, nan=0.0))
+    return out
+
+
+def _shade_active_intervals(ax, x_values, active_flags, *, color="tab:red", alpha=0.08):
+    active = np.asarray(active_flags, dtype=float).reshape(-1) > 0.5
+    x_values = np.asarray(x_values, dtype=float).reshape(-1)
+    n = min(active.size, x_values.size)
+    if n <= 0:
+        return
+    start = None
+    for idx in range(n):
+        if active[idx] and start is None:
+            start = idx
+        is_last_active = active[idx] and (idx == n - 1 or not active[idx + 1])
+        if is_last_active and start is not None:
+            ax.axvspan(x_values[start], x_values[idx] + 1.0, color=color, alpha=alpha, linewidth=0)
+            start = None
+
+
 def make_safety_filter_step_records(lyap_info_storage):
     records = []
     for step_idx, info in enumerate(lyap_info_storage):
@@ -168,6 +457,7 @@ def make_safety_filter_step_records(lyap_info_storage):
         selector_terms = info.get("selector_objective_terms") or {}
         upstream_info = info.get("upstream_candidate_info", {})
         target_success = bool(info.get("target_success", False))
+        correction_mode = str(info.get("correction_mode", ""))
         row = {
             "step": int(step_idx),
             "step_idx": int(step_idx),
@@ -177,7 +467,32 @@ def make_safety_filter_step_records(lyap_info_storage):
             "accept_reason": info.get("accept_reason"),
             "reject_reason": info.get("reject_reason"),
             "correction_mode": info.get("correction_mode"),
-            "projection_active": bool(str(info.get("correction_mode", "")) == "optimized_correction"),
+            "projection_active": bool(correction_mode == "optimized_correction"),
+            "safety_active": bool(
+                correction_mode not in {"", "none", "None", "accepted_candidate", "mpc_only_diagnostic_bypass"}
+            ),
+            "diagnostic_only": bool(info.get("diagnostic_only", info.get("lyap_acceptance_mode") == "diagnostic_only")),
+            "diagnostic_candidate_accepted": info.get("diagnostic_candidate_accepted"),
+            "diagnostic_unsafe": bool(info.get("diagnostic_unsafe", False)),
+            "diagnostic_unstable": bool(
+                info.get(
+                    "diagnostic_unstable",
+                    False if info.get("candidate_lyap_ok") is None else not bool(info.get("candidate_lyap_ok")),
+                )
+            ),
+            "actual_intervention": bool(
+                info.get(
+                    "actual_intervention",
+                    correction_mode not in {"", "none", "None", "accepted_candidate", "mpc_only_diagnostic_bypass"},
+                )
+            ),
+            "fallback_mpc_active": bool(correction_mode.startswith("fallback_mpc")),
+            "reward": info.get("reward"),
+            "reward_base": info.get("reward_base"),
+            "reward_augmented": info.get("reward_augmented"),
+            "fallback_penalty": info.get("fallback_penalty"),
+            "weighted_correction_gap": info.get("weighted_correction_gap"),
+            "reward_fallback_active": bool(info.get("reward_fallback_active", False)),
             "candidate_bounds_ok": info.get("candidate_bounds_ok"),
             "candidate_move_ok": info.get("candidate_move_ok"),
             "candidate_lyap_ok": info.get("candidate_lyap_ok"),
@@ -261,6 +576,23 @@ def make_safety_filter_step_records(lyap_info_storage):
             "mpc_tracking_target_source": info.get("mpc_tracking_target_source"),
             "qcqp_tracking_target_source": info.get("qcqp_tracking_target_source"),
             "target_mismatch_inf": info.get("target_mismatch_inf"),
+            "target_quality_enabled": info.get("target_quality_enabled"),
+            "target_quality_ok": info.get("target_quality_ok"),
+            "target_quality_reason": info.get("target_quality_reason"),
+            "target_quality_policy": info.get("target_quality_policy"),
+            "target_quality_bypass": info.get("target_quality_bypass"),
+            "target_quality_mismatch_inf": info.get("target_quality_mismatch_inf"),
+            "target_quality_residual_norm": info.get("target_quality_residual_norm"),
+            "target_rate_inf": info.get("target_rate_inf"),
+            "performance_guard_enabled": info.get("performance_guard_enabled"),
+            "performance_guard_ok": info.get("performance_guard_ok"),
+            "performance_guard_reference_policy": info.get("performance_guard_reference_policy"),
+            "performance_guard_candidate_cost": info.get("performance_guard_candidate_cost"),
+            "performance_guard_reference_cost": info.get("performance_guard_reference_cost"),
+            "performance_guard_tolerance": info.get("performance_guard_tolerance"),
+            "residual_rl_enabled": info.get("residual_rl_enabled"),
+            "residual_rl_baseline_policy": info.get("residual_rl_baseline_policy"),
+            "residual_rl_authority_multiplier": info.get("residual_rl_authority_multiplier"),
             "target_error_inf": target_info.get("target_error_inf"),
             "target_slack_inf": target_info.get("target_slack_inf"),
             "selector_status": selector.get("status"),
@@ -398,12 +730,28 @@ def summarize_safety_filter_bundle(bundle):
         "n_constrained_mpc_applied": int(sum(bool(info.get("constrained_mpc_applied", False)) for info in lyap_info_storage)),
         "n_constrained_mpc_failed_applied_candidate": int(sum(bool(info.get("constrained_mpc_failed_applied_candidate", False)) for info in lyap_info_storage)),
         "reward_mean": float(np.mean(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
+        "reward_sum": float(np.sum(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_min": float(np.min(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_max": float(np.max(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
+        "reward_base_mean": _safe_nanmean(bundle.get("reward_base", [])),
+        "reward_augmented_mean": _safe_nanmean(bundle.get("reward_augmented", [])),
+        "fallback_penalty_mean": _safe_nanmean(bundle.get("fallback_penalty", [])),
+        "fallback_penalty_max": _safe_nanmax(bundle.get("fallback_penalty", [])),
+        "fallback_penalty_sum": _safe_nansum(bundle.get("fallback_penalty", [])),
+        "weighted_correction_gap_mean": _safe_nanmean(bundle.get("weighted_correction_gap", [])),
+        "weighted_correction_gap_max": _safe_nanmax(bundle.get("weighted_correction_gap", [])),
+        "diagnostic_unsafe_rate": _safe_nanmean(bundle.get("diagnostic_unsafe_flags", [])),
+        "diagnostic_unstable_rate": _safe_nanmean(bundle.get("diagnostic_unstable_flags", [])),
+        "diagnostic_safety_active_rate": _safe_nanmean(bundle.get("diagnostic_safety_active_flags", [])),
+        "actual_intervention_rate": _safe_nanmean(bundle.get("actual_intervention_flags", [])),
         "target_error_inf_max": float(np.nanmax(bundle["target_error_inf"])) if bundle["target_error_inf"].size > 0 else None,
         "target_slack_inf_max": float(np.nanmax(bundle["target_slack_inf"])) if bundle["target_slack_inf"].size > 0 else None,
         "lyapunov_margin_min": float(np.nanmin(bundle["lyapunov_margin"])) if bundle["lyapunov_margin"].size > 0 else None,
         "target_mismatch_inf_max": float(np.nanmax(bundle["target_mismatch_inf"])) if bundle["target_mismatch_inf"].size > 0 else None,
+        "target_quality_ok_rate": _safe_nanmean(bundle.get("target_quality_ok_flags", [])),
+        "target_quality_bypass_rate": _safe_nanmean(bundle.get("target_quality_bypass_flags", [])),
+        "target_rate_inf_max": _safe_nanmax(bundle.get("target_rate_inf", [])),
+        "performance_guard_ok_rate": _safe_nanmean(bundle.get("performance_guard_ok_flags", [])),
         "d_s_minus_dhat_inf_max": float(np.nanmax(bundle["d_s_minus_dhat_inf"])) if bundle["d_s_minus_dhat_inf"].size > 0 else None,
         "target_cond_M_max": _safe_nanmax(bundle.get("target_cond_M", [])),
         "target_cond_G_max": _safe_nanmax(bundle.get("target_cond_G", [])),
@@ -509,6 +857,14 @@ def build_safety_filter_run_bundle(
         "r_target_store": _stack_vectors(lyap_info_storage, "r_s", y_sp.shape[1]),
         "cx_s_store": _stack_vectors(lyap_info_storage, "cx_s", n_y),
         "cd_d_s_store": _stack_vectors(lyap_info_storage, "cd_d_s", n_y),
+        "reward_base": np.array([info.get("reward_base", np.nan) for info in lyap_info_storage], dtype=float),
+        "reward_augmented": np.array([info.get("reward_augmented", info.get("reward", np.nan)) for info in lyap_info_storage], dtype=float),
+        "fallback_penalty": np.array([info.get("fallback_penalty", 0.0) for info in lyap_info_storage], dtype=float),
+        "weighted_correction_gap": np.array([info.get("weighted_correction_gap", 0.0) for info in lyap_info_storage], dtype=float),
+        "reward_fallback_active_flags": np.array(
+            [1.0 if bool(info.get("reward_fallback_active", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
         "selector_target_tracking_term": np.array(
             [
                 (info.get("selector_objective_terms") or {}).get("target_tracking", np.nan)
@@ -612,6 +968,41 @@ def build_safety_filter_run_bundle(
         ),
         "target_mismatch_inf": np.array(
             [info.get("target_mismatch_inf", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_quality_ok_flags": np.array(
+            [
+                np.nan if info.get("target_quality_ok") is None else (1.0 if bool(info.get("target_quality_ok")) else 0.0)
+                for info in lyap_info_storage
+            ],
+            dtype=float,
+        ),
+        "target_quality_bypass_flags": np.array(
+            [1.0 if bool(info.get("target_quality_bypass", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_quality_mismatch_inf": np.array(
+            [info.get("target_quality_mismatch_inf", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_quality_residual_norm": np.array(
+            [info.get("target_quality_residual_norm", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "target_rate_inf": np.array([info.get("target_rate_inf", np.nan) for info in lyap_info_storage], dtype=float),
+        "performance_guard_ok_flags": np.array(
+            [
+                np.nan if info.get("performance_guard_ok") is None else (1.0 if bool(info.get("performance_guard_ok")) else 0.0)
+                for info in lyap_info_storage
+            ],
+            dtype=float,
+        ),
+        "performance_guard_candidate_cost": np.array(
+            [info.get("performance_guard_candidate_cost", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "performance_guard_reference_cost": np.array(
+            [info.get("performance_guard_reference_cost", np.nan) for info in lyap_info_storage],
             dtype=float,
         ),
         "target_cond_M": np.array(
@@ -732,6 +1123,46 @@ def build_safety_filter_run_bundle(
             [1.0 if bool(info.get("accepted", False)) else 0.0 for info in lyap_info_storage],
             dtype=float,
         ),
+        "diagnostic_only_flags": np.array(
+            [1.0 if bool(info.get("diagnostic_only", info.get("lyap_acceptance_mode") == "diagnostic_only")) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "diagnostic_candidate_accepted_flags": np.array(
+            [np.nan if info.get("diagnostic_candidate_accepted") is None else (1.0 if bool(info.get("diagnostic_candidate_accepted")) else 0.0) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "diagnostic_unsafe_flags": np.array(
+            [1.0 if bool(info.get("diagnostic_unsafe", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "diagnostic_unstable_flags": np.array(
+            [1.0 if bool(info.get("diagnostic_unstable", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "actual_intervention_flags": np.array(
+            [
+                1.0
+                if bool(
+                    info.get(
+                        "actual_intervention",
+                        str(info.get("correction_mode", "")) not in {
+                            "",
+                            "none",
+                            "None",
+                            "accepted_candidate",
+                            "mpc_only_diagnostic_bypass",
+                        },
+                    )
+                )
+                else 0.0
+                for info in lyap_info_storage
+            ],
+            dtype=float,
+        ),
+        "diagnostic_safety_active_flags": np.maximum(
+            np.array([1.0 if bool(info.get("diagnostic_unsafe", False)) else 0.0 for info in lyap_info_storage], dtype=float),
+            np.array([1.0 if bool(info.get("diagnostic_unstable", False)) else 0.0 for info in lyap_info_storage], dtype=float),
+        ),
         "fallback_verified_flags": np.array(
             [1.0 if bool(info.get("fallback_verified", False)) else 0.0 for info in lyap_info_storage],
             dtype=float,
@@ -747,7 +1178,12 @@ def build_safety_filter_run_bundle(
         "fallback_solver_statuses": [info.get("fallback_solver_status") for info in lyap_info_storage],
         "extra": {} if extra is None else extra,
         "delta_t": None if extra is None else extra.get("delta_t"),
-        "warm_start_plot": None if extra is None else extra.get("warm_start_plot"),
+        "phase_plot_boundaries": None
+        if extra is None
+        else extra.get("phase_plot_boundaries", extra.get("warm_start_plot")),
+        "warm_start_plot": None
+        if extra is None
+        else extra.get("warm_start_plot", extra.get("phase_plot_boundaries")),
         "start_plot_idx": 10 if extra is None else int(extra.get("start_plot_idx", 10)),
         "actor_losses": None if extra is None or extra.get("actor_losses") is None else np.asarray(extra.get("actor_losses"), float),
         "critic_losses": None if extra is None or extra.get("critic_losses") is None else np.asarray(extra.get("critic_losses"), float),
@@ -921,6 +1357,10 @@ def make_safety_filter_episode_records(bundle):
     y_sp_phys = _physical_setpoint_steps(bundle)
     y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
     rewards = np.asarray(bundle["rewards"], dtype=float).reshape(-1)
+    fallback_penalty = np.asarray(bundle.get("fallback_penalty", []), dtype=float).reshape(-1)
+    diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
+    diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
+    actual_intervention = np.asarray(bundle.get("actual_intervention_flags", []), dtype=float).reshape(-1)
     contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
     executed_action_gap_inf = np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float).reshape(-1)
     modes = list(bundle.get("correction_modes", []))
@@ -944,6 +1384,14 @@ def make_safety_filter_episode_records(bundle):
             "n_steps": int(stop - start),
             "reward_mean": float(np.mean(rewards[start:stop])) if stop > start else None,
             "reward_sum": float(np.sum(rewards[start:stop])) if stop > start else None,
+            "fallback_penalty_mean": _safe_nanmean(fallback_penalty[start:stop]),
+            "fallback_penalty_sum": _safe_nansum(fallback_penalty[start:stop]),
+            "diagnostic_unsafe_count": int(np.nansum(diagnostic_unsafe[start:stop] > 0.5)),
+            "diagnostic_unsafe_rate": _safe_nanmean(diagnostic_unsafe[start:stop]),
+            "diagnostic_unstable_count": int(np.nansum(diagnostic_unstable[start:stop] > 0.5)),
+            "diagnostic_unstable_rate": _safe_nanmean(diagnostic_unstable[start:stop]),
+            "actual_intervention_count": int(np.nansum(actual_intervention[start:stop] > 0.5)),
+            "actual_intervention_rate": _safe_nanmean(actual_intervention[start:stop]),
             "accepted_candidate_count": int(sum(mode == "accepted_candidate" for mode in mode_slice)),
             "fallback_count": int(
                 sum(mode in {"fallback_mpc_verified", "fallback_mpc_unverified"} for mode in mode_slice)
@@ -979,9 +1427,20 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
         "n_steps": summary.get("n_steps", bundle.get("nFE")),
         "reward_mean": summary.get("reward_mean"),
         "reward_sum": summary.get("reward_sum"),
+        "reward_base_mean": summary.get("reward_base_mean"),
+        "reward_augmented_mean": summary.get("reward_augmented_mean"),
+        "fallback_penalty_mean": summary.get("fallback_penalty_mean"),
+        "fallback_penalty_max": summary.get("fallback_penalty_max"),
+        "fallback_penalty_sum": summary.get("fallback_penalty_sum"),
+        "weighted_correction_gap_mean": summary.get("weighted_correction_gap_mean"),
+        "weighted_correction_gap_max": summary.get("weighted_correction_gap_max"),
         "verified_rate": summary.get("verified_rate"),
         "accepted_rate": summary.get("accepted_rate"),
         "fallback_rate": summary.get("fallback_rate"),
+        "diagnostic_unsafe_rate": summary.get("diagnostic_unsafe_rate"),
+        "diagnostic_unstable_rate": summary.get("diagnostic_unstable_rate"),
+        "actual_intervention_rate": summary.get("actual_intervention_rate"),
+        "diagnostic_safety_active_rate": summary.get("diagnostic_safety_active_rate"),
         "n_accepted_candidate": summary.get("n_accepted_candidate"),
         "n_fallback_mpc_verified": summary.get("n_fallback_mpc_verified"),
         "n_fallback_mpc_unverified": summary.get("n_fallback_mpc_unverified"),
@@ -1024,94 +1483,135 @@ def _write_csv(path, records):
         writer.writerows(records)
 
 
-def _save_npz(path, bundle):
-    np.savez_compressed(
-        path,
-        y_system=bundle["y_system"],
-        u_applied_phys=bundle["u_applied_phys"],
-        xhatdhat=bundle["xhatdhat"],
-        y_sp=bundle["y_sp"],
-        yhat=bundle["yhat"],
-        e_store=bundle["e_store"],
-        qi=bundle["qi"],
-        qs=bundle["qs"],
-        ha=bundle["ha"],
-        u_safe_dev_store=bundle["u_safe_dev_store"],
-        u_cand_dev_store=bundle["u_cand_dev_store"],
-        u_prev_dev_store=bundle["u_prev_dev_store"],
-        u_target_dev_store=bundle["u_target_dev_store"],
-        u_fallback_mpc_dev_store=bundle["u_fallback_mpc_dev_store"],
-        target_u_ref_store=bundle["target_u_ref_store"],
-        target_u_ref_weight_store=bundle["target_u_ref_weight_store"],
-        target_x_ref_store=bundle["target_x_ref_store"],
-        target_x_ref_weight_store=bundle["target_x_ref_weight_store"],
-        x_target_store=bundle["x_target_store"],
-        d_target_store=bundle["d_target_store"],
-        y_target_store=bundle["y_target_store"],
-        r_target_store=bundle["r_target_store"],
-        cx_s_store=bundle["cx_s_store"],
-        cd_d_s_store=bundle["cd_d_s_store"],
-        selector_target_tracking_term=bundle["selector_target_tracking_term"],
-        selector_u_applied_anchor_term=bundle["selector_u_applied_anchor_term"],
-        selector_u_prev_smoothing_term=bundle["selector_u_prev_smoothing_term"],
-        selector_x_prev_smoothing_term=bundle["selector_x_prev_smoothing_term"],
-        selector_xhat_anchor_term=bundle["selector_xhat_anchor_term"],
-        selector_objective_value=bundle["selector_objective_value"],
-        selector_x_s_minus_xhat_inf=bundle["selector_x_s_minus_xhat_inf"],
-        selector_x_s_minus_xprev_inf=bundle["selector_x_s_minus_xprev_inf"],
-        V_k=bundle["V_k"],
-        V_next_first=bundle["V_next_first"],
-        V_next_first_candidate=bundle["V_next_first_candidate"],
-        V_next_first_applied=bundle["V_next_first_applied"],
-        V_next_cand=bundle["V_next_cand"],
-        V_bound=bundle["V_bound"],
-        contraction_margin=bundle["contraction_margin"],
-        contraction_margin_candidate=bundle["contraction_margin_candidate"],
-        contraction_margin_applied=bundle["contraction_margin_applied"],
-        first_step_contraction_satisfied_flags=bundle["first_step_contraction_satisfied_flags"],
-        first_step_contraction_satisfied_applied_flags=bundle["first_step_contraction_satisfied_applied_flags"],
-        final_lyap_value=bundle["final_lyap_value"],
-        final_lyap_bound=bundle["final_lyap_bound"],
-        final_lyap_margin=bundle["final_lyap_margin"],
-        lyapunov_margin=bundle["lyapunov_margin"],
-        target_error_inf=bundle["target_error_inf"],
-        target_slack_inf=bundle["target_slack_inf"],
-        selector_dyn_residual_inf=bundle["selector_dyn_residual_inf"],
-        selector_bound_violation_inf=bundle["selector_bound_violation_inf"],
-        target_mismatch_inf=bundle["target_mismatch_inf"],
-        target_cond_M=bundle["target_cond_M"],
-        target_cond_G=bundle["target_cond_G"],
-        target_residual_total_norm=bundle["target_residual_total_norm"],
-        target_u_ref_active_flags=bundle["target_u_ref_active_flags"],
-        target_x_ref_active_flags=bundle["target_x_ref_active_flags"],
-        target_us_u_ref_inf=bundle["target_us_u_ref_inf"],
-        target_xs_x_ref_inf=bundle["target_xs_x_ref_inf"],
-        executed_action_gap_inf=bundle["executed_action_gap_inf"],
-        target_success_flags=bundle["target_success_flags"],
-        target_failure_flags=bundle["target_failure_flags"],
-        target_stage_code=bundle["target_stage_code"],
-        effective_target_success_flags=bundle["effective_target_success_flags"],
-        effective_target_reused_flags=bundle["effective_target_reused_flags"],
-        d_s_minus_dhat_inf=bundle["d_s_minus_dhat_inf"],
-        qcqp_attempted_flags=bundle["qcqp_attempted_flags"],
-        qcqp_solved_flags=bundle["qcqp_solved_flags"],
-        qcqp_hard_accepted_flags=bundle["qcqp_hard_accepted_flags"],
-        candidate_first_step_lyap_ok_flags=bundle["candidate_first_step_lyap_ok_flags"],
-        first_step_contraction_triggered_flags=bundle["first_step_contraction_triggered_flags"],
-        constrained_mpc_attempted_flags=bundle["constrained_mpc_attempted_flags"],
-        constrained_mpc_solved_flags=bundle["constrained_mpc_solved_flags"],
-        constrained_mpc_applied_flags=bundle["constrained_mpc_applied_flags"],
-        constrained_mpc_failed_applied_candidate_flags=bundle["constrained_mpc_failed_applied_candidate_flags"],
-        verified_flags=bundle["verified_flags"],
-        accepted_flags=bundle["accepted_flags"],
-        fallback_verified_flags=bundle["fallback_verified_flags"],
-        projection_active_flags=bundle["projection_active_flags"],
-    )
+def _safety_npz_arrays(bundle, export_profile="debug"):
+    profile = _normalize_export_profile(export_profile)
+    arrays = {
+        "y_system": bundle["y_system"],
+        "u_applied_phys": bundle["u_applied_phys"],
+        "y_sp": bundle["y_sp"],
+        "qi": bundle["qi"],
+        "qs": bundle["qs"],
+        "ha": bundle["ha"],
+        "u_safe_dev_store": bundle["u_safe_dev_store"],
+        "u_cand_dev_store": bundle["u_cand_dev_store"],
+        "u_target_dev_store": bundle["u_target_dev_store"],
+        "u_fallback_mpc_dev_store": bundle["u_fallback_mpc_dev_store"],
+        "y_target_store": bundle["y_target_store"],
+        "target_mismatch_inf": bundle["target_mismatch_inf"],
+        "target_residual_total_norm": bundle["target_residual_total_norm"],
+        "target_stage_code": bundle["target_stage_code"],
+        "executed_action_gap_inf": bundle["executed_action_gap_inf"],
+        "reward_base": bundle["reward_base"],
+        "reward_augmented": bundle["reward_augmented"],
+        "fallback_penalty": bundle["fallback_penalty"],
+        "weighted_correction_gap": bundle["weighted_correction_gap"],
+        "contraction_margin": bundle["contraction_margin"],
+        "contraction_margin_applied": bundle["contraction_margin_applied"],
+        "lyapunov_margin": bundle["lyapunov_margin"],
+        "rewards": bundle["rewards"],
+        "verified_flags": bundle["verified_flags"],
+        "accepted_flags": bundle["accepted_flags"],
+        "diagnostic_only_flags": bundle["diagnostic_only_flags"],
+        "diagnostic_candidate_accepted_flags": bundle["diagnostic_candidate_accepted_flags"],
+        "diagnostic_unsafe_flags": bundle["diagnostic_unsafe_flags"],
+        "diagnostic_unstable_flags": bundle["diagnostic_unstable_flags"],
+        "diagnostic_safety_active_flags": bundle["diagnostic_safety_active_flags"],
+        "actual_intervention_flags": bundle["actual_intervention_flags"],
+        "fallback_verified_flags": bundle["fallback_verified_flags"],
+        "reward_fallback_active_flags": bundle["reward_fallback_active_flags"],
+        "projection_active_flags": bundle["projection_active_flags"],
+        "safety_active_flags": _safety_active_flags_from_bundle(bundle),
+    }
+    optional_keys = [
+        "y_sp_phys_store",
+        "y_target_phys_store",
+        "r_target_phys_store",
+        "yhat_phys_store",
+        "u_target_phys_store",
+    ]
+    for key in optional_keys:
+        if key in bundle:
+            arrays[key] = bundle[key]
+    if profile == "debug":
+        debug_keys = [
+            "xhatdhat",
+            "yhat",
+            "e_store",
+            "u_prev_dev_store",
+            "target_u_ref_store",
+            "target_u_ref_weight_store",
+            "target_x_ref_store",
+            "target_x_ref_weight_store",
+            "x_target_store",
+            "d_target_store",
+            "r_target_store",
+            "cx_s_store",
+            "cd_d_s_store",
+            "selector_target_tracking_term",
+            "selector_u_applied_anchor_term",
+            "selector_u_prev_smoothing_term",
+            "selector_x_prev_smoothing_term",
+            "selector_xhat_anchor_term",
+            "selector_objective_value",
+            "selector_x_s_minus_xhat_inf",
+            "selector_x_s_minus_xprev_inf",
+            "V_k",
+            "V_next_first",
+            "V_next_first_candidate",
+            "V_next_first_applied",
+            "V_next_cand",
+            "V_bound",
+            "contraction_margin_candidate",
+            "first_step_contraction_satisfied_flags",
+            "first_step_contraction_satisfied_applied_flags",
+            "final_lyap_value",
+            "final_lyap_bound",
+            "final_lyap_margin",
+            "target_error_inf",
+            "target_slack_inf",
+            "selector_dyn_residual_inf",
+            "selector_bound_violation_inf",
+            "target_cond_M",
+            "target_cond_G",
+            "target_u_ref_active_flags",
+            "target_x_ref_active_flags",
+            "target_us_u_ref_inf",
+            "target_xs_x_ref_inf",
+            "target_success_flags",
+            "target_failure_flags",
+            "effective_target_success_flags",
+            "effective_target_reused_flags",
+            "d_s_minus_dhat_inf",
+            "qcqp_attempted_flags",
+            "qcqp_solved_flags",
+            "qcqp_hard_accepted_flags",
+            "candidate_first_step_lyap_ok_flags",
+            "first_step_contraction_triggered_flags",
+            "constrained_mpc_attempted_flags",
+            "constrained_mpc_solved_flags",
+            "constrained_mpc_applied_flags",
+            "constrained_mpc_failed_applied_candidate_flags",
+        ]
+        for key in debug_keys:
+            if key in bundle:
+                arrays[key] = bundle[key]
+    return arrays
+
+
+def _save_npz(path, bundle, export_profile="debug"):
+    np.savez_compressed(path, **_safety_npz_arrays(bundle, export_profile=export_profile))
 
 
 def _comparison_plot_path(output_dir, filename):
     os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, filename)
+    return os.path.join(
+        output_dir,
+        _maybe_windows_short_filename(
+            output_dir,
+            filename,
+            _SAFETY_COMPARISON_FILENAME_MAP,
+        ),
+    )
 
 
 def _record_series(records, key):
@@ -1278,37 +1778,6 @@ def _save_safety_last_episode_overlays(bundles_by_case, output_dir):
     return paths
 
 
-def _build_safety_figure_manifest(out_dir, bundle):
-    entries = []
-
-    def add(key, rel_path, description):
-        full_path = os.path.join(out_dir, rel_path)
-        if os.path.exists(full_path):
-            entries.append(
-                {
-                    "key": key,
-                    "path": full_path,
-                    "description": description,
-                }
-            )
-
-    add("correction_modes", "correction_modes.png", "Safety activity counts by correction mode.")
-    add("solver_status_counts", "solver_status_counts.png", "Fallback/tracking solver status counts.")
-    add("fallback_solver_status_counts", "fallback_solver_status_counts.png", "Fallback solver status counts.")
-    add("last_episode_summary", "last_episode_summary", "Last-episode summary figures.")
-    add("episode_samples_by_tens", "episode_samples_by_tens", "Representative episode windows for slide selection.")
-    add("paper_safety_selector", os.path.join("paper_plots", "safety_selector"), "Paper-style safety selector figures.")
-    add("paper_rl_summary", os.path.join("paper_plots", "rl_summary"), "Paper-style RL summary figures.")
-    return {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "source": bundle.get("source"),
-        "recommended_figures": entries,
-    }
-
-
-_WINDOWS_PATH_SOFT_LIMIT = 240
-
-
 def _truncate_path_component(value, max_len=64):
     value = str(value)
     if len(value) <= max_len:
@@ -1331,36 +1800,26 @@ def _unique_directory_candidate(base_path):
 
 def _project_safety_debug_max_path_len(
     out_dir,
-    *,
-    save_paper_plots,
-    save_rl_summary_plots,
-    paper_plot_subdir,
 ):
-    rel_paths = [
-        "bundle.pkl",
-        os.path.join("episode_samples_by_tens", "episode_001_from_001_010.png"),
-        os.path.join("last_episode_summary", "episode_001_last.png"),
-    ]
-    if save_paper_plots:
-        paper_root = str(paper_plot_subdir)
-        rel_paths.extend(
-            [
-                os.path.join(
-                    paper_root,
-                    "safety_selector",
-                    _safety_plot_filename("first_step_contraction_diagnostics.png", paper_style=True),
-                ),
-                os.path.join(
-                    paper_root,
-                    "safety_selector",
-                    _safety_plot_filename("ys_decomposition_summary_last_episode.png", paper_style=True),
-                ),
-                os.path.join(paper_root, "safety_selector", "last_episode_summary", "episode_001_last.png"),
-            ]
-        )
-        if save_rl_summary_plots:
-            rel_paths.append(os.path.join(paper_root, "rl_summary", "fig_rl_outputs_last9999.png"))
-    return max(len(os.path.join(out_dir, rel_path)) for rel_path in rel_paths)
+    long_len = _max_joined_path_len(
+        out_dir,
+        _safety_plot_rel_paths(short_paths=False),
+    )
+    if os.name != "nt" or long_len <= _WINDOWS_PATH_SOFT_LIMIT:
+        return long_len
+    return _max_joined_path_len(
+        out_dir,
+        _safety_plot_rel_paths(short_paths=True),
+    )
+
+
+def _should_use_short_safety_plot_paths(output_dir):
+    if os.name != "nt":
+        return False
+    return _max_joined_path_len(
+        output_dir,
+        _safety_plot_rel_paths(short_paths=False),
+    ) > _WINDOWS_PATH_SOFT_LIMIT
 
 
 def _select_safety_debug_output_dir(
@@ -1368,40 +1827,25 @@ def _select_safety_debug_output_dir(
     prefix_name,
     *,
     timestamp,
-    save_paper_plots,
-    save_rl_summary_plots,
-    paper_plot_subdir,
 ):
-    standard_base = os.path.join(directory, prefix_name, timestamp)
+    method_slug = _sanitize_method_slug(prefix_name, default="safety_filter")
+    standard_base = os.path.join(directory, method_slug)
     standard_candidate = _unique_directory_candidate(standard_base)
     if os.name != "nt":
         return standard_candidate
 
-    prefix_hash = hashlib.sha1(str(prefix_name).encode("utf-8")).hexdigest()[:8]
     short_stamp = str(timestamp)[-6:]
     candidate_bases = [
         standard_base,
-        os.path.join(directory, prefix_name),
-        os.path.join(directory, f"{_truncate_path_component(prefix_name, max_len=56)}_{short_stamp}"),
-        os.path.join(directory, f"sf_{prefix_hash}_{short_stamp}"),
-        os.path.join(directory, f"sf_{prefix_hash}"),
+        os.path.join(directory, _truncate_path_component(method_slug, max_len=56)),
+        os.path.join(directory, f"{_truncate_path_component(method_slug, max_len=48)}_{short_stamp}"),
     ]
 
     best_candidate = standard_candidate
-    best_len = _project_safety_debug_max_path_len(
-        best_candidate,
-        save_paper_plots=save_paper_plots,
-        save_rl_summary_plots=save_rl_summary_plots,
-        paper_plot_subdir=paper_plot_subdir,
-    )
+    best_len = _project_safety_debug_max_path_len(best_candidate)
     for base_path in candidate_bases:
         candidate = _unique_directory_candidate(base_path)
-        projected_len = _project_safety_debug_max_path_len(
-            candidate,
-            save_paper_plots=save_paper_plots,
-            save_rl_summary_plots=save_rl_summary_plots,
-            paper_plot_subdir=paper_plot_subdir,
-        )
+        projected_len = _project_safety_debug_max_path_len(candidate)
         if projected_len < best_len:
             best_candidate = candidate
             best_len = projected_len
@@ -1410,13 +1854,14 @@ def _select_safety_debug_output_dir(
     return best_candidate
 
 
-def _plot_safety_filter_bundle_impl(bundle, output_dir):
+def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
     if not HAS_MATPLOTLIB:
         raise ImportError("matplotlib is required for plotting debug artifacts.")
 
     os.makedirs(output_dir, exist_ok=True)
-    paper_mode = "paper_plots" in os.path.normpath(output_dir).lower()
-    plot_path = lambda filename: _safety_plot_path(output_dir, filename, paper_style=paper_mode)
+    short_path_mode = _should_use_short_safety_plot_paths(output_dir)
+    use_short_names = bool(paper_style or short_path_mode)
+    plot_path = lambda filename: _safety_plot_path(output_dir, filename, paper_style=use_short_names)
 
     y_system = bundle["y_system"]
     u_applied_phys = bundle["u_applied_phys"]
@@ -1458,6 +1903,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     u_safe_dev = bundle["u_safe_dev_store"]
     rewards = bundle["rewards"]
     projection_active = np.asarray(bundle["projection_active_flags"], float)
+    fallback_verified_flags = np.asarray(bundle["fallback_verified_flags"], float)
     xhatdhat = np.asarray(bundle["xhatdhat"], float)
     x_target_store = np.asarray(bundle["x_target_store"], float)
     d_target_store = np.asarray(bundle["d_target_store"], float)
@@ -1508,7 +1954,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     )
 
     def _paper_dirname(long_name, short_name):
-        return short_name if paper_mode else long_name
+        return short_name if use_short_names else long_name
 
     def _plot_augmented_states(data, filename, dhat_only=False):
         data = np.asarray(data, float)
@@ -2073,7 +2519,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
     plt.savefig(plot_path("y_minus_ys.png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-    if not paper_mode:
+    if not paper_style:
         fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
         axes[0].step(time_u, target_failure_flags, where="post", linewidth=2, label="target_selector_failed")
         axes[0].step(time_u, target_success_flags, where="post", linewidth=1.5, linestyle="--", label="target_selector_success")
@@ -2139,257 +2585,258 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
 
         plt.figure(figsize=(10, 5))
         plt.plot(time_u, rewards, linewidth=2, label="reward")
+        reward_ma = _moving_average(rewards, max(1, int(bundle.get("time_in_sub_episodes", 1))))
+        if reward_ma.size == len(time_u):
+            plt.plot(time_u, reward_ma, linewidth=2, linestyle="--", label="episode-window avg reward")
         plt.grid(True, linestyle="--", alpha=0.35)
         plt.legend()
         plt.tight_layout()
         plt.savefig(plot_path("reward_trace.png"), dpi=300, bbox_inches="tight")
         plt.close()
 
-    episode_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
-    if (not paper_mode) and episode_len > 0 and len(time_u) > 0:
-        n_episodes = int(np.ceil(len(time_u) / float(episode_len)))
-        rng = np.random.default_rng(0)
-        episode_plot_dir = os.path.join(output_dir, "episode_samples_by_tens")
-        os.makedirs(episode_plot_dir, exist_ok=True)
+        episode_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
+        if episode_len > 0 and len(time_u) > 0:
+            n_episodes = int(np.ceil(len(time_u) / float(episode_len)))
+            rng = np.random.default_rng(0)
+            episode_plot_dir = os.path.join(output_dir, _paper_dirname("episode_samples_by_tens", "ep_samples"))
+            last_episode_dir = os.path.join(output_dir, _paper_dirname("last_episode_summary", "last_ep"))
+            os.makedirs(episode_plot_dir, exist_ok=True)
+            os.makedirs(last_episode_dir, exist_ok=True)
 
-        fallback_mpc_active = np.array(
-            [1.0 if str(mode).startswith("fallback_mpc") else 0.0 for mode in bundle["correction_modes"]],
-            dtype=float,
-        )
-        fallback_mpc_verified = np.asarray(bundle["fallback_verified_flags"], float)
+            fallback_mpc_active = np.array(
+                [1.0 if str(mode).startswith("fallback_mpc") else 0.0 for mode in bundle["correction_modes"]],
+                dtype=float,
+            )
+            safety_active_flags = _safety_active_flags_from_bundle(bundle)
+            diagnostic_safety_active_flags = _diagnostic_safety_active_flags_from_bundle(bundle)
+            episode_reward_mean = np.asarray(
+                [
+                    np.nanmean(rewards[idx * episode_len : min((idx + 1) * episode_len, len(rewards))])
+                    for idx in range(n_episodes)
+                ],
+                dtype=float,
+            )
 
-        block_starts = list(range(0, n_episodes, 10))[:20]
-        for block_start in block_starts:
-            block_end = min(block_start + 10, n_episodes)
-            if block_start >= block_end:
-                continue
-            chosen_episode = int(rng.integers(block_start, block_end))
-
-            step_start = chosen_episode * episode_len
-            step_end = min((chosen_episode + 1) * episode_len, len(time_u))
-            if step_start >= step_end:
-                continue
-
-            y_start = step_start
-            y_end = min(step_end + 1, len(time_y))
-
-            local_time_y = np.arange(y_end - y_start)
-            local_time_u = np.arange(step_end - step_start)
-
-            fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=False)
-            axes = np.atleast_1d(axes)
-
-            for idx in range(min(n_y, 2)):
-                ax = axes[idx]
-                ax.plot(
-                    local_time_y,
-                    y_system[y_start:y_end, idx],
-                    linewidth=2.0,
-                    color="tab:blue",
-                    label=f"output_{idx}",
-                )
-                ax.step(
-                    local_time_u,
-                    y_sp_plot[step_start:step_end, idx],
-                    where="post",
-                    linewidth=2.0,
-                    linestyle="--",
-                    color="tab:gray",
-                    label=f"setpoint_{idx}",
-                )
-                ax.grid(True, linestyle="--", alpha=0.35)
-                ax.legend(loc="best")
-                ax.set_ylabel(f"y{idx}")
-
-            if first_step_replacement_mode:
-                axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
-                axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
-                axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
-                axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
-                axes[2].set_ylabel("replacement")
-                axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
-                axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
-                axes[3].set_ylabel("lyap")
-            else:
-                axes[2].step(
-                    local_time_u,
-                    qcqp_attempted_flags[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:orange",
-                    label="qcqp_attempted",
-                )
-                axes[2].step(
-                    local_time_u,
-                    qcqp_hard_accepted_flags[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:green",
-                    label="qcqp_hard_accepted",
-                )
-                axes[2].step(
-                    local_time_u,
-                    projection_active[step_start:step_end],
-                    where="post",
-                    linewidth=1.5,
-                    linestyle="--",
-                    color="tab:red",
-                    label="optimized_correction",
-                )
-                axes[2].set_ylabel("projection")
-                axes[3].step(
-                    local_time_u,
-                    fallback_mpc_active[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:purple",
-                    label="fallback_mpc_active",
-                )
-                axes[3].step(
-                    local_time_u,
-                    fallback_mpc_verified[step_start:step_end],
-                    where="post",
-                    linewidth=1.5,
-                    linestyle="--",
-                    color="tab:green",
-                    label="fallback_mpc_verified",
-                )
-                axes[3].set_ylabel("fallback")
-            axes[2].set_ylim(-0.05, 1.05)
-            axes[2].set_yticks([0.0, 1.0])
-            axes[2].grid(True, linestyle="--", alpha=0.35)
-            axes[2].legend(loc="best")
+            fig, axes = plt.subplots(4, 1, figsize=(10, 9), sharex=False)
+            ep_time = np.arange(n_episodes)
+            fallback_rate = np.asarray(
+                [
+                    np.nanmean(fallback_mpc_active[idx * episode_len : min((idx + 1) * episode_len, fallback_mpc_active.size)])
+                    for idx in range(n_episodes)
+                ],
+                dtype=float,
+            )
+            safety_rate = np.asarray(
+                [
+                    np.nanmean(safety_active_flags[idx * episode_len : min((idx + 1) * episode_len, safety_active_flags.size)])
+                    for idx in range(n_episodes)
+                ],
+                dtype=float,
+            )
+            diagnostic_safety_rate = np.asarray(
+                [
+                    np.nanmean(
+                        diagnostic_safety_active_flags[
+                            idx * episode_len : min((idx + 1) * episode_len, diagnostic_safety_active_flags.size)
+                        ]
+                    )
+                    for idx in range(n_episodes)
+                ],
+                dtype=float,
+            )
+            axes[0].plot(ep_time + 1, episode_reward_mean, linewidth=1.8, label="episode average reward")
+            axes[0].plot(ep_time + 1, _moving_average(episode_reward_mean, 5), linewidth=2.2, linestyle="--", label="5-episode moving avg")
+            axes[0].set_ylabel("reward")
+            axes[1].plot(ep_time + 1, safety_rate, linewidth=1.8, color="tab:red", label="safety active rate")
+            axes[1].plot(
+                ep_time + 1,
+                diagnostic_safety_rate,
+                linewidth=1.8,
+                linestyle=":",
+                color="tab:orange",
+                label="diagnostic would-activate rate",
+            )
+            axes[1].plot(ep_time + 1, fallback_rate, linewidth=1.8, linestyle="--", color="tab:purple", label="fallback rate")
+            axes[1].set_ylabel("rate")
+            axes[2].plot(time_u, rewards, linewidth=1.0, color="tab:blue", alpha=0.75, label="step reward")
+            axes[2].plot(time_u, reward_ma, linewidth=2.0, color="tab:orange", label="episode-window avg")
+            axes[2].set_ylabel("reward")
+            axes[3].step(time_u, safety_active_flags[: len(time_u)], where="post", linewidth=1.8, color="tab:red", label="safety active")
+            axes[3].step(
+                time_u,
+                diagnostic_safety_active_flags[: len(time_u)],
+                where="post",
+                linewidth=1.5,
+                linestyle=":",
+                color="tab:orange",
+                label="diagnostic would activate",
+            )
+            axes[3].step(time_u, fallback_mpc_active[: len(time_u)], where="post", linewidth=1.4, linestyle="--", color="tab:purple", label="fallback active")
             axes[3].set_ylim(-0.05, 1.05)
             axes[3].set_yticks([0.0, 1.0])
-            axes[3].grid(True, linestyle="--", alpha=0.35)
-            axes[3].legend(loc="best")
-            axes[3].set_xlabel("step in episode")
+            axes[3].set_ylabel("status")
+            axes[3].set_xlabel("step / episode")
+            for ax in axes:
+                ax.grid(True, linestyle="--", alpha=0.35)
+                ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(plot_path("reward_average_summary.png"), dpi=300, bbox_inches="tight")
+            plt.close(fig)
 
-            fig.suptitle(
-                f"Episode {chosen_episode + 1} sampled from block {block_start + 1}-{block_end}",
-                fontsize=12,
-            )
-            plt.tight_layout()
-            plt.savefig(
+            def _episode_plot_name(chosen_episode, block_start=None, block_end=None, *, last_episode=False):
+                if last_episode:
+                    if use_short_names:
+                        return f"ep_{chosen_episode + 1:03d}_last.png"
+                    return f"episode_{chosen_episode + 1:03d}_last.png"
+                if use_short_names:
+                    return f"ep_{chosen_episode + 1:03d}_{block_start + 1:03d}_{block_end:03d}.png"
+                return f"episode_{chosen_episode + 1:03d}_from_{block_start + 1:03d}_{block_end:03d}.png"
+
+            def _plot_episode_window(step_start, step_end, title, filepath):
+                if step_start >= step_end:
+                    return
+                y_start = step_start
+                y_end = min(step_end + 1, len(time_y))
+                local_time_y = np.arange(y_end - y_start)
+                local_time_u = np.arange(step_end - step_start)
+                n_output_panels = min(n_y, 2)
+                fig, axes = plt.subplots(n_output_panels + 3, 1, figsize=(10, 3.0 * (n_output_panels + 3)), sharex=False)
+                axes = np.atleast_1d(axes)
+
+                local_safety = safety_active_flags[step_start:step_end]
+                local_diagnostic_safety = diagnostic_safety_active_flags[step_start:step_end]
+                local_fallback = fallback_mpc_active[step_start:step_end]
+                for idx in range(n_output_panels):
+                    ax = axes[idx]
+                    ax.plot(
+                        local_time_y,
+                        y_system[y_start:y_end, idx],
+                        linewidth=2.0,
+                        color="tab:blue",
+                        label=f"output_{idx}",
+                    )
+                    ax.step(
+                        local_time_u,
+                        y_sp_plot[step_start:step_end, idx],
+                        where="post",
+                        linewidth=2.0,
+                        linestyle="--",
+                        color="tab:gray",
+                        label=f"setpoint_{idx}",
+                    )
+                    _shade_active_intervals(ax, local_time_u, local_safety)
+                    _shade_active_intervals(ax, local_time_u, local_diagnostic_safety, color="tab:orange", alpha=0.07)
+                    ax.grid(True, linestyle="--", alpha=0.35)
+                    ax.legend(loc="best")
+                    ax.set_ylabel(f"y{idx}")
+
+                input_ax = axes[n_output_panels]
+                for idx in range(u_safe_dev.shape[1]):
+                    input_ax.plot(
+                        local_time_u,
+                        u_cand_dev[step_start:step_end, idx],
+                        linewidth=1.3,
+                        linestyle="--",
+                        label=f"candidate u{idx}",
+                    )
+                    input_ax.step(
+                        local_time_u,
+                        u_safe_dev[step_start:step_end, idx],
+                        where="post",
+                        linewidth=1.8,
+                        label=f"executed u{idx}",
+                    )
+                fallback_dev = np.asarray(bundle.get("u_fallback_mpc_dev_store", []), dtype=float)
+                if fallback_dev.ndim == 2 and fallback_dev.shape[0] >= step_end:
+                    for idx in range(fallback_dev.shape[1]):
+                        if np.any(np.isfinite(fallback_dev[step_start:step_end, idx])):
+                            input_ax.step(
+                                local_time_u,
+                                fallback_dev[step_start:step_end, idx],
+                                where="post",
+                                linewidth=1.0,
+                                linestyle=":",
+                                label=f"fallback u{idx}",
+                            )
+                _shade_active_intervals(input_ax, local_time_u, local_safety)
+                _shade_active_intervals(input_ax, local_time_u, local_diagnostic_safety, color="tab:orange", alpha=0.07)
+                input_ax.set_ylabel("u dev")
+                input_ax.grid(True, linestyle="--", alpha=0.35)
+                input_ax.legend(loc="best", ncol=2)
+
+                status_ax = axes[n_output_panels + 1]
+                status_ax.step(local_time_u, local_safety, where="post", linewidth=2.0, color="tab:red", label="safety active")
+                status_ax.step(
+                    local_time_u,
+                    local_diagnostic_safety,
+                    where="post",
+                    linewidth=1.8,
+                    linestyle=":",
+                    color="tab:orange",
+                    label="diagnostic would activate",
+                )
+                status_ax.step(local_time_u, local_fallback, where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="fallback active")
+                status_ax.step(local_time_u, projection_active[step_start:step_end], where="post", linewidth=1.2, linestyle=":", color="tab:orange", label="optimized correction")
+                status_ax.set_ylabel("safety")
+                detail_ax = axes[n_output_panels + 2]
+                if first_step_replacement_mode:
+                    detail_ax.step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
+                    detail_ax.step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
+                    detail_ax.step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
+                    detail_ax.step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
+                    detail_ax.set_ylabel("replacement")
+                else:
+                    detail_ax.step(local_time_u, qcqp_attempted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="qcqp_attempted")
+                    detail_ax.step(local_time_u, qcqp_hard_accepted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="qcqp_hard_accepted")
+                    detail_ax.step(local_time_u, fallback_verified_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="fallback_verified")
+                    detail_ax.set_ylabel("gate detail")
+                for ax in (status_ax, detail_ax):
+                    ax.set_ylim(-0.05, 1.05)
+                    ax.set_yticks([0.0, 1.0])
+                    ax.grid(True, linestyle="--", alpha=0.35)
+                    ax.legend(loc="best")
+                detail_ax.set_xlabel("step in episode")
+                fig.suptitle(title, fontsize=12)
+                plt.tight_layout()
+                plt.savefig(filepath, dpi=300, bbox_inches="tight")
+                plt.close(fig)
+
+            block_starts = list(range(0, n_episodes, 10))[:20]
+            for block_start in block_starts:
+                block_end = min(block_start + 10, n_episodes)
+                if block_start >= block_end:
+                    continue
+                chosen_episode = int(rng.integers(block_start, block_end))
+                step_start = chosen_episode * episode_len
+                step_end = min((chosen_episode + 1) * episode_len, len(time_u))
+                _plot_episode_window(
+                    step_start,
+                    step_end,
+                    f"Episode {chosen_episode + 1} sampled from block {block_start + 1}-{block_end}",
+                    os.path.join(
+                        episode_plot_dir,
+                        _episode_plot_name(
+                            chosen_episode,
+                            block_start,
+                            block_end,
+                        ),
+                    ),
+                )
+
+            last_episode = max(n_episodes - 1, 0)
+            step_start = last_episode * episode_len
+            step_end = min((last_episode + 1) * episode_len, len(time_u))
+            _plot_episode_window(
+                step_start,
+                step_end,
+                f"Last episode ({last_episode + 1})",
                 os.path.join(
-                    episode_plot_dir,
-                    f"episode_{chosen_episode + 1:03d}_from_{block_start + 1:03d}_{block_end:03d}.png",
+                    last_episode_dir,
+                    _episode_plot_name(last_episode, last_episode=True),
                 ),
-                dpi=300,
-                bbox_inches="tight",
             )
-            plt.close(fig)
 
-        last_episode_dir = os.path.join(output_dir, "last_episode_summary")
-        os.makedirs(last_episode_dir, exist_ok=True)
-        last_episode = max(n_episodes - 1, 0)
-        step_start = last_episode * episode_len
-        step_end = min((last_episode + 1) * episode_len, len(time_u))
-        if step_start < step_end:
-            y_start = step_start
-            y_end = min(step_end + 1, len(time_y))
-            local_time_y = np.arange(y_end - y_start)
-            local_time_u = np.arange(step_end - step_start)
-
-            fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=False)
-            axes = np.atleast_1d(axes)
-
-            for idx in range(min(n_y, 2)):
-                ax = axes[idx]
-                ax.plot(
-                    local_time_y,
-                    y_system[y_start:y_end, idx],
-                    linewidth=2.0,
-                    color="tab:blue",
-                    label=f"output_{idx}",
-                )
-                ax.step(
-                    local_time_u,
-                    y_sp_plot[step_start:step_end, idx],
-                    where="post",
-                    linewidth=2.0,
-                    linestyle="--",
-                    color="tab:gray",
-                    label=f"setpoint_{idx}",
-                )
-                ax.grid(True, linestyle="--", alpha=0.35)
-                ax.legend(loc="best")
-                ax.set_ylabel(f"y{idx}")
-
-            if first_step_replacement_mode:
-                axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
-                axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
-                axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
-                axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
-                axes[2].set_ylabel("replacement")
-                axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
-                axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
-                axes[3].set_ylabel("lyap")
-            else:
-                axes[2].step(
-                    local_time_u,
-                    qcqp_attempted_flags[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:orange",
-                    label="qcqp_attempted",
-                )
-                axes[2].step(
-                    local_time_u,
-                    qcqp_hard_accepted_flags[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:green",
-                    label="qcqp_hard_accepted",
-                )
-                axes[2].step(
-                    local_time_u,
-                    projection_active[step_start:step_end],
-                    where="post",
-                    linewidth=1.5,
-                    linestyle="--",
-                    color="tab:red",
-                    label="optimized_correction",
-                )
-                axes[2].set_ylabel("projection")
-                axes[3].step(
-                    local_time_u,
-                    fallback_mpc_active[step_start:step_end],
-                    where="post",
-                    linewidth=2.0,
-                    color="tab:purple",
-                    label="fallback_mpc_active",
-                )
-                axes[3].step(
-                    local_time_u,
-                    fallback_mpc_verified[step_start:step_end],
-                    where="post",
-                    linewidth=1.5,
-                    linestyle="--",
-                    color="tab:green",
-                    label="fallback_mpc_verified",
-                )
-                axes[3].set_ylabel("fallback")
-            axes[2].set_ylim(-0.05, 1.05)
-            axes[2].set_yticks([0.0, 1.0])
-            axes[2].grid(True, linestyle="--", alpha=0.35)
-            axes[2].legend(loc="best")
-            axes[3].set_ylim(-0.05, 1.05)
-            axes[3].set_yticks([0.0, 1.0])
-            axes[3].grid(True, linestyle="--", alpha=0.35)
-            axes[3].legend(loc="best")
-            axes[3].set_xlabel("step in episode")
-
-            fig.suptitle(f"Last episode ({last_episode + 1})", fontsize=12)
-            plt.tight_layout()
-            plt.savefig(
-                os.path.join(last_episode_dir, f"episode_{last_episode + 1:03d}_last.png"),
-                dpi=300,
-                bbox_inches="tight",
-            )
-            plt.close(fig)
-
-    if not paper_mode:
+    if not paper_style:
         mode_counts = bundle["summary"]["mode_counts"]
         if mode_counts:
             labels = list(mode_counts.keys())
@@ -2426,9 +2873,9 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir):
 
 def plot_safety_filter_bundle(bundle, output_dir, paper_style=False):
     if not paper_style:
-        return _plot_safety_filter_bundle_impl(bundle, output_dir)
+        return _plot_safety_filter_bundle_impl(bundle, output_dir, paper_style=False)
     with paper_plot_context():
-        return _plot_safety_filter_bundle_impl(bundle, output_dir)
+        return _plot_safety_filter_bundle_impl(bundle, output_dir, paper_style=True)
 
 
 def plot_safety_filter_diagnostic_only(bundle, output_dir):
@@ -2582,106 +3029,14 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
         plt.savefig(os.path.join(output_dir, "fallback_solver_status_counts.png"), dpi=300, bbox_inches="tight")
         plt.close()
 
-    episode_len = int(bundle.get("time_in_sub_episodes", len(time_u)))
-    if episode_len <= 0 or len(time_u) <= 0:
-        return
-
-    n_episodes = int(np.ceil(len(time_u) / float(episode_len)))
-    rng = np.random.default_rng(0)
-    fallback_mpc_active = np.array(
-        [1.0 if str(mode).startswith("fallback_mpc") else 0.0 for mode in bundle["correction_modes"]],
-        dtype=float,
-    )
-
-    def _plot_episode_window(step_start, step_end, title, filepath):
-        if step_start >= step_end:
-            return
-        y_start = step_start
-        y_end = min(step_end + 1, len(time_y))
-        local_time_y = np.arange(y_end - y_start)
-        local_time_u = np.arange(step_end - step_start)
-        fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=False)
-        axes = np.atleast_1d(axes)
-        for idx in range(min(n_y, 2)):
-            ax = axes[idx]
-            ax.plot(local_time_y, y_system[y_start:y_end, idx], linewidth=2.0, color="tab:blue", label=f"output_{idx}")
-            ax.step(local_time_u, y_sp_plot[step_start:step_end, idx], where="post", linewidth=2.0, linestyle="--", color="tab:gray", label=f"setpoint_{idx}")
-            ax.grid(True, linestyle="--", alpha=0.35)
-            ax.legend(loc="best")
-            ax.set_ylabel(f"y{idx}")
-        if first_step_replacement_mode:
-            axes[2].step(local_time_u, candidate_first_step_lyap_ok_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:blue", label="candidate_first_step_ok")
-            axes[2].step(local_time_u, first_step_contraction_triggered_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="replacement_triggered")
-            axes[2].step(local_time_u, constrained_mpc_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="constrained_mpc_applied")
-            axes[2].step(local_time_u, constrained_mpc_failed_applied_candidate_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="constrained_failed_candidate_applied")
-            axes[2].set_ylabel("replacement")
-            axes[3].step(local_time_u, first_step_contraction_satisfied_applied_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="applied_first_step_ok")
-            axes[3].step(local_time_u, constrained_mpc_solved_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:purple", label="constrained_mpc_solved")
-            axes[3].set_ylabel("lyap")
-        else:
-            axes[2].step(local_time_u, qcqp_attempted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:orange", label="qcqp_attempted")
-            axes[2].step(local_time_u, qcqp_hard_accepted_flags[step_start:step_end], where="post", linewidth=2.0, color="tab:green", label="qcqp_hard_accepted")
-            axes[2].step(local_time_u, projection_active[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:red", label="optimized_correction")
-            axes[2].set_ylabel("projection")
-            axes[3].step(local_time_u, fallback_mpc_active[step_start:step_end], where="post", linewidth=2.0, color="tab:purple", label="fallback_mpc_active")
-            axes[3].step(local_time_u, fallback_verified_flags[step_start:step_end], where="post", linewidth=1.5, linestyle="--", color="tab:green", label="fallback_mpc_verified")
-            axes[3].set_ylabel("fallback")
-        axes[2].set_ylim(-0.05, 1.05)
-        axes[2].set_yticks([0.0, 1.0])
-        axes[2].grid(True, linestyle="--", alpha=0.35)
-        axes[2].legend(loc="best")
-        axes[3].set_ylim(-0.05, 1.05)
-        axes[3].set_yticks([0.0, 1.0])
-        axes[3].grid(True, linestyle="--", alpha=0.35)
-        axes[3].legend(loc="best")
-        axes[3].set_xlabel("step in episode")
-        fig.suptitle(title, fontsize=12)
-        plt.tight_layout()
-        plt.savefig(filepath, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-
-    episode_plot_dir = os.path.join(output_dir, "episode_samples_by_tens")
-    os.makedirs(episode_plot_dir, exist_ok=True)
-    block_starts = list(range(0, n_episodes, 10))[:20]
-    for block_start in block_starts:
-        block_end = min(block_start + 10, n_episodes)
-        if block_start >= block_end:
-            continue
-        chosen_episode = int(rng.integers(block_start, block_end))
-        step_start = chosen_episode * episode_len
-        step_end = min((chosen_episode + 1) * episode_len, len(time_u))
-        _plot_episode_window(
-            step_start,
-            step_end,
-            f"Episode {chosen_episode + 1} sampled from block {block_start + 1}-{block_end}",
-            os.path.join(
-                episode_plot_dir,
-                f"episode_{chosen_episode + 1:03d}_from_{block_start + 1:03d}_{block_end:03d}.png",
-            ),
-        )
-
-    last_episode_dir = os.path.join(output_dir, "last_episode_summary")
-    os.makedirs(last_episode_dir, exist_ok=True)
-    last_episode = max(n_episodes - 1, 0)
-    step_start = last_episode * episode_len
-    step_end = min((last_episode + 1) * episode_len, len(time_u))
-    _plot_episode_window(
-        step_start,
-        step_end,
-        f"Last episode ({last_episode + 1})",
-        os.path.join(last_episode_dir, f"episode_{last_episode + 1:03d}_last.png"),
-    )
-
-
 def save_safety_filter_debug_artifacts(
     bundle,
     directory=None,
     prefix_name="safety_filter_debug",
     save_plots=True,
-    save_paper_plots=True,
-    save_rl_summary_plots=True,
-    paper_plot_subdir="paper_plots",
+    export_profile="debug",
 ):
+    export_profile = _normalize_export_profile(export_profile)
     if directory is None:
         directory = os.getcwd()
 
@@ -2690,14 +3045,8 @@ def save_safety_filter_debug_artifacts(
         directory,
         prefix_name,
         timestamp=timestamp,
-        save_paper_plots=save_paper_plots,
-        save_rl_summary_plots=save_rl_summary_plots,
-        paper_plot_subdir=paper_plot_subdir,
     )
     os.makedirs(out_dir, exist_ok=True)
-
-    with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
-        pickle.dump(bundle, f)
 
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(_jsonable(bundle["summary"]), f, indent=2)
@@ -2708,42 +3057,23 @@ def save_safety_filter_debug_artifacts(
     ]
     _write_csv(os.path.join(out_dir, "summary.csv"), summary_csv_records)
 
-    step_records = make_safety_filter_step_records(bundle["lyap_info_storage"])
+    step_records = _filter_safety_step_records(
+        make_safety_filter_step_records(bundle["lyap_info_storage"]),
+        export_profile=export_profile,
+    )
     _write_csv(os.path.join(out_dir, "step_table.csv"), step_records)
 
     episode_records = make_safety_filter_episode_records(bundle)
     _write_csv(os.path.join(out_dir, "episode_table.csv"), episode_records)
 
-    _save_npz(os.path.join(out_dir, "arrays.npz"), bundle)
-
-    if HAS_PANDAS:
-        df = pd.DataFrame(step_records)
-        df.to_pickle(os.path.join(out_dir, "step_table.pkl"))
-        pd.DataFrame(episode_records).to_pickle(os.path.join(out_dir, "episode_table.pkl"))
+    _save_npz(os.path.join(out_dir, "arrays.npz"), bundle, export_profile=export_profile)
 
     if save_plots:
-        if save_paper_plots:
-            plot_safety_filter_diagnostic_only(bundle, out_dir)
-        else:
-            plot_safety_filter_bundle(bundle, out_dir)
-        if save_paper_plots:
-            paper_root = os.path.join(out_dir, str(paper_plot_subdir))
-            plot_safety_filter_bundle(bundle, os.path.join(paper_root, "safety_selector"), paper_style=True)
-            if (
-                str(bundle.get("source", "")).lower().startswith("rl")
-                and save_rl_summary_plots
-                and HAS_RL_SUMMARY_PLOTS
-            ):
-                save_rl_summary_plots_from_bundle(
-                    bundle=bundle,
-                    output_dir=os.path.join(paper_root, "rl_summary"),
-                    paper_style=True,
-                    save_input_data=False,
-                )
-
-    figure_manifest = _build_safety_figure_manifest(out_dir, bundle)
-    with open(os.path.join(out_dir, "figure_manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(_jsonable(figure_manifest), f, indent=2)
+        plot_safety_filter_bundle(
+            bundle,
+            os.path.join(out_dir, "plots"),
+            paper_style=(export_profile == "compact"),
+        )
 
     return out_dir
 
@@ -2761,19 +3091,11 @@ def save_safety_filter_comparison_artifacts(
     comparison_csv = os.path.join(study_root, "comparison_table.csv")
     _write_csv(comparison_csv, records)
 
-    comparison_pkl = os.path.join(study_root, "comparison_table.pkl")
-    if HAS_PANDAS:
-        pd.DataFrame(records).to_pickle(comparison_pkl)
-    else:
-        with open(comparison_pkl, "wb") as f:
-            pickle.dump(records, f)
-
     summary = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "n_cases": len(records),
         "case_names": [str(record.get("case_name")) for record in records],
         "comparison_table_csv": comparison_csv,
-        "comparison_table_pkl": comparison_pkl,
         "case_debug_dirs": {
             str(record.get("case_name")): record.get("debug_dir")
             for record in records
@@ -2793,6 +3115,15 @@ def save_safety_filter_comparison_artifacts(
             "RL Safety Gate Reward Comparison",
             _comparison_plot_path(plot_dir, "comparison_reward_mean.png"),
         )
+        if records and any(record.get("episode_reward_mean") is not None for record in records):
+            plot_paths["average_episode_reward"] = _save_safety_comparison_bar(
+                records,
+                ["episode_reward_mean"],
+                ["episode average reward"],
+                "reward",
+                "RL Safety Gate Average Episode Reward",
+                _comparison_plot_path(plot_dir, "comparison_average_episode_reward.png"),
+            )
         output_rmse_keys = [
             key for key in records[0].keys()
             if key.startswith("output") and key.endswith("_rmse")
@@ -2865,25 +3196,12 @@ def save_safety_filter_comparison_artifacts(
         plot_paths.update(_save_safety_last_episode_overlays(bundles_by_case, plot_dir))
 
     summary["plot_paths"] = plot_paths
-    figure_manifest = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "recommended_figures": [
-            {"key": key, "path": path}
-            for key, path in plot_paths.items()
-            if path is not None and os.path.exists(path)
-        ],
-        "case_debug_dirs": summary["case_debug_dirs"],
-    }
-
     comparison_summary_json = os.path.join(study_root, "comparison_summary.json")
     with open(comparison_summary_json, "w", encoding="utf-8") as f:
         json.dump(_jsonable(summary), f, indent=2)
-    with open(os.path.join(study_root, "figure_manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(_jsonable(figure_manifest), f, indent=2)
 
     return {
         "comparison_table_csv": comparison_csv,
-        "comparison_table_pkl": comparison_pkl,
         "comparison_summary_json": comparison_summary_json,
         "plot_paths": plot_paths,
     }
@@ -2894,18 +3212,12 @@ def save_lyap_debug_artifacts(
     directory=None,
     prefix_name="safety_filter_debug",
     save_plots=True,
-    save_paper_plots=True,
-    save_rl_summary_plots=True,
-    paper_plot_subdir="paper_plots",
 ):
     return save_safety_filter_debug_artifacts(
         bundle=bundle,
         directory=directory,
         prefix_name=prefix_name,
         save_plots=save_plots,
-        save_paper_plots=save_paper_plots,
-        save_rl_summary_plots=save_rl_summary_plots,
-        paper_plot_subdir=paper_plot_subdir,
     )
 
 

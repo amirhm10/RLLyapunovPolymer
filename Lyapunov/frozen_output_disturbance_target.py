@@ -20,6 +20,12 @@ DEFAULT_FROZEN_OUTPUT_DISTURBANCE_TARGET_CONFIG: Dict[str, Any] = {
     "rank_tol": DEFAULT_ANALYSIS_CONFIG["rank_tol"],
     "box_bound_tol": DEFAULT_ANALYSIS_CONFIG["box_bound_tol"],
     "box_use_reduced_first": DEFAULT_ANALYSIS_CONFIG["box_use_reduced_first"],
+    "solve_strategy": DEFAULT_ANALYSIS_CONFIG.get("solve_strategy", "legacy_ls"),
+    "lexicographic_primary_tol_abs": DEFAULT_ANALYSIS_CONFIG.get("lexicographic_primary_tol_abs", 1.0e-10),
+    "lexicographic_primary_tol_rel": DEFAULT_ANALYSIS_CONFIG.get("lexicographic_primary_tol_rel", 1.0e-8),
+    "lexicographic_maxiter": DEFAULT_ANALYSIS_CONFIG.get("lexicographic_maxiter", 200),
+    "lexicographic_ftol": DEFAULT_ANALYSIS_CONFIG.get("lexicographic_ftol", 1.0e-10),
+    "disturbance_model_mode": "output",
     "u_ref_weight": DEFAULT_ANALYSIS_CONFIG.get("u_ref_weight", 0.0),
     "x_ref_weight": DEFAULT_ANALYSIS_CONFIG.get("x_ref_weight", 0.0),
     "zero_block_tol": 1.0e-9,
@@ -142,6 +148,160 @@ def _validate_target_inputs(
         "y_sp": y_sp,
         "n_u": n_u,
     }
+
+
+def _solve_target_generic_augmented_disturbance(
+    A_aug: np.ndarray,
+    B_aug: np.ndarray,
+    C_aug: np.ndarray,
+    xhat_aug: np.ndarray,
+    y_sp: np.ndarray,
+    *,
+    target_mode: str,
+    u_min: Optional[np.ndarray],
+    u_max: Optional[np.ndarray],
+    config: Optional[Dict[str, Any]],
+    H: Optional[np.ndarray],
+    u_ref: Optional[np.ndarray],
+    x_ref: Optional[np.ndarray],
+) -> Dict[str, Any]:
+    cfg = _merge_config(config)
+    mode = str(cfg.get("disturbance_model_mode", "output")).strip().lower()
+    if mode not in {"state_via_b", "state", "mixed"}:
+        raise ValueError("disturbance_model_mode must be 'output', 'state_via_B', or 'mixed'.")
+    if u_min is None or u_max is None:
+        raise ValueError("state_via_B and mixed disturbance target modes require bounded input limits.")
+
+    A_aug = _as_float_array(A_aug, "A_aug", ndim=2)
+    B_aug = _as_float_array(B_aug, "B_aug", ndim=2)
+    C_aug = _as_float_array(C_aug, "C_aug", ndim=2)
+    xhat_aug = _as_float_array(xhat_aug, "xhat_aug", ndim=1)
+    y_sp = _as_float_array(y_sp, "y_sp", ndim=1)
+    u_min = _as_float_array(u_min, "u_min", ndim=1)
+    u_max = _as_float_array(u_max, "u_max", ndim=1)
+
+    n_y = int(C_aug.shape[0])
+    n_aug = int(A_aug.shape[0])
+    n_x = n_aug - n_y
+    n_u = int(B_aug.shape[1])
+    if n_x <= 0:
+        raise ValueError("Invalid augmented model: inferred physical-state dimension must be positive.")
+    if xhat_aug.size != n_aug:
+        raise ValueError("xhat_aug has incorrect size.")
+    if u_min.size != n_u or u_max.size != n_u:
+        raise ValueError(f"u_min and u_max must have size {n_u}.")
+
+    selector_overrides = dict(cfg.get("target_selector_config", {}) or {})
+    selector_overrides.setdefault("Qr_diag", cfg.get("Qr_diag", np.ones(n_y, dtype=float)))
+    selector_overrides.setdefault("R_u_ref_diag", cfg.get("u_ref_weight", 0.0))
+    selector_overrides.setdefault("Q_delta_x_diag", cfg.get("x_ref_weight", 0.0))
+    selector_overrides.setdefault("Q_x_ref_diag", cfg.get("xhat_anchor_weight", 0.0))
+    if cfg.get("solver_pref") is not None:
+        selector_overrides.setdefault("solver_pref", cfg.get("solver_pref"))
+
+    try:
+        from Lyapunov.target_selector import build_target_selector_config, prepare_filter_target
+
+        selector_cfg = build_target_selector_config(
+            user_overrides=selector_overrides,
+            n_x=n_x,
+            n_u=n_u,
+            n_y=n_y,
+            n_d=n_y,
+            Q_out=np.ones(n_y, dtype=float),
+            Rmove_diag=np.ones(n_u, dtype=float),
+        )
+        target_info = prepare_filter_target(
+            A_aug=A_aug,
+            B_aug=B_aug,
+            C_aug=C_aug,
+            xhat_aug=xhat_aug,
+            y_sp=y_sp,
+            u_min=u_min,
+            u_max=u_max,
+            config=selector_cfg,
+            x_s_prev=x_ref,
+            y_min=None,
+            y_max=None,
+            warm_start=bool(cfg.get("selector_warm_start", True)),
+            H=H,
+            selector_mode=None,
+            u_applied_k=u_ref,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "mode": str(target_mode),
+            "target_variant": f"{mode}_disturbance",
+            "solve_stage": f"{mode}_disturbance_failed",
+            "status": "failed",
+            "message": repr(exc),
+            "x_s": None,
+            "u_s": None,
+            "d_s": None,
+            "x_s_aug": None,
+            "y_s": None,
+            "residual_total_norm": float("nan"),
+            "disturbance_model_mode": mode,
+        }
+
+    target_info = {} if target_info is None else dict(target_info)
+    target_info.setdefault("mode", str(target_mode))
+    target_info.setdefault("target_variant", f"{mode}_disturbance")
+    target_info["disturbance_model_mode"] = mode
+    target_info["bounded_solution_used"] = bool(str(target_mode).strip().lower() == "bounded")
+    target_info.setdefault("bounded_solver_name", target_info.get("solver"))
+    target_info.setdefault("bounded_solve_form", target_info.get("selector_mode"))
+    target_info.setdefault("bounded_status", target_info.get("status"))
+    target_info.setdefault("bounded_message", target_info.get("message"))
+    residual_parts = [
+        target_info.get("dyn_residual_inf"),
+        target_info.get("target_eq_residual_inf"),
+        target_info.get("target_error_norm"),
+    ]
+    finite_parts = [float(v) for v in residual_parts if v is not None and np.isfinite(float(v))]
+    target_info.setdefault("residual_total_norm", float(max(finite_parts)) if finite_parts else None)
+    target_info.setdefault("residual_dyn_norm", target_info.get("dyn_residual_inf"))
+    target_info.setdefault("residual_out_norm", target_info.get("target_eq_residual_inf"))
+    target_info.setdefault("rank_M", None)
+    target_info.setdefault("rank_G", None)
+    target_info.setdefault("cond_M", None)
+    target_info.setdefault("cond_G", None)
+    target_info.setdefault("exact_within_bounds", None)
+    target_info.setdefault("exact_active_lower_mask", None)
+    target_info.setdefault("exact_active_upper_mask", None)
+    target_info.setdefault("bounded_active_lower_mask", None)
+    target_info.setdefault("bounded_active_upper_mask", None)
+
+    u_ref_arr, u_ref_weight_arr = _normalize_u_ref_regularization(
+        u_ref,
+        cfg.get("u_ref_weight", 0.0),
+        n_u,
+    )
+    x_ref_arr, x_ref_weight_arr = _normalize_x_ref_regularization(
+        x_ref,
+        cfg.get("x_ref_weight", 0.0),
+        n_x,
+    )
+    if target_info.get("u_s") is not None:
+        target_info.update(
+            _u_ref_debug_fields(
+                np.asarray(target_info["u_s"], dtype=float).reshape(n_u),
+                u_ref_arr,
+                u_ref_weight_arr,
+                active=bool(np.any(u_ref_weight_arr > 0.0)),
+            )
+        )
+    if target_info.get("x_s") is not None:
+        target_info.update(
+            _x_ref_debug_fields(
+                np.asarray(target_info["x_s"], dtype=float).reshape(n_x),
+                None if x_ref is None else x_ref_arr,
+                None if x_ref is None else x_ref_weight_arr,
+                active=bool(np.any(x_ref_weight_arr > 0.0)),
+            )
+        )
+    return target_info
 
 
 def _exact_bounds_info(
@@ -309,6 +469,7 @@ def _base_result_dict(
         "used_lstsq": bool(exact_info["used_lstsq"]),
         "is_exact_solution": bool(exact_info["is_exact_solution"]),
         "rhs_output": np.asarray(exact_info["rhs_output"], dtype=float).reshape(model["n_y"]),
+        "disturbance_model_mode": "output",
         "invertible_I_minus_A": bool(exact_info["invertible_I_minus_A"]),
         "reduced_exact_available": bool(exact_info["reduced_exact_available"]),
         "reduced_lstsq_available": bool(exact_info["reduced_lstsq_available"]),
@@ -532,6 +693,11 @@ def solve_target_bounded_output_disturbance(
         rank_tol=cfg["rank_tol"],
         box_bound_tol=float(cfg["box_bound_tol"]),
         use_reduced_first=bool(cfg["box_use_reduced_first"]),
+        solve_strategy=str(cfg.get("solve_strategy", "legacy_ls")),
+        lexicographic_primary_tol_abs=float(cfg.get("lexicographic_primary_tol_abs", 1.0e-10)),
+        lexicographic_primary_tol_rel=float(cfg.get("lexicographic_primary_tol_rel", 1.0e-8)),
+        lexicographic_maxiter=int(cfg.get("lexicographic_maxiter", 200)),
+        lexicographic_ftol=float(cfg.get("lexicographic_ftol", 1.0e-10)),
         u_ref=u_ref_arr,
         u_ref_weight=u_ref_weight_arr,
         x_ref=x_ref_arr,
@@ -600,6 +766,11 @@ def solve_target_bounded_output_disturbance(
             "bounded_residual_norm": float(bounded_info["residual_norm"]),
             "bounded_state_residual_inf": float(bounded_info["state_residual_inf"]),
             "bounded_output_residual_inf": float(bounded_info["output_residual_inf"]),
+            "lexicographic_stage1_primary_cost": bounded_info.get("lexicographic_stage1_primary_cost"),
+            "lexicographic_stage2_primary_cost": bounded_info.get("lexicographic_stage2_primary_cost"),
+            "lexicographic_stage2_anchor_cost": bounded_info.get("lexicographic_stage2_anchor_cost"),
+            "lexicographic_primary_tolerance": bounded_info.get("lexicographic_primary_tolerance"),
+            "lexicographic_stage": bounded_info.get("lexicographic_stage"),
             "bounded_active_lower_mask": np.asarray(bounded_info["active_lower_mask"], dtype=bool),
             "bounded_active_upper_mask": np.asarray(bounded_info["active_upper_mask"], dtype=bool),
         }
@@ -642,6 +813,24 @@ def solve_output_disturbance_target(
     u_ref: Optional[np.ndarray] = None,
     x_ref: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
+    cfg = _merge_config(config)
+    disturbance_model_mode = str(cfg.get("disturbance_model_mode", "output")).strip().lower()
+    if disturbance_model_mode not in {"output", "output_disturbance", "frozen_output"}:
+        return _solve_target_generic_augmented_disturbance(
+            A_aug,
+            B_aug,
+            C_aug,
+            xhat_aug,
+            y_sp,
+            target_mode=target_mode,
+            u_min=u_min,
+            u_max=u_max,
+            config=cfg,
+            H=H,
+            u_ref=u_ref,
+            x_ref=x_ref,
+        )
+
     mode = str(target_mode).strip().lower()
     if mode == "unbounded":
         return solve_target_unbounded_output_disturbance(
@@ -652,7 +841,7 @@ def solve_output_disturbance_target(
             y_sp,
             u_min=u_min,
             u_max=u_max,
-            config=config,
+            config=cfg,
             H=H,
             u_ref=u_ref,
             x_ref=x_ref,
@@ -668,7 +857,7 @@ def solve_output_disturbance_target(
             y_sp,
             u_min,
             u_max,
-            config=config,
+            config=cfg,
             H=H,
             u_ref=u_ref,
             x_ref=x_ref,

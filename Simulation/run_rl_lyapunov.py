@@ -21,6 +21,7 @@ from Lyapunov.upstream_controllers import (
     apply_first_step_contraction_replacement,
     build_repeated_input_bounds,
     default_mpc_initial_guess,
+    solve_offset_free_mpc_candidate,
 )
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.scaling_helpers import apply_min_max, apply_rl_scaled, reverse_min_max
@@ -157,11 +158,14 @@ def _normalize_rl_projection_backend(projection_backend):
         "direct_accept_or_fallback": "direct_accept_or_fallback",
         "direct_gate": "direct_accept_or_fallback",
         "direct": "direct_accept_or_fallback",
+        "mpc_only": "mpc_only_diagnostic",
+        "offset_free_mpc_only": "mpc_only_diagnostic",
+        "mpc_only_diagnostic": "mpc_only_diagnostic",
     }
     if backend not in aliases:
         raise ValueError(
             "projection_backend must be 'legacy_augstate', 'safety_filter', "
-            "'first_step_contraction_mpc', or 'direct_accept_or_fallback'."
+            "'first_step_contraction_mpc', 'direct_accept_or_fallback', or 'mpc_only'."
         )
     return aliases[backend]
 
@@ -376,6 +380,68 @@ def inv_map_from_bounds(u, low, high, eps=1e-12):
     return np.clip(a, -1.0, 1.0)
 
 
+def _reward_with_optional_fallback_penalty(
+    reward_fn,
+    delta_y,
+    delta_u,
+    y_sp_phys,
+    *,
+    u_cand_dev=None,
+    u_exec_dev=None,
+    fallback_active=False,
+):
+    fallback_gap = None
+    if u_cand_dev is not None and u_exec_dev is not None:
+        fallback_gap = np.asarray(u_cand_dev, float).reshape(-1) - np.asarray(u_exec_dev, float).reshape(-1)
+    try:
+        components = reward_fn(
+            delta_y,
+            delta_u,
+            y_sp_phys,
+            fallback_gap=fallback_gap,
+            fallback_active=bool(fallback_active),
+            return_components=True,
+        )
+        if isinstance(components, dict) and "reward" in components:
+            return float(components["reward"]), components
+    except TypeError:
+        pass
+    reward = float(reward_fn(delta_y, delta_u, y_sp_phys))
+    return reward, {
+        "reward": reward,
+        "reward_base": reward,
+        "fallback_penalty": 0.0,
+        "weighted_correction_gap": 0.0,
+        "fallback_active": bool(fallback_active),
+    }
+
+
+def _annotate_reward_info(info, reward_components):
+    if info is None:
+        return None
+    components = {} if reward_components is None else dict(reward_components)
+    info["reward"] = components.get("reward")
+    info["reward_base"] = components.get("reward_base", components.get("reward"))
+    info["reward_augmented"] = components.get("reward", components.get("reward_base"))
+    info["fallback_penalty"] = components.get("fallback_penalty", 0.0)
+    info["weighted_correction_gap"] = components.get("weighted_correction_gap", 0.0)
+    info["reward_fallback_active"] = bool(components.get("fallback_active", False))
+    for key in (
+        "tracking_cost",
+        "move_cost",
+        "bonus",
+        "w_in",
+        "maintenance_move_penalty",
+        "output_jitter_penalty",
+        "dwell_reward",
+        "dwell_count",
+        "inside_maintenance_band",
+    ):
+        if key in components:
+            info[f"reward_{key}"] = components[key]
+    return info
+
+
 def _coerce_supplied_lyapunov_matrix(P_lyap, n_x, n_aug):
     P_lyap = np.asarray(P_lyap, float)
     P_lyap = 0.5 * (P_lyap + P_lyap.T)
@@ -437,21 +503,38 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             "'agent_schedule', 'linear', or 'exp'."
         )
 
-    teacher_policy = str(cfg.get("bc_teacher_policy", "direct_lyapunov_mpc")).strip().lower()
-    if teacher_policy != "direct_lyapunov_mpc":
-        raise ValueError("training_phase_config['bc_teacher_policy'] must be 'direct_lyapunov_mpc'.")
+    def _normalize_bc_behavior_source(name, default):
+        source = str(cfg.get(name, default)).strip().lower()
+        if source in {"executed", "executed_actions"}:
+            source = "executed_action"
+        if source in {"mpc", "normal_mpc", "offset_free_mpc_only"}:
+            source = "offset_free_mpc"
+        if source not in {"direct_lyapunov_mpc", "offset_free_mpc", "policy", "executed_action"}:
+            raise ValueError(
+                f"training_phase_config['{name}'] must be 'direct_lyapunov_mpc', "
+                "'offset_free_mpc', 'policy', or 'executed_action'."
+            )
+        return source
+
+    teacher_policy = _normalize_bc_behavior_source("bc_teacher_policy", "direct_lyapunov_mpc")
+    bc_behavior_source = _normalize_bc_behavior_source(
+        "bc_behavior_source",
+        teacher_policy,
+    )
 
     warmup_behavior_source = str(cfg.get("warmup_behavior_source", "policy")).strip().lower()
-    if warmup_behavior_source not in {"policy", "direct_lyapunov_mpc"}:
+    if warmup_behavior_source in {"mpc", "normal_mpc", "offset_free_mpc_only"}:
+        warmup_behavior_source = "offset_free_mpc"
+    if warmup_behavior_source not in {"policy", "direct_lyapunov_mpc", "offset_free_mpc"}:
         raise ValueError(
-            "training_phase_config['warmup_behavior_source'] must be 'policy' or 'direct_lyapunov_mpc'."
+            "training_phase_config['warmup_behavior_source'] must be 'policy', 'direct_lyapunov_mpc', or 'offset_free_mpc'."
         )
 
-    if projection_backend != "direct_accept_or_fallback" and (
-        warmup_behavior_source == "direct_lyapunov_mpc" or bc_steps > 0
+    if projection_backend not in {"direct_accept_or_fallback", "mpc_only_diagnostic"} and (
+        warmup_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"} or bc_steps > 0
     ):
         raise ValueError(
-            "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback'."
+            "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback' or 'mpc_only'."
         )
 
     def _normalize_behavior_noise(name, default):
@@ -466,10 +549,10 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     bc_behavior_noise = _normalize_behavior_noise("bc_behavior_noise", "gaussian")
     full_rl_behavior_noise = _normalize_behavior_noise("full_rl_behavior_noise", "gaussian")
 
-    if warmup_behavior_source == "direct_lyapunov_mpc" and warmup_behavior_noise == "parameter":
+    if warmup_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"} and warmup_behavior_noise == "parameter":
         raise ValueError(
             "training_phase_config['warmup_behavior_noise'] cannot be 'parameter' when "
-            "warmup_behavior_source='direct_lyapunov_mpc'."
+            "warmup_behavior_source is a teacher controller."
         )
     if bc_behavior_noise == "parameter":
         raise ValueError(
@@ -488,12 +571,24 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "behavior_clone_teacher_episodes": bc_episodes,
         "warmup_end_step": warmup_steps,
         "bc_end_step": warmup_steps + bc_steps,
+        "bc_actor_updates_per_step": max(1, int(cfg.get("bc_actor_updates_per_step", 1))),
+        "bc_exploration_std": float(max(0.0, cfg.get("bc_exploration_std", 0.0))),
+        "full_rl_exploration_std_start": float(
+            max(0.0, cfg.get("full_rl_exploration_std_start", cfg.get("exploration_std_start", 0.02)))
+        ),
+        "full_rl_exploration_std_end": float(
+            max(0.0, cfg.get("full_rl_exploration_std_end", cfg.get("exploration_std_end", 0.0)))
+        ),
+        "full_rl_exploration_decay_mode": str(
+            cfg.get("full_rl_exploration_decay_mode", cfg.get("exploration_decay_mode", "agent_schedule"))
+        ).strip().lower(),
         "exploration_std_start": float(cfg.get("exploration_std_start", 0.02)),
         "exploration_std_end": float(cfg.get("exploration_std_end", 0.0)),
         "exploration_decay_scope": decay_scope,
         "exploration_decay_mode": exploration_decay_mode,
         "exploration_decay_rate": float(cfg.get("exploration_decay_rate", 0.99992)),
         "bc_teacher_policy": teacher_policy,
+        "bc_behavior_source": bc_behavior_source,
         "warmup_behavior_source": warmup_behavior_source,
         "warmup_behavior_noise": warmup_behavior_noise,
         "bc_behavior_noise": bc_behavior_noise,
@@ -509,7 +604,66 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     }
 
 
-def _phase_exploration_sigma(phase_cfg, step_idx, agent=None):
+def _normalize_performance_guard_config(config):
+    if config is None:
+        return {"enabled": False}
+    if isinstance(config, bool):
+        config = {"enabled": bool(config)}
+    cfg = dict(config)
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    cfg["reference_policy"] = str(cfg.get("reference_policy", "direct_mpc")).strip().lower()
+    if cfg["reference_policy"] not in {"direct_mpc", "hold_prev"}:
+        raise ValueError("performance_guard_config['reference_policy'] must be 'direct_mpc' or 'hold_prev'.")
+    cfg["abs_tol"] = float(max(0.0, cfg.get("abs_tol", cfg.get("tolerance_abs", 0.0))))
+    cfg["rel_tol"] = float(max(0.0, cfg.get("rel_tol", cfg.get("tolerance_rel", 0.0))))
+    return cfg
+
+
+def _normalize_residual_rl_config(config, n_u):
+    if config is None:
+        return {"enabled": False}
+    if isinstance(config, bool):
+        config = {"enabled": bool(config)}
+    cfg = dict(config)
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    cfg["baseline_policy"] = str(cfg.get("baseline_policy", "offset_free_mpc")).strip().lower()
+    if cfg["baseline_policy"] in {"mpc", "offset_free"}:
+        cfg["baseline_policy"] = "offset_free_mpc"
+    if cfg["baseline_policy"] not in {"offset_free_mpc", "previous_input"}:
+        raise ValueError("residual_rl_config['baseline_policy'] must be 'offset_free_mpc' or 'previous_input'.")
+    authority = cfg.get("authority_dev")
+    if authority is not None:
+        authority = np.asarray(authority, float).reshape(-1)
+        if authority.size == 1:
+            authority = np.full(n_u, float(authority.item()), dtype=float)
+        if authority.size != n_u:
+            raise ValueError("residual_rl_config['authority_dev'] must be scalar or length n_u.")
+        cfg["authority_dev"] = np.maximum(authority, 0.0)
+    cfg["authority_scale"] = float(max(0.0, cfg.get("authority_scale", 0.25)))
+    cfg["shrink_error_inf"] = None if cfg.get("shrink_error_inf") is None else float(max(0.0, cfg["shrink_error_inf"]))
+    cfg["min_authority_scale"] = float(np.clip(cfg.get("min_authority_scale", 0.0), 0.0, 1.0))
+    return cfg
+
+
+def _one_step_raw_tracking_cost(A, B, C, xhat_aug, u_dev, y_sp, u_prev_dev, Q_diag, R_diag):
+    A = np.asarray(A, float)
+    B = np.asarray(B, float)
+    C = np.asarray(C, float)
+    xhat_aug = np.asarray(xhat_aug, float).reshape(-1)
+    u_dev = np.asarray(u_dev, float).reshape(-1)
+    y_sp = np.asarray(y_sp, float).reshape(-1)
+    u_prev_dev = np.asarray(u_prev_dev, float).reshape(-1)
+    Q_diag = np.asarray(Q_diag, float).reshape(-1)
+    R_diag = np.asarray(R_diag, float).reshape(-1)
+    y_next = C @ (A @ xhat_aug + B @ u_dev)
+    n_y = min(y_next.size, y_sp.size, Q_diag.size)
+    n_u = min(u_dev.size, u_prev_dev.size, R_diag.size)
+    y_err = y_next[:n_y] - y_sp[:n_y]
+    du = u_dev[:n_u] - u_prev_dev[:n_u]
+    return float(np.sum(Q_diag[:n_y] * np.square(y_err)) + np.sum(R_diag[:n_u] * np.square(du)))
+
+
+def _legacy_exploration_sigma(phase_cfg, step_idx, agent=None):
     if phase_cfg is None:
         return None
     start = float(phase_cfg["exploration_std_start"])
@@ -535,6 +689,50 @@ def _phase_exploration_sigma(phase_cfg, step_idx, agent=None):
     return start + (end - start) * frac
 
 
+def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
+    if phase_cfg is None:
+        return None
+    if phase_state is None:
+        return _legacy_exploration_sigma(phase_cfg, step_idx, agent=agent)
+
+    behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none")).strip().lower()
+    if behavior_noise_mode != "gaussian":
+        return None
+
+    policy_phase = str(phase_state.get("policy_phase", "")).strip().lower()
+    if policy_phase == "behavior_clone_teacher":
+        return float(max(0.0, phase_cfg.get("bc_exploration_std", 0.0)))
+
+    if policy_phase != "full_rl":
+        return _legacy_exploration_sigma(phase_cfg, step_idx, agent=agent)
+
+    start = float(phase_cfg.get("full_rl_exploration_std_start", phase_cfg.get("exploration_std_start", 0.02)))
+    end = float(phase_cfg.get("full_rl_exploration_std_end", phase_cfg.get("exploration_std_end", 0.0)))
+    decay_mode = str(
+        phase_cfg.get("full_rl_exploration_decay_mode", phase_cfg.get("exploration_decay_mode", "linear"))
+    ).strip().lower()
+    full_rl_start_step = int(phase_cfg.get("bc_end_step", 0))
+    total_steps = max(1, int(phase_cfg.get("total_steps", 1)))
+    phase_last_step = max(full_rl_start_step, total_steps - 1)
+
+    if phase_last_step <= full_rl_start_step:
+        return float(end)
+    if decay_mode == "linear":
+        frac = min(
+            max(float(step_idx - full_rl_start_step) / float(phase_last_step - full_rl_start_step), 0.0),
+            1.0,
+        )
+        return float(start + (end - start) * frac)
+    if decay_mode == "exp":
+        decay_rate = float(phase_cfg.get("exploration_decay_rate", 0.99992))
+        phase_step = max(int(step_idx) - full_rl_start_step, 0)
+        sigma = end + (start - end) * (decay_rate ** phase_step)
+        return float(max(0.0, sigma))
+    if decay_mode == "agent_schedule":
+        return _legacy_exploration_sigma(phase_cfg, step_idx, agent=agent)
+    raise ValueError("training_phase_config['full_rl_exploration_decay_mode'] must be 'agent_schedule', 'linear', or 'exp'.")
+
+
 def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if phase_cfg is None:
         training_update_mode = "no_learning_test" if test else ("buffer_only" if step_idx < warm_start_idx else "td3_full")
@@ -550,31 +748,44 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
             "run_actor_bc_update": False,
             "run_td3_full_update": (not test) and (step_idx >= warm_start_idx),
             "training_update_mode": training_update_mode,
+            "bc_actor_updates_per_step": 1,
         }
 
     if step_idx < int(phase_cfg["warmup_end_step"]):
         policy_phase = "warmup_buffer_only"
-        use_teacher_behavior = phase_cfg["warmup_behavior_source"] == "direct_lyapunov_mpc"
+        teacher_behavior_source = str(phase_cfg["warmup_behavior_source"])
+        use_teacher_behavior = teacher_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
         behavior_noise_mode = "none" if test else str(phase_cfg.get("warmup_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "buffer_only"
     elif step_idx < int(phase_cfg["bc_end_step"]):
         policy_phase = "behavior_clone_teacher"
-        use_teacher_behavior = True
+        bc_behavior_source = str(phase_cfg.get("bc_behavior_source", "direct_lyapunov_mpc")).strip().lower()
+        teacher_behavior_source = bc_behavior_source
+        use_teacher_behavior = bc_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
         behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "critic_td_plus_actor_bc"
     else:
         policy_phase = "full_rl"
+        teacher_behavior_source = None
         use_teacher_behavior = False
         behavior_noise_mode = "none" if test else str(phase_cfg.get("full_rl_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "td3_full"
 
     if use_teacher_behavior:
+        teacher_label = "offset_free_mpc" if teacher_behavior_source == "offset_free_mpc" else "direct_lyapunov_mpc"
         if test:
-            behavior_policy_source = "direct_lyapunov_mpc_eval"
+            behavior_policy_source = f"{teacher_label}_eval"
         elif behavior_noise_mode == "gaussian":
-            behavior_policy_source = "direct_lyapunov_mpc_gaussian"
+            behavior_policy_source = f"{teacher_label}_gaussian"
         else:
-            behavior_policy_source = "direct_lyapunov_mpc_nominal"
+            behavior_policy_source = f"{teacher_label}_nominal"
+    elif policy_phase == "behavior_clone_teacher":
+        if test:
+            behavior_policy_source = "executed_action_eval"
+        elif behavior_noise_mode == "gaussian":
+            behavior_policy_source = "executed_action_gaussian"
+        else:
+            behavior_policy_source = "executed_action_nominal"
     else:
         if test:
             behavior_policy_source = "policy_eval"
@@ -589,13 +800,16 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         "policy_phase": policy_phase,
         "behavior_policy_source": behavior_policy_source,
         "behavior_noise_mode": behavior_noise_mode,
+        "bc_behavior_source": str(phase_cfg.get("bc_behavior_source", "direct_lyapunov_mpc")),
+        "teacher_behavior_source": teacher_behavior_source,
         "use_teacher_behavior": bool(use_teacher_behavior),
         "explore_behavior": behavior_noise_mode != "none",
-        "push_demo": bool(use_teacher_behavior and (not test)),
+        "push_demo": bool((not test) and (use_teacher_behavior or policy_phase == "behavior_clone_teacher")),
         "run_critic_only_update": (not test) and (policy_phase == "behavior_clone_teacher"),
         "run_actor_bc_update": (not test) and (policy_phase == "behavior_clone_teacher"),
         "run_td3_full_update": (not test) and (policy_phase == "full_rl"),
         "training_update_mode": training_update_mode,
+        "bc_actor_updates_per_step": max(1, int(phase_cfg.get("bc_actor_updates_per_step", 1))),
     }
 
 
@@ -613,6 +827,13 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
         info["behavior_action_pre_filter"] = np.asarray(
             behavior_debug.get("behavior_action_pre_filter", []), float
         ).reshape(-1).copy()
+        info["residual_rl_enabled"] = bool(behavior_debug.get("residual_rl_enabled", False))
+        info["residual_rl_baseline_policy"] = behavior_debug.get("residual_rl_baseline_policy")
+        info["residual_rl_authority_multiplier"] = behavior_debug.get("residual_rl_authority_multiplier")
+        if behavior_debug.get("residual_rl_baseline_dev") is not None:
+            info["residual_rl_baseline_dev"] = np.asarray(
+                behavior_debug.get("residual_rl_baseline_dev"), float
+            ).reshape(-1).copy()
     return info
 
 
@@ -623,7 +844,9 @@ def _apply_agent_training_updates(agent, phase_state, rl_state, action_used, rew
     if phase_state.get("run_critic_only_update", False):
         _ = agent.train_step(actor_update=False)
     if phase_state.get("run_actor_bc_update", False):
-        _ = agent.train_actor_bc_step()
+        bc_updates = max(1, int(phase_state.get("bc_actor_updates_per_step", 1)))
+        for _ in range(bc_updates):
+            agent.train_actor_bc_step()
     if phase_state.get("run_td3_full_update", False):
         _ = agent.train_step(actor_update=True)
 
@@ -697,6 +920,9 @@ def run_rl_train(
     direct_tracking_use_target_output=False,
     disturbance_after_step=True,
     training_phase_config=None,
+    diagnostic_lmpc_obj=None,
+    performance_guard_config=None,
+    residual_rl_config=None,
 ):
     # warm_start only controls when online TD3 parameter updates begin through
     # the generated train/test schedule. It is not an MPC takeover or control
@@ -794,6 +1020,9 @@ def run_rl_train(
     else:
         Qdx_tgt_diag = np.asarray(Qdx_tgt_diag, float).reshape(-1)
 
+    performance_guard_cfg = _normalize_performance_guard_config(performance_guard_config)
+    residual_rl_cfg = _normalize_residual_rl_config(residual_rl_config, n_u)
+
     selector_cfg = None
     lyap_model = None
     direct_ingredients = None
@@ -843,6 +1072,14 @@ def run_rl_train(
                 "such as design_direct_lyapunov_mpc_solver(...)."
             )
         direct_ingredients = direct_lyapunov_evaluation_ingredients(MPC_obj)
+    elif projection_backend == "mpc_only_diagnostic":
+        diag_obj = MPC_obj if diagnostic_lmpc_obj is None else diagnostic_lmpc_obj
+        if not hasattr(diag_obj, "P_x"):
+            raise TypeError(
+                "projection_backend='mpc_only' requires diagnostic_lmpc_obj from "
+                "design_direct_lyapunov_mpc_solver(...) for target/Lyapunov diagnostics."
+            )
+        direct_ingredients = direct_lyapunov_evaluation_ingredients(diag_obj)
     elif use_lyap:
         if P_lyap is None:
             legacy_P_lyap = design_riccati_P_aug_physical(
@@ -927,13 +1164,15 @@ def run_rl_train(
             warm_start_idx=WARM_START,
             phase_cfg=phase_cfg,
         )
-        sigma_override = _phase_exploration_sigma(phase_cfg, k, agent=agent)
+        sigma_override = _phase_exploration_sigma(phase_cfg, k, phase_state=phase_state, agent=agent)
         current_cycle_idx = int(k // max(int(time_in_sub_episodes), 1))
         parameter_noise_resampled_this_step = False
 
         rl_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k], y_sp_k, u_prev_dev)
         precomputed_direct_step_context = None
         step_fallback_ic = fallback_ic
+        offset_free_teacher_info = None
+        offset_free_teacher_u_dev = None
 
         if (
             (not test)
@@ -949,7 +1188,7 @@ def run_rl_train(
                 last_param_noise_cycle_idx = current_cycle_idx
                 parameter_noise_resampled_this_step = True
 
-        if phase_state["use_teacher_behavior"]:
+        if phase_state["use_teacher_behavior"] and phase_state.get("teacher_behavior_source") == "direct_lyapunov_mpc":
             precomputed_direct_step_context = prepare_direct_output_disturbance_step(
                 LMPC_obj=MPC_obj,
                 x0_aug=xhat_aug_store[:, k],
@@ -1005,6 +1244,38 @@ def run_rl_train(
                 agent._parameter_noise_last_resampled = False
                 agent._expl_sigma = 0.0
                 action = np.clip(teacher_action, -1.0, 1.0)
+        elif phase_state["use_teacher_behavior"] and phase_state.get("teacher_behavior_source") == "offset_free_mpc":
+            teacher_u_dev, teacher_info = solve_offset_free_mpc_candidate(
+                MPC_obj=MPC_obj,
+                y_sp=y_sp_k,
+                u_prev_dev=u_prev_dev,
+                x0_model=xhat_aug_store[:, k],
+                IC_opt=step_fallback_ic,
+                bnds=mpc_bnds,
+                cons=mpc_cons,
+                return_debug=True,
+            )
+            if teacher_info.get("IC_opt_next") is not None:
+                step_fallback_ic = np.asarray(teacher_info["IC_opt_next"], float).reshape(-1).copy()
+                fallback_ic = step_fallback_ic.copy()
+            if teacher_u_dev is None:
+                teacher_u_dev = np.clip(u_prev_dev, u_min, u_max)
+            else:
+                teacher_u_dev = np.clip(np.asarray(teacher_u_dev, float).reshape(-1), u_min, u_max)
+            offset_free_teacher_u_dev = teacher_u_dev.copy()
+            teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
+            offset_free_teacher_info = teacher_info
+            if phase_state["behavior_noise_mode"] == "gaussian":
+                action = agent.apply_exploration(
+                    teacher_action,
+                    sigma_override=sigma_override,
+                    advance_step=True,
+                )
+            else:
+                agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
+                agent._parameter_noise_last_resampled = False
+                agent._expl_sigma = 0.0
+                action = np.clip(teacher_action, -1.0, 1.0)
         elif test:
             agent._behavior_noise_mode = "none"
             agent._parameter_noise_last_resampled = False
@@ -1024,7 +1295,56 @@ def run_rl_train(
         )
         behavior_debug["parameter_noise_resampled_this_step"] = bool(parameter_noise_resampled_this_step)
         behavior_debug["behavior_action_pre_filter"] = action.copy()
+        if offset_free_teacher_info is not None:
+            behavior_debug["offset_free_mpc_teacher_info"] = offset_free_teacher_info
         u_rl_dev = np.clip(map_to_bounds(action, u_min, u_max), u_min, u_max)
+        residual_baseline_dev = None
+        if residual_rl_cfg.get("enabled", False):
+            baseline_policy = str(residual_rl_cfg.get("baseline_policy", "offset_free_mpc"))
+            residual_baseline_info = None
+            if baseline_policy == "offset_free_mpc":
+                residual_baseline_dev = None if offset_free_teacher_u_dev is None else offset_free_teacher_u_dev.copy()
+                residual_baseline_info = offset_free_teacher_info
+                if residual_baseline_dev is None:
+                    try:
+                        baseline_u, baseline_info = solve_offset_free_mpc_candidate(
+                            MPC_obj=MPC_obj,
+                            y_sp=y_sp_k,
+                            u_prev_dev=u_prev_dev,
+                            x0_model=xhat_aug_store[:, k],
+                            IC_opt=step_fallback_ic,
+                            bnds=mpc_bnds,
+                            cons=mpc_cons,
+                            return_debug=True,
+                        )
+                    except Exception as exc:
+                        baseline_u, baseline_info = None, {"success": False, "message": repr(exc)}
+                    residual_baseline_info = baseline_info
+                    if baseline_u is not None:
+                        residual_baseline_dev = np.clip(np.asarray(baseline_u, float).reshape(-1), u_min, u_max)
+                        if baseline_info.get("IC_opt_next") is not None:
+                            step_fallback_ic = np.asarray(baseline_info["IC_opt_next"], float).reshape(-1).copy()
+            if residual_baseline_dev is None:
+                residual_baseline_dev = u_prev_dev.copy()
+                baseline_policy = "previous_input"
+
+            authority = residual_rl_cfg.get("authority_dev")
+            if authority is None:
+                authority = float(residual_rl_cfg.get("authority_scale", 0.25)) * (u_max - u_min)
+            authority = np.asarray(authority, float).reshape(-1)
+            shrink_error_inf = residual_rl_cfg.get("shrink_error_inf")
+            authority_multiplier = 1.0
+            if shrink_error_inf is not None and float(shrink_error_inf) > 0.0:
+                authority_multiplier = float(np.clip(np.max(np.abs(e_k)) / float(shrink_error_inf), 0.0, 1.0))
+                authority_multiplier = max(authority_multiplier, float(residual_rl_cfg.get("min_authority_scale", 0.0)))
+            u_rl_dev = np.clip(residual_baseline_dev + authority_multiplier * authority * action, u_min, u_max)
+            behavior_debug["residual_rl_enabled"] = True
+            behavior_debug["residual_rl_baseline_policy"] = baseline_policy
+            behavior_debug["residual_rl_authority"] = authority.copy()
+            behavior_debug["residual_rl_authority_multiplier"] = float(authority_multiplier)
+            behavior_debug["residual_rl_baseline_dev"] = residual_baseline_dev.copy()
+            if residual_baseline_info is not None:
+                behavior_debug["residual_rl_baseline_info"] = residual_baseline_info
 
         if projection_backend == "legacy_augstate":
             mpc_tracking_target = y_sp_k.copy()
@@ -1234,7 +1554,21 @@ def run_rl_train(
 
             delta_y = y_next_dev - y_sp_k
             y_sp_phys = reverse_min_max(y_sp_k + ss_scaled_y, data_min[n_u:], data_max[n_u:])
-            r = reward_fn(delta_y, delta_u, y_sp_phys)
+            reward_fallback_active = bool(
+                use_lyap
+                and projection_backend != "mpc_only_diagnostic"
+                and np.max(np.abs(np.asarray(u_dev_safe, float).reshape(-1) - np.asarray(u_rl_dev, float).reshape(-1))) > 1e-12
+            )
+            r, reward_components = _reward_with_optional_fallback_penalty(
+                reward_fn,
+                delta_y,
+                delta_u,
+                y_sp_phys,
+                u_cand_dev=u_rl_dev,
+                u_exec_dev=u_dev_safe,
+                fallback_active=reward_fallback_active,
+            )
+            _annotate_reward_info(info, reward_components)
             rewards[k] = float(r)
 
             next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
@@ -1302,6 +1636,326 @@ def run_rl_train(
 
             continue
 
+        if projection_backend == "mpc_only_diagnostic":
+            diag_obj = MPC_obj if diagnostic_lmpc_obj is None else diagnostic_lmpc_obj
+            direct_step_context = prepare_direct_output_disturbance_step(
+                LMPC_obj=diag_obj,
+                x0_aug=xhat_aug_store[:, k],
+                y_sp_k=y_sp_k,
+                u_prev_dev=u_prev_dev,
+                u_dev_min=u_min,
+                u_dev_max=u_max,
+                target_mode=direct_target_mode,
+                target_config=direct_target_config,
+                target_H=None,
+                x_target_prev_success=direct_x_target_prev_success,
+                step_idx=k,
+                y_prev_scaled=y_prev_dev,
+                plant_mode=mode,
+                disturbance_after_step=disturbance_after_step,
+                use_target_output_for_tracking=direct_tracking_use_target_output,
+            )
+            direct_target_info = direct_step_context["target_info"]
+            direct_step_info = direct_step_context["step_info"]
+            direct_x_target_prev_success = direct_step_context["x_target_prev_success_next"]
+
+            cx_s, cd_d_s = _selector_decomposition(diag_obj.C, n_x, direct_target_info)
+            target_mismatch_inf = None
+            if direct_target_info.get("success", False) and direct_target_info.get("y_s") is not None:
+                target_mismatch_inf = float(
+                    np.max(np.abs(np.asarray(direct_target_info["y_s"], float).reshape(-1) - y_sp_k))
+                )
+            d_s_minus_dhat_inf = None
+            if direct_target_info.get("success", False) and direct_target_info.get("d_s") is not None:
+                d_s_minus_dhat_inf = float(
+                    np.max(
+                        np.abs(
+                            xhat_aug_store[n_x:, k]
+                            - np.asarray(direct_target_info["d_s"], float).reshape(-1)
+                        )
+                    )
+                )
+
+            diagnostic_eval = evaluate_candidate_action(
+                u_cand=u_rl_dev,
+                xhat_aug=xhat_aug_store[:, k],
+                target_info=direct_target_info,
+                ingredients=direct_ingredients,
+                rho=rho_lyap,
+                eps_lyap=lyap_eps,
+                u_min=u_min,
+                u_max=u_max,
+                u_prev=u_prev_dev,
+                du_min=du_min,
+                du_max=du_max,
+                tol=lyap_tol,
+            )
+            target_quality_bypass = bool(direct_target_info.get("target_quality_bypass", False))
+            diagnostic_accepted = bool(diagnostic_eval.get("accepted", False) or target_quality_bypass)
+            u_dev_safe = u_rl_dev.copy()
+            info = {
+                "source": "rl_mpc_only",
+                "accepted": True,
+                "verified": True,
+                "accept_reason": "mpc_only_no_intervention",
+                "reject_reason": None if diagnostic_accepted else diagnostic_eval.get("reject_reason"),
+                "candidate_bounds_ok": diagnostic_eval.get("candidate_bounds_ok"),
+                "candidate_move_ok": diagnostic_eval.get("candidate_move_ok"),
+                "candidate_lyap_ok": diagnostic_eval.get("candidate_lyap_ok"),
+                "candidate_first_step_lyap_ok": diagnostic_eval.get("candidate_lyap_ok"),
+                "diagnostic_candidate_accepted": diagnostic_accepted,
+                "diagnostic_unsafe": bool((not diagnostic_accepted) and not target_quality_bypass),
+                "diagnostic_unstable": (
+                    False
+                    if diagnostic_eval.get("candidate_lyap_ok") is None
+                    else not bool(diagnostic_eval.get("candidate_lyap_ok"))
+                ),
+                "diagnostic_reject_reason": (
+                    "target_quality_bypass"
+                    if target_quality_bypass
+                    else diagnostic_eval.get("reject_reason")
+                ),
+                "diagnostic_only": True,
+                "actual_intervention": False,
+                "actual_intervention_active": False,
+                "u_cand": u_rl_dev.copy(),
+                "u_safe": u_dev_safe.copy(),
+                "u_prev": u_prev_dev.copy(),
+                "u_s": direct_step_info.get("u_s"),
+                "x_s": direct_step_info.get("x_s"),
+                "d_s": direct_step_info.get("d_s"),
+                "y_s": direct_step_info.get("y_s"),
+                "r_s": None,
+                "V_k": diagnostic_eval.get("V_k"),
+                "V_next_first": diagnostic_eval.get("V_next_cand"),
+                "V_next_first_candidate": diagnostic_eval.get("V_next_cand"),
+                "V_next_first_applied": diagnostic_eval.get("V_next_cand"),
+                "V_next_cand": diagnostic_eval.get("V_next_cand"),
+                "V_bound": diagnostic_eval.get("V_bound"),
+                "contraction_margin": diagnostic_eval.get("lyap_margin"),
+                "contraction_margin_candidate": diagnostic_eval.get("lyap_margin"),
+                "contraction_margin_applied": diagnostic_eval.get("lyap_margin"),
+                "first_step_contraction_satisfied": diagnostic_eval.get("candidate_lyap_ok"),
+                "first_step_contraction_satisfied_applied": diagnostic_eval.get("candidate_lyap_ok"),
+                "contraction_constraint_violation": None
+                if diagnostic_eval.get("lyap_margin") is None
+                else max(float(diagnostic_eval.get("lyap_margin")), 0.0),
+                "first_step_contraction_on": bool(first_step_contraction_on),
+                "final_lyap_value": diagnostic_eval.get("V_next_cand"),
+                "final_lyap_bound": diagnostic_eval.get("V_bound"),
+                "final_lyap_margin": None
+                if diagnostic_eval.get("V_next_cand") is None or diagnostic_eval.get("V_bound") is None
+                else float(diagnostic_eval.get("V_bound")) - float(diagnostic_eval.get("V_next_cand")),
+                "final_lyap_ok": diagnostic_eval.get("candidate_lyap_ok"),
+                "final_lyap_target_source": "current_target" if direct_target_info.get("success", False) else None,
+                "rho": rho_lyap,
+                "eps_lyap": lyap_eps,
+                "solver_status": "mpc_only_diagnostic",
+                "solver_name": "diagnostic_direct_gate",
+                "solver_residuals": {
+                    "candidate_bounds_violation": diagnostic_eval.get("candidate_bounds_violation"),
+                    "candidate_move_violation": diagnostic_eval.get("candidate_move_violation"),
+                },
+                "trust_region_violation": 0.0,
+                "slack_v": 0.0,
+                "slack_u": 0.0,
+                "correction_mode": "mpc_only_diagnostic_bypass",
+                "qcqp_attempted": False,
+                "qcqp_solved": False,
+                "qcqp_hard_accepted": False,
+                "qcqp_status": "not_attempted",
+                "fallback_mode": None,
+                "fallback_verified": False,
+                "fallback_solver_status": None,
+                "fallback_objective_value": None,
+                "fallback_bounds_ok": None,
+                "fallback_move_ok": None,
+                "fallback_lyap_ok": None,
+                "fallback_tracking_target_source": "none",
+                "fallback_target_mismatch_inf": target_mismatch_inf,
+                "target_success": bool(direct_target_info.get("success", False)),
+                "current_target_success": bool(direct_target_info.get("success", False)),
+                "current_target_stage": direct_target_info.get("solve_stage"),
+                "target_quality_enabled": direct_target_info.get("target_quality_enabled"),
+                "target_quality_ok": direct_target_info.get("target_quality_ok"),
+                "target_quality_reason": direct_target_info.get("target_quality_reason"),
+                "target_quality_policy": direct_target_info.get("target_quality_policy"),
+                "target_quality_bypass": target_quality_bypass,
+                "target_quality_mismatch_inf": direct_target_info.get("target_quality_mismatch_inf"),
+                "target_quality_residual_norm": direct_target_info.get("target_quality_residual_norm"),
+                "target_rate_inf": direct_target_info.get("target_rate_inf"),
+                "effective_target_success": bool(direct_target_info.get("success", False)),
+                "effective_target_stage": direct_target_info.get("solve_stage"),
+                "effective_target_source": "current_target" if direct_target_info.get("success", False) else None,
+                "effective_target_reused": False,
+                "target_source": "diagnostic_direct",
+                "target_stage": direct_target_info.get("solve_stage"),
+                "target_generation_mode": "diagnostic_direct_output_disturbance",
+                "selector_mode": "diagnostic_direct_output_disturbance_target",
+                "effective_selector_mode": (
+                    "diagnostic_direct_output_disturbance_target" if direct_target_info.get("success", False) else None
+                ),
+                "selector_name": direct_target_info.get("target_variant"),
+                "effective_selector_name": direct_target_info.get("target_variant"),
+                "selector_objective_terms": {},
+                "selector_objective_value": None,
+                "d_s_minus_dhat_inf": d_s_minus_dhat_inf,
+                "d_s_frozen": None,
+                "d_s_optimized": None,
+                "selector_warm_start_enabled": False,
+                "selector_warm_start_available": False,
+                "selector_warm_start_used": False,
+                "selector_prev_input_term_active": bool(direct_step_info.get("target_u_ref_active", False)),
+                "selector_prev_state_term_active": bool(direct_step_info.get("target_x_ref_active", False)),
+                "selector_Qr_diag_used": None,
+                "selector_R_u_ref_diag_used": None,
+                "selector_R_delta_u_sel_diag_used": None,
+                "selector_Q_delta_x_diag_used": None,
+                "selector_Q_x_ref_diag_used": None,
+                "selector_Qx_base_diag_used": None,
+                "selector_Rdu_diag_used": None,
+                "target_cond_M": direct_step_info.get("target_cond_M"),
+                "target_cond_G": direct_step_info.get("target_cond_G"),
+                "target_residual_total_norm": direct_step_info.get("target_residual_total_norm"),
+                "target_u_ref": direct_step_info.get("target_u_ref"),
+                "target_u_ref_weight": direct_step_info.get("target_u_ref_weight"),
+                "target_u_ref_active": direct_step_info.get("target_u_ref_active"),
+                "target_u_ref_penalty": direct_step_info.get("target_u_ref_penalty"),
+                "target_us_u_ref_inf": direct_step_info.get("target_us_u_ref_inf"),
+                "target_x_ref": direct_step_info.get("target_x_ref"),
+                "target_x_ref_weight": direct_step_info.get("target_x_ref_weight"),
+                "target_x_ref_active": direct_step_info.get("target_x_ref_active"),
+                "target_x_ref_penalty": direct_step_info.get("target_x_ref_penalty"),
+                "target_xs_x_ref_inf": direct_step_info.get("target_xs_x_ref_inf"),
+                "target_info": direct_target_info,
+                "backup_target_available": False,
+                "setpoint_changed": bool(setpoint_changed),
+                "upstream_candidate_info": {
+                    "source": "rl_policy_mpc_only",
+                    "action_raw": action.copy(),
+                    "mpc_tracking_target": y_sp_k.copy(),
+                    "mpc_tracking_target_source": "raw_setpoint",
+                    "target_mismatch_inf": target_mismatch_inf,
+                },
+                "mpc_tracking_target": y_sp_k.copy(),
+                "mpc_tracking_target_source": "raw_setpoint",
+                "target_mismatch_inf": target_mismatch_inf,
+                "qcqp_tracking_target": y_sp_k.copy(),
+                "qcqp_tracking_target_source": "diagnostic_only",
+                "cx_s": None if cx_s is None else cx_s.copy(),
+                "cd_d_s": None if cd_d_s is None else cd_d_s.copy(),
+                "u_fallback_mpc": None,
+                "allow_trust_region_slack": False,
+                "lyap_acceptance_mode": "diagnostic_only",
+            }
+
+            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
+            lyap_info_storage.append(info)
+            total_checked += 1
+            checked_in_block += 1
+            if info["diagnostic_unsafe"]:
+                total_filtered += 1
+                filtered_in_block += 1
+
+            u_safe_dev_store[k, :] = u_dev_safe
+            a_used = inv_map_from_bounds(u_dev_safe, u_min, u_max).astype(np.float32)
+            u_scaled_applied[k, :] = u_dev_safe + ss_scaled_u
+            u_plant = reverse_min_max(u_scaled_applied[k, :], data_min[:n_u], data_max[:n_u])
+            delta_u = u_scaled_applied[k, :] - u_prev_scaled
+
+            if mode == "disturb" and not disturbance_after_step:
+                system.hA = ha[k]
+                system.Qs = qs[k]
+                system.Qi = qi[k]
+
+            _set_system_input_phys(system, steady_states, u_plant)
+            system.step()
+
+            if mode == "disturb" and disturbance_after_step:
+                system.hA = ha[k]
+                system.Qs = qs[k]
+                system.Qi = qi[k]
+
+            _u_phys_next, y_phys_next = _system_io_phys(system, steady_states)
+            y_system[k + 1, :] = y_phys_next
+
+            y_next_dev = apply_min_max(y_phys_next, data_min[n_u:], data_max[n_u:]) - ss_scaled_y
+            e_next = y_next_dev - y_sp_kp1
+            e_store[k + 1, :] = e_next
+
+            innov = y_prev_dev - y_hat_k
+            xhat_aug_store[:, k + 1] = (
+                (MPC_obj.A @ xhat_aug_store[:, k])
+                + (MPC_obj.B @ u_dev_safe)
+                + (L @ innov)
+            )
+
+            delta_y = y_next_dev - y_sp_k
+            y_sp_phys = reverse_min_max(y_sp_k + ss_scaled_y, data_min[n_u:], data_max[n_u:])
+            r, reward_components = _reward_with_optional_fallback_penalty(
+                reward_fn,
+                delta_y,
+                delta_u,
+                y_sp_phys,
+                u_cand_dev=u_rl_dev,
+                u_exec_dev=u_dev_safe,
+                fallback_active=False,
+            )
+            _annotate_reward_info(info, reward_components)
+            rewards[k] = float(r)
+
+            next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
+            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
+
+            if not test:
+                _apply_agent_training_updates(
+                    agent=agent,
+                    phase_state=phase_state,
+                    rl_state=rl_state,
+                    action_used=a_used,
+                    reward=float(r),
+                    next_state=next_state,
+                    done=0.0,
+                )
+                if (
+                    phase_state.get("run_td3_full_update", False)
+                    and phase_state.get("behavior_noise_mode") == "parameter"
+                    and len(param_noise_cycle_states) < 256
+                ):
+                    param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
+
+            if k in sub_changes:
+                start = max(0, k - time_in_sub_episodes + 1)
+                avg_rewards.append(float(np.mean(rewards[start:k + 1])))
+                diagnostic_rate = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
+                total_diagnostic_rate = total_filtered / total_checked if total_checked > 0 else 0.0
+                print("Sub_Episode:", sub_changes[k], "| avg. reward:", avg_rewards[-1])
+                print(
+                    "MPC-only diagnostic Lyapunov gate would activate in block:",
+                    filtered_in_block, "/", checked_in_block,
+                    "(ratio:", diagnostic_rate, ")",
+                    "| actual safety active/interventions: 0 /", checked_in_block,
+                    "| total diagnostic would-activate:",
+                    total_filtered, "/", total_checked,
+                    "(ratio:", total_diagnostic_rate, ")",
+                )
+                last = lyap_info_storage[-1]
+                last_target = last.get("target_info", {})
+                print(
+                    "Last diagnostic mode:", last.get("correction_mode"),
+                    "| diagnostic_safe:", last.get("diagnostic_candidate_accepted"),
+                    "| actual_safety_active:", last.get("actual_intervention_active", False),
+                    "| V_next:", last.get("V_next_cand"),
+                    "| V_bound:", last.get("V_bound"),
+                    "| target_stage:", last_target.get("solve_stage") if last_target else None,
+                    "| cond_M:", last.get("target_cond_M"),
+                )
+                filtered_in_block = 0
+                checked_in_block = 0
+                fallback_in_block = 0
+
+            continue
+
         if projection_backend == "direct_accept_or_fallback":
             direct_tracking_target = y_sp_k.copy()
             direct_tracking_target_source = "raw_setpoint"
@@ -1360,6 +2014,87 @@ def run_rl_train(
                 du_max=du_max,
                 tol=lyap_tol,
             )
+            target_quality_bypass = bool(direct_target_info.get("target_quality_bypass", False))
+            if target_quality_bypass:
+                candidate_eval = dict(candidate_eval)
+                candidate_eval["accepted"] = False
+                candidate_eval["reject_reason"] = "target_quality_bypass"
+
+            performance_guard_info = {
+                "performance_guard_enabled": bool(performance_guard_cfg.get("enabled", False)),
+                "performance_guard_ok": None,
+                "performance_guard_reference_policy": performance_guard_cfg.get("reference_policy"),
+                "performance_guard_candidate_cost": None,
+                "performance_guard_reference_cost": None,
+                "performance_guard_tolerance": None,
+            }
+            precomputed_direct_fallback = None
+            if candidate_eval.get("accepted", False) and performance_guard_cfg.get("enabled", False):
+                reference_policy = str(performance_guard_cfg.get("reference_policy", "direct_mpc"))
+                reference_u_dev = u_prev_dev.copy()
+                reference_info = None
+                reference_ic_next = None
+                if reference_policy == "direct_mpc":
+                    reference_u_dev, reference_ic_next, reference_info = solve_direct_tracking_from_target(
+                        LMPC_obj=MPC_obj,
+                        x0_aug=xhat_aug_store[:, k],
+                        y_sp_k=y_sp_k,
+                        u_prev_dev=u_prev_dev,
+                        target_info=direct_target_info,
+                        step_info=dict(direct_step_info),
+                        IC_opt=step_fallback_ic,
+                        bnds=mpc_bnds,
+                        u_dev_min=u_min,
+                        u_dev_max=u_max,
+                        rho_lyap=rho_lyap,
+                        lyap_eps=lyap_eps,
+                        lyapunov_mode="hard",
+                        use_target_output_for_tracking=direct_tracking_use_target_output,
+                        skip_terminal_if_alpha_small=True,
+                        alpha_terminal_min=1e-8,
+                        use_target_on_solver_fail=False,
+                        first_step_contraction_on=first_step_contraction_on,
+                        solver_options={"warm_start": True},
+                    )
+                    precomputed_direct_fallback = (reference_u_dev, reference_ic_next, reference_info)
+                candidate_cost = _one_step_raw_tracking_cost(
+                    MPC_obj.A,
+                    MPC_obj.B,
+                    MPC_obj.C,
+                    xhat_aug_store[:, k],
+                    u_rl_dev,
+                    y_sp_k,
+                    u_prev_dev,
+                    performance_guard_cfg.get("Q_diag", Qy_track_diag),
+                    performance_guard_cfg.get("R_diag", Rmove_diag),
+                )
+                reference_cost = _one_step_raw_tracking_cost(
+                    MPC_obj.A,
+                    MPC_obj.B,
+                    MPC_obj.C,
+                    xhat_aug_store[:, k],
+                    reference_u_dev,
+                    y_sp_k,
+                    u_prev_dev,
+                    performance_guard_cfg.get("Q_diag", Qy_track_diag),
+                    performance_guard_cfg.get("R_diag", Rmove_diag),
+                )
+                guard_tolerance = float(performance_guard_cfg.get("abs_tol", 0.0)) + float(
+                    performance_guard_cfg.get("rel_tol", 0.0)
+                ) * max(1.0, abs(reference_cost))
+                performance_guard_ok = bool(candidate_cost <= reference_cost + guard_tolerance)
+                performance_guard_info.update(
+                    {
+                        "performance_guard_ok": performance_guard_ok,
+                        "performance_guard_candidate_cost": float(candidate_cost),
+                        "performance_guard_reference_cost": float(reference_cost),
+                        "performance_guard_tolerance": float(guard_tolerance),
+                    }
+                )
+                candidate_eval.update(performance_guard_info)
+                if not performance_guard_ok:
+                    candidate_eval["accepted"] = False
+                    candidate_eval["reject_reason"] = "performance_guard"
 
             applied_eval = None
             fallback_ic_next = None
@@ -1380,27 +2115,30 @@ def run_rl_train(
                 solver_status = "candidate_checked"
                 solver_name = "direct_accept_or_fallback_gate"
             else:
-                u_dev_safe, fallback_ic_next, direct_step_info = solve_direct_tracking_from_target(
-                    LMPC_obj=MPC_obj,
-                    x0_aug=xhat_aug_store[:, k],
-                    y_sp_k=y_sp_k,
-                    u_prev_dev=u_prev_dev,
-                    target_info=direct_target_info,
-                    step_info=direct_step_info,
-                    IC_opt=step_fallback_ic,
-                    bnds=mpc_bnds,
-                    u_dev_min=u_min,
-                    u_dev_max=u_max,
-                    rho_lyap=rho_lyap,
-                    lyap_eps=lyap_eps,
-                    lyapunov_mode="hard",
-                    use_target_output_for_tracking=direct_tracking_use_target_output,
-                    skip_terminal_if_alpha_small=True,
-                    alpha_terminal_min=1e-8,
-                    use_target_on_solver_fail=False,
-                    first_step_contraction_on=first_step_contraction_on,
-                    solver_options={"warm_start": True},
-                )
+                if precomputed_direct_fallback is not None:
+                    u_dev_safe, fallback_ic_next, direct_step_info = precomputed_direct_fallback
+                else:
+                    u_dev_safe, fallback_ic_next, direct_step_info = solve_direct_tracking_from_target(
+                        LMPC_obj=MPC_obj,
+                        x0_aug=xhat_aug_store[:, k],
+                        y_sp_k=y_sp_k,
+                        u_prev_dev=u_prev_dev,
+                        target_info=direct_target_info,
+                        step_info=direct_step_info,
+                        IC_opt=step_fallback_ic,
+                        bnds=mpc_bnds,
+                        u_dev_min=u_min,
+                        u_dev_max=u_max,
+                        rho_lyap=rho_lyap,
+                        lyap_eps=lyap_eps,
+                        lyapunov_mode="hard",
+                        use_target_output_for_tracking=direct_tracking_use_target_output,
+                        skip_terminal_if_alpha_small=True,
+                        alpha_terminal_min=1e-8,
+                        use_target_on_solver_fail=False,
+                        first_step_contraction_on=first_step_contraction_on,
+                        solver_options={"warm_start": True},
+                    )
                 if reuse_mpc_solution_as_ic:
                     fallback_ic = np.asarray(fallback_ic_next, float).reshape(-1).copy()
                 if direct_target_info.get("success", False):
@@ -1463,6 +2201,7 @@ def run_rl_train(
                 "verified": bool(verified),
                 "accept_reason": accept_reason,
                 "reject_reason": candidate_eval.get("reject_reason"),
+                **performance_guard_info,
                 "candidate_bounds_ok": candidate_eval.get("candidate_bounds_ok"),
                 "candidate_move_ok": candidate_eval.get("candidate_move_ok"),
                 "candidate_lyap_ok": candidate_eval.get("candidate_lyap_ok"),
@@ -1524,6 +2263,14 @@ def run_rl_train(
                 "target_success": bool(direct_target_info.get("success", False)),
                 "current_target_success": bool(direct_target_info.get("success", False)),
                 "current_target_stage": direct_target_info.get("solve_stage"),
+                "target_quality_enabled": direct_target_info.get("target_quality_enabled"),
+                "target_quality_ok": direct_target_info.get("target_quality_ok"),
+                "target_quality_reason": direct_target_info.get("target_quality_reason"),
+                "target_quality_policy": direct_target_info.get("target_quality_policy"),
+                "target_quality_bypass": target_quality_bypass,
+                "target_quality_mismatch_inf": direct_target_info.get("target_quality_mismatch_inf"),
+                "target_quality_residual_norm": direct_target_info.get("target_quality_residual_norm"),
+                "target_rate_inf": direct_target_info.get("target_rate_inf"),
                 "effective_target_success": bool(direct_target_info.get("success", False)),
                 "effective_target_stage": direct_target_info.get("solve_stage"),
                 "effective_target_source": "current_target" if direct_target_info.get("success", False) else None,
@@ -1636,7 +2383,20 @@ def run_rl_train(
 
             delta_y = y_next_dev - y_sp_k
             y_sp_phys = reverse_min_max(y_sp_k + ss_scaled_y, data_min[n_u:], data_max[n_u:])
-            r = reward_fn(delta_y, delta_u, y_sp_phys)
+            reward_fallback_active = bool(
+                projection_backend != "mpc_only_diagnostic"
+                and np.max(np.abs(np.asarray(u_dev_safe, float).reshape(-1) - np.asarray(u_rl_dev, float).reshape(-1))) > 1e-12
+            )
+            r, reward_components = _reward_with_optional_fallback_penalty(
+                reward_fn,
+                delta_y,
+                delta_u,
+                y_sp_phys,
+                u_cand_dev=u_rl_dev,
+                u_exec_dev=u_dev_safe,
+                fallback_active=reward_fallback_active,
+            )
+            _annotate_reward_info(info, reward_components)
             rewards[k] = float(r)
 
             next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
@@ -2136,7 +2896,21 @@ def run_rl_train(
 
         delta_y = y_next_dev - y_sp_k
         y_sp_phys = reverse_min_max(y_sp_k + ss_scaled_y, data_min[n_u:], data_max[n_u:])
-        r = reward_fn(delta_y, delta_u, y_sp_phys)
+        reward_fallback_active = bool(
+            use_lyap
+            and projection_backend != "mpc_only_diagnostic"
+            and np.max(np.abs(np.asarray(u_dev_safe, float).reshape(-1) - np.asarray(u_rl_dev, float).reshape(-1))) > 1e-12
+        )
+        r, reward_components = _reward_with_optional_fallback_penalty(
+            reward_fn,
+            delta_y,
+            delta_u,
+            y_sp_phys,
+            u_cand_dev=u_rl_dev,
+            u_exec_dev=u_dev_safe,
+            fallback_active=reward_fallback_active,
+        )
+        _annotate_reward_info(info, reward_components)
         rewards[k] = float(r)
 
         next_u_dev = u_scaled_applied[k, :] - ss_scaled_u

@@ -4,10 +4,12 @@ import csv
 import json
 import os
 import pickle
+import re
+from copy import deepcopy
 from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -41,6 +43,7 @@ from Lyapunov.lyapunov_core import (
     _extract_num_iters,
     compute_terminal_alpha_input_only,
     design_standard_tracking_terminal_ingredients,
+    evaluate_candidate_action,
     first_step_contraction_metrics,
     lyapunov_bound,
     lyapunov_value,
@@ -51,6 +54,7 @@ from Simulation.run_mpc_lyapunov import (
     _set_system_input_phys,
     _system_io_phys,
 )
+from Lyapunov.upstream_controllers import solve_offset_free_mpc_candidate
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.lyapunov_utils import (
     compute_du_sequence,
@@ -63,8 +67,30 @@ from utils.plot_style import PAPER_COLORS, paper_plot_context
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 
 
-DEFAULT_DIRECT_TARGET_CONFIG: Dict[str, Any] = {}
+DEFAULT_DIRECT_TARGET_CONFIG: Dict[str, Any] = {
+    "solve_strategy": "legacy_ls",
+    "disturbance_model_mode": "output",
+    "target_quality": {
+        "enabled": False,
+        "policy": "bypass_hard_lyap",
+        "max_mismatch_inf": None,
+        "max_residual_norm": None,
+        "max_rate_inf": None,
+    },
+}
 DEFAULT_DIRECT_SOFT_SLACK_PENALTY = 1.0e6
+_WINDOWS_PATH_SOFT_LIMIT = 240
+_EXPORT_PROFILES = {"debug", "compact"}
+_DIRECT_COMPARISON_FILENAME_MAP = {
+    "comparison_reward_mean.png": "cmp_reward.png",
+    "comparison_output_rmse.png": "cmp_out_rmse.png",
+    "comparison_solver_contraction_rates.png": "cmp_solver_contr.png",
+    "comparison_slack.png": "cmp_slack.png",
+    "comparison_target_residual_bounded_activity.png": "cmp_target_diag.png",
+    "comparison_reference_errors.png": "cmp_ref_err.png",
+    "comparison_outputs_overlay.png": "cmp_out_overlay.png",
+    "comparison_inputs_overlay.png": "cmp_in_overlay.png",
+}
 
 
 def _jsonable(value: Any) -> Any:
@@ -99,12 +125,277 @@ def _write_csv(path: str, rows: Iterable[Dict[str, Any]]) -> None:
             writer.writerow({key: _jsonable(value) for key, value in row.items()})
 
 
-def _save_npz(path: str, arrays: Dict[str, Any]) -> None:
+def _is_csv_scalar(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (str, bool, int, float, np.bool_, np.integer, np.floating)):
+        return True
+    return False
+
+
+def _scalar_only_records(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    scalar_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        scalar_rows.append({key: value for key, value in row.items() if _is_csv_scalar(value)})
+    return scalar_rows
+
+
+def _normalize_export_profile(export_profile: str) -> str:
+    profile = str(export_profile or "debug").strip().lower()
+    if profile not in _EXPORT_PROFILES:
+        raise ValueError(f"Unknown export_profile={export_profile!r}. Expected one of {sorted(_EXPORT_PROFILES)}.")
+    return profile
+
+
+def _sanitize_method_slug(value: str, *, default: str = "method", max_len: int = 80) -> str:
+    text = str(value or default).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    if not text:
+        text = default
+    return _truncate_path_component(text, max_len=max_len)
+
+
+def _moving_average(values: Any, window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return arr
+    window = max(int(window), 1)
+    out = np.full(arr.shape, np.nan, dtype=float)
+    for idx in range(arr.size):
+        start = max(0, idx - window + 1)
+        chunk = arr[start : idx + 1]
+        chunk = chunk[np.isfinite(chunk)]
+        if chunk.size:
+            out[idx] = float(np.mean(chunk))
+    return out
+
+
+_DIRECT_STEP_VECTOR_DETAIL_COLUMNS = {
+    "target_u_ref",
+    "target_u_ref_weight",
+    "target_x_ref",
+    "target_x_ref_weight",
+    "u_apply",
+    "u_prev_dev",
+    "u_s",
+    "x_s",
+    "d_s",
+    "y_sp",
+    "y_s",
+    "y_target",
+    "y_s_minus_y_sp",
+    "y_target_minus_y_sp",
+    "delta_y",
+    "y_minus_y_sp",
+    "y_minus_y_target",
+    "delta_u",
+}
+
+_DIRECT_COMPACT_STEP_COLUMNS = [
+    "step",
+    "success",
+    "method",
+    "diagnostic_candidate_accepted",
+    "diagnostic_unsafe",
+    "diagnostic_unstable",
+    "actual_intervention",
+    "diagnostic_reject_reason",
+    "candidate_bounds_ok",
+    "candidate_move_ok",
+    "candidate_lyap_ok",
+    "target_mode",
+    "lyapunov_mode",
+    "plant_mode",
+    "target_success",
+    "target_stage",
+    "target_variant",
+    "target_quality_ok",
+    "target_quality_bypass",
+    "target_quality_reason",
+    "target_rate_inf",
+    "target_rank_M",
+    "target_cond_M",
+    "target_cond_G",
+    "target_residual_total_norm",
+    "target_exact_within_bounds",
+    "target_bounded_solution_used",
+    "target_us_u_ref_inf",
+    "target_xs_x_ref_inf",
+    "solver_status",
+    "solver_name",
+    "solver_nit",
+    "objective_value",
+    "terminal_margin",
+    "V_k",
+    "V_next_first",
+    "V_bound",
+    "contraction_margin",
+    "first_step_contraction_satisfied",
+    "slack_lyap",
+    "relaxed_contraction_satisfied",
+    "reward",
+    "use_target_output_for_tracking",
+]
+
+
+def _filter_direct_step_records(records: Iterable[Dict[str, Any]], export_profile: str = "debug") -> List[Dict[str, Any]]:
+    profile = _normalize_export_profile(export_profile)
+    scalar_records = _scalar_only_records(records)
+    filtered: List[Dict[str, Any]] = []
+    for row in scalar_records:
+        if profile == "compact":
+            filtered.append({key: row.get(key) for key in _DIRECT_COMPACT_STEP_COLUMNS if key in row})
+        else:
+            filtered.append(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in _DIRECT_STEP_VECTOR_DETAIL_COLUMNS
+                }
+            )
+    return filtered
+
+
+def _direct_npz_arrays(arrays: Dict[str, Any], export_profile: str = "debug") -> Dict[str, np.ndarray]:
+    profile = _normalize_export_profile(export_profile)
+    if profile == "debug":
+        return {key: value for key, value in arrays.items() if isinstance(value, np.ndarray)}
+    keep_keys = {
+        "y_system",
+        "u_applied_phys",
+        "y_sp",
+        "y_sp_steps",
+        "rewards",
+        "u_target_phys_store",
+        "u_target_dev_store",
+        "y_target_store",
+        "y_target_phys_store",
+        "y_tracking_store",
+        "y_tracking_phys_store",
+        "y_s_minus_y_sp_store",
+        "y_s_minus_y_sp_phys_store",
+        "y_minus_y_sp_store",
+        "y_minus_y_sp_phys_store",
+        "y_minus_y_target_store",
+        "y_minus_y_target_phys_store",
+        "V_k",
+        "V_next_first",
+        "V_bound",
+        "contraction_margin",
+        "slack_lyap",
+        "target_success_flags",
+        "solver_success_flags",
+        "diagnostic_candidate_accepted_flags",
+        "diagnostic_unsafe_flags",
+        "diagnostic_unstable_flags",
+        "actual_intervention_flags",
+        "first_step_contraction_satisfied_flags",
+        "relaxed_contraction_satisfied_flags",
+        "target_residual_total_norm",
+        "target_cond_M",
+        "target_cond_G",
+        "target_reference_error_inf",
+        "tracking_reference_error_inf",
+        "output_reference_error_inf",
+        "output_tracking_error_inf",
+    }
+    return {key: value for key, value in arrays.items() if key in keep_keys and isinstance(value, np.ndarray)}
+
+
+def _save_npz(path: str, arrays: Dict[str, Any], export_profile: str = "debug") -> None:
     saveable = {}
-    for key, value in arrays.items():
-        if isinstance(value, np.ndarray):
-            saveable[key] = value
-    np.savez(path, **saveable)
+    for key, value in _direct_npz_arrays(arrays, export_profile=export_profile).items():
+        saveable[key] = value
+    np.savez_compressed(path, **saveable)
+
+
+def _truncate_path_component(value: str, max_len: int = 64) -> str:
+    value = str(value)
+    if len(value) <= max_len:
+        return value
+    if max_len <= 5:
+        return value[:max_len]
+    head = (max_len - 1) // 2
+    tail = max_len - head - 1
+    return f"{value[:head]}_{value[-tail:]}"
+
+
+def _unique_directory_candidate(base_path: str) -> str:
+    candidate = str(base_path)
+    idx = 2
+    while os.path.exists(candidate):
+        candidate = f"{base_path}_{idx:02d}"
+        idx += 1
+    return candidate
+
+
+def _max_joined_path_len(base_dir: str, rel_paths: Iterable[str]) -> int:
+    return max(len(os.path.join(base_dir, rel_path)) for rel_path in rel_paths)
+
+
+def _project_direct_debug_max_path_len(out_dir: str, *, save_paper_plots: bool) -> int:
+    rel_paths = [
+        "summary.json",
+        "arrays.npz",
+        os.path.join("plots", "fig_mpc_outputs_last9999.png"),
+        os.path.join("plots", "05_target_diagnostics.png"),
+    ]
+    if save_paper_plots:
+        rel_paths.extend(
+            [
+                os.path.join("paper_plots", "fig_mpc_outputs_last9999.png"),
+                os.path.join("paper_plots", "05_target_diagnostics.png"),
+            ]
+        )
+    return _max_joined_path_len(out_dir, rel_paths)
+
+
+def _select_direct_debug_output_dir(
+    directory: str,
+    prefix_name: str,
+    *,
+    timestamp: str,
+    save_paper_plots: bool,
+) -> str:
+    method_slug = _sanitize_method_slug(prefix_name, default="direct_lyapunov_mpc")
+    standard_base = os.path.join(directory, method_slug)
+    standard_candidate = _unique_directory_candidate(standard_base)
+    if os.name != "nt":
+        return standard_candidate
+
+    short_stamp = str(timestamp)[-6:]
+    candidate_bases = [
+        standard_base,
+        os.path.join(directory, _truncate_path_component(method_slug, max_len=56)),
+        os.path.join(directory, f"{_truncate_path_component(method_slug, max_len=48)}_{short_stamp}"),
+    ]
+
+    best_candidate = standard_candidate
+    best_len = _project_direct_debug_max_path_len(
+        best_candidate,
+        save_paper_plots=save_paper_plots,
+    )
+    for base_path in candidate_bases:
+        candidate = _unique_directory_candidate(base_path)
+        projected_len = _project_direct_debug_max_path_len(
+            candidate,
+            save_paper_plots=save_paper_plots,
+        )
+        if projected_len < best_len:
+            best_candidate = candidate
+            best_len = projected_len
+        if projected_len <= _WINDOWS_PATH_SOFT_LIMIT:
+            return candidate
+    return best_candidate
+
+
+def _maybe_windows_short_filename(output_dir: str, filename: str, short_name_map: Dict[str, str]) -> str:
+    filename = str(filename)
+    if os.name != "nt":
+        return filename
+    if len(os.path.join(output_dir, filename)) <= _WINDOWS_PATH_SOFT_LIMIT:
+        return filename
+    return short_name_map.get(filename, filename)
 
 
 def _array_or_none(info: Dict[str, Any], key: str) -> Optional[np.ndarray]:
@@ -588,10 +879,127 @@ def design_direct_lyapunov_mpc_solver(
 
 
 def _target_config_dict(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    merged = dict(DEFAULT_DIRECT_TARGET_CONFIG)
+    merged = deepcopy(DEFAULT_DIRECT_TARGET_CONFIG)
     if config:
-        merged.update(dict(config))
+        for key, value in dict(config).items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                nested = dict(merged[key])
+                nested.update(value)
+                merged[key] = nested
+            else:
+                merged[key] = value
     return merged
+
+
+def _target_quality_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = _target_config_dict(config)
+    raw = cfg.get("target_quality", {})
+    if isinstance(raw, bool):
+        raw = {"enabled": bool(raw)}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("target_quality must be a dict, bool, or None.")
+    quality = dict(DEFAULT_DIRECT_TARGET_CONFIG["target_quality"])
+    quality.update(raw)
+    quality["enabled"] = bool(quality.get("enabled", False))
+    quality["policy"] = str(quality.get("policy", "bypass_hard_lyap")).strip().lower()
+    return quality
+
+
+def _finite_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _threshold_from_config(config: Dict[str, Any], *names: str) -> Optional[float]:
+    for name in names:
+        value = _finite_or_none(config.get(name))
+        if value is not None:
+            return max(float(value), 0.0)
+    return None
+
+
+def _annotate_target_quality(
+    target_info: Dict[str, Any],
+    *,
+    y_sp_k: np.ndarray,
+    x_target_prev_success: Optional[np.ndarray],
+    target_config: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    target_info = {} if target_info is None else dict(target_info)
+    quality = _target_quality_config(target_config)
+    y_sp_k = np.asarray(y_sp_k, dtype=float).reshape(-1)
+
+    y_s = target_info.get("y_s")
+    mismatch_inf = None
+    if y_s is not None:
+        y_s_arr = np.asarray(y_s, dtype=float).reshape(-1)
+        n = min(y_s_arr.size, y_sp_k.size)
+        mismatch_inf = float(np.max(np.abs(y_s_arr[:n] - y_sp_k[:n]))) if n else 0.0
+
+    residual_norm = _finite_or_none(target_info.get("residual_total_norm"))
+    if residual_norm is None:
+        residual_norm = _finite_or_none(target_info.get("target_error_norm"))
+    if residual_norm is None:
+        residual_norm = _finite_or_none(target_info.get("dyn_residual_inf"))
+
+    rate_inf = None
+    if target_info.get("x_s") is not None and x_target_prev_success is not None:
+        x_s = np.asarray(target_info["x_s"], dtype=float).reshape(-1)
+        x_prev = np.asarray(x_target_prev_success, dtype=float).reshape(-1)
+        n = min(x_s.size, x_prev.size)
+        rate_inf = float(np.max(np.abs(x_s[:n] - x_prev[:n]))) if n else 0.0
+    elif target_info.get("success", False):
+        rate_inf = 0.0
+
+    reasons: List[str] = []
+    if not bool(target_info.get("success", False)):
+        reasons.append("target_failed")
+
+    if quality["enabled"]:
+        mismatch_tol = _threshold_from_config(quality, "max_mismatch_inf", "mismatch_inf", "mismatch_tol")
+        residual_tol = _threshold_from_config(quality, "max_residual_norm", "residual_norm", "residual_tol")
+        rate_tol = _threshold_from_config(quality, "max_rate_inf", "rate_inf", "rate_tol", "max_target_jump_inf")
+
+        if mismatch_tol is not None and (mismatch_inf is None or mismatch_inf > mismatch_tol):
+            reasons.append("target_setpoint_mismatch")
+        if residual_tol is not None and (residual_norm is None or residual_norm > residual_tol):
+            reasons.append("target_residual")
+        if rate_tol is not None and (rate_inf is None or rate_inf > rate_tol):
+            reasons.append("target_jump")
+
+    quality_ok = bool((not quality["enabled"]) or len(reasons) == 0)
+    if not quality["enabled"]:
+        reason = "disabled"
+    elif quality_ok:
+        reason = "ok"
+    else:
+        reason = ",".join(reasons)
+    bypass = bool(
+        quality["enabled"]
+        and (not quality_ok)
+        and quality.get("policy") in {"bypass_hard_lyap", "raw_tracking", "raw_setpoint"}
+    )
+
+    target_info.update(
+        {
+            "target_quality_enabled": bool(quality["enabled"]),
+            "target_quality_ok": bool(quality_ok),
+            "target_quality_reason": reason,
+            "target_quality_policy": quality.get("policy"),
+            "target_quality_bypass": bool(bypass),
+            "target_quality_mismatch_inf": mismatch_inf,
+            "target_quality_residual_norm": residual_norm,
+            "target_rate_inf": rate_inf,
+        }
+    )
+    return target_info
 
 
 def direct_lyapunov_evaluation_ingredients(LMPC_obj) -> Dict[str, np.ndarray]:
@@ -673,6 +1081,12 @@ def prepare_direct_output_disturbance_step(
             "target_mode": target_mode,
         }
     )
+    target_info = _annotate_target_quality(
+        target_info,
+        y_sp_k=y_sp_k,
+        x_target_prev_success=x_target_prev_success,
+        target_config=target_config,
+    )
 
     x_target_next = x_target_prev_success
     if target_info.get("success", False) and target_info.get("x_s") is not None:
@@ -689,6 +1103,15 @@ def prepare_direct_output_disturbance_step(
         "target_success": bool(target_info.get("success", False)),
         "target_stage": target_info.get("solve_stage"),
         "target_variant": target_info.get("target_variant"),
+        "target_disturbance_model_mode": target_info.get("disturbance_model_mode"),
+        "target_quality_enabled": target_info.get("target_quality_enabled"),
+        "target_quality_ok": target_info.get("target_quality_ok"),
+        "target_quality_reason": target_info.get("target_quality_reason"),
+        "target_quality_policy": target_info.get("target_quality_policy"),
+        "target_quality_bypass": target_info.get("target_quality_bypass"),
+        "target_quality_mismatch_inf": target_info.get("target_quality_mismatch_inf"),
+        "target_quality_residual_norm": target_info.get("target_quality_residual_norm"),
+        "target_rate_inf": target_info.get("target_rate_inf"),
         "x0_aug": x0_aug.copy(),
         "y_sp": y_sp_k.copy(),
         "yhat_now": yhat_now.copy(),
@@ -786,7 +1209,16 @@ def solve_direct_tracking_from_target(
     solver_options: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     step_info = {} if step_info is None else dict(step_info)
-    step_info["lyapunov_mode"] = lyapunov_mode
+    quality_bypass = bool(target_info.get("target_quality_bypass", step_info.get("target_quality_bypass", False)))
+    effective_first_step_contraction_on = bool(first_step_contraction_on)
+    effective_lyapunov_mode = str(lyapunov_mode)
+    if quality_bypass and str(lyapunov_mode).strip().lower() == "hard":
+        effective_first_step_contraction_on = False
+        effective_lyapunov_mode = "soft"
+    step_info["lyapunov_mode_requested"] = lyapunov_mode
+    step_info["lyapunov_mode"] = effective_lyapunov_mode
+    step_info["target_quality_bypass"] = quality_bypass
+    step_info["first_step_contraction_on_requested"] = bool(first_step_contraction_on)
 
     x0_aug = np.asarray(x0_aug, dtype=float).reshape(-1)
     y_sp_k = np.asarray(y_sp_k, dtype=float).reshape(-1)
@@ -799,7 +1231,8 @@ def solve_direct_tracking_from_target(
         x_s = np.asarray(target_info["x_s"], float).reshape(-1)
         u_s = np.asarray(target_info["u_s"], float).reshape(-1)
         y_s = np.asarray(target_info["y_s"], float).reshape(-1)
-        y_target = y_s.copy() if use_target_output_for_tracking else y_sp_k.copy()
+        effective_use_target_output_for_tracking = bool(use_target_output_for_tracking and not quality_bypass)
+        y_target = y_s.copy() if effective_use_target_output_for_tracking else y_sp_k.copy()
 
         alpha_terminal_raw = compute_terminal_alpha_input_only(
             P_x=LMPC_obj.P_x,
@@ -818,7 +1251,8 @@ def solve_direct_tracking_from_target(
             alpha_scale=LMPC_obj.terminal_alpha_scale,
         )
         terminal_constraint_skipped = bool(
-            skip_terminal_if_alpha_small and alpha_terminal <= float(alpha_terminal_min)
+            quality_bypass
+            or (skip_terminal_if_alpha_small and alpha_terminal <= float(alpha_terminal_min))
         )
         terminal_set_on_prev = LMPC_obj.terminal_set_on
         alpha_for_solver = None if terminal_constraint_skipped else float(alpha_terminal)
@@ -837,8 +1271,8 @@ def solve_direct_tracking_from_target(
                 alpha_terminal=alpha_for_solver,
                 rho_lyap=rho_lyap,
                 eps_lyap=lyap_eps,
-                first_step_contraction_on=first_step_contraction_on,
-                lyapunov_mode=lyapunov_mode,
+                first_step_contraction_on=effective_first_step_contraction_on,
+                lyapunov_mode=effective_lyapunov_mode,
                 slack_penalty=slack_penalty,
                 options=solver_options,
             )
@@ -857,6 +1291,8 @@ def solve_direct_tracking_from_target(
                 "alpha_terminal": float(alpha_terminal),
                 "alpha_terminal_used": None if alpha_for_solver is None else float(alpha_for_solver),
                 "terminal_constraint_skipped": terminal_constraint_skipped,
+                "first_step_contraction_on": bool(effective_first_step_contraction_on),
+                "use_target_output_for_tracking": bool(effective_use_target_output_for_tracking),
                 "y_target": y_target.copy(),
                 "y_s_minus_y_sp": y_s - y_sp_k,
                 "y_target_minus_y_sp": y_target - y_sp_k,
@@ -877,15 +1313,15 @@ def solve_direct_tracking_from_target(
                 alpha_terminal=alpha_for_solver,
                 rho_lyap=rho_lyap,
                 eps_lyap=lyap_eps,
-                first_step_contraction_on=first_step_contraction_on,
-                lyapunov_mode=lyapunov_mode,
+                first_step_contraction_on=effective_first_step_contraction_on,
+                lyapunov_mode=effective_lyapunov_mode,
                 slack_lyap=getattr(sol, "slack_lyap", 0.0),
                 slack_penalty=slack_penalty,
             )
             step_info.update(
                 {
                     "success": True,
-                    "method": "direct_lyapunov_mpc",
+                    "method": "direct_tracking_quality_bypass" if quality_bypass else "direct_lyapunov_mpc",
                     "u_apply": u_dev_apply.copy(),
                     **report,
                 }
@@ -1178,6 +1614,329 @@ def run_direct_output_disturbance_lyapunov_mpc(
     }
 
 
+def run_offset_free_mpc_with_direct_diagnostics(
+    system,
+    MPC_obj,
+    diagnostic_LMPC_obj,
+    y_sp_scenario,
+    n_tests,
+    set_points_len,
+    steady_states,
+    IC_opt,
+    bnds,
+    L,
+    data_min,
+    data_max,
+    test_cycle,
+    reward_fn,
+    nominal_qi,
+    nominal_qs,
+    nominal_ha,
+    qi_change,
+    qs_change,
+    ha_change,
+    *,
+    target_mode="bounded",
+    target_config=None,
+    target_H=None,
+    mode="nominal",
+    disturbance_after_step=True,
+    use_target_output_for_tracking=False,
+    rho_lyap=0.99,
+    lyap_eps=1e-9,
+    first_step_contraction_on=True,
+    reset_system_on_entry=True,
+    solver_options=None,
+):
+    """Run offset-free MPC while recording direct Lyapunov diagnostics only."""
+    target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
+    mode = _as_mode(mode, ("nominal", "disturb"), "mode")
+    disturbance_after_step = bool(disturbance_after_step)
+    nominal_qi_value = _as_scalar_float(nominal_qi, "nominal_qi")
+    nominal_qs_value = _as_scalar_float(nominal_qs, "nominal_qs")
+    nominal_ha_value = _as_scalar_float(nominal_ha, "nominal_ha")
+
+    system.Qi = nominal_qi_value
+    system.Qs = nominal_qs_value
+    system.hA = nominal_ha_value
+    if reset_system_on_entry:
+        _reset_system_on_entry(system)
+        system.Qi = nominal_qi_value
+        system.Qs = nominal_qs_value
+        system.hA = nominal_ha_value
+
+    (
+        y_sp,
+        nFE,
+        sub_changes,
+        time_in_sub_episodes,
+        _,
+        _,
+        qi,
+        qs,
+        ha,
+    ) = generate_setpoints_training_rl_gradually(
+        y_sp_scenario,
+        n_tests,
+        set_points_len,
+        0,
+        test_cycle,
+        nominal_qi,
+        nominal_qs,
+        nominal_ha,
+        qi_change,
+        qs_change,
+        ha_change,
+    )
+
+    n_inputs = MPC_obj.B.shape[1]
+    n_outputs = MPC_obj.C.shape[0]
+    n_aug = MPC_obj.A.shape[0]
+    n_x = n_aug - n_outputs
+
+    ss_scaled_inputs = apply_min_max(steady_states["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
+    y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
+    u_dev_min = np.array([bnds[j][0] for j in range(n_inputs)], dtype=float)
+    u_dev_max = np.array([bnds[j][1] for j in range(n_inputs)], dtype=float)
+    du_min = u_dev_min - u_dev_max
+    du_max = u_dev_max - u_dev_min
+    diagnostic_ingredients = direct_lyapunov_evaluation_ingredients(diagnostic_LMPC_obj)
+
+    y_mpc = np.zeros((nFE + 1, n_outputs), dtype=float)
+    y_mpc[0, :] = _system_io_phys(system, steady_states)[1]
+    u_applied_phys = np.zeros((nFE, n_inputs), dtype=float)
+    yhat = np.zeros((n_outputs, nFE), dtype=float)
+    xhatdhat = np.zeros((n_aug, nFE + 1), dtype=float)
+    rewards = np.zeros(nFE, dtype=float)
+    avg_rewards = []
+    delta_y_storage = []
+    delta_u_storage = []
+    direct_info_storage = []
+    target_info_storage = []
+    x_target_prev_success = None
+    IC_opt = np.asarray(IC_opt, float).copy()
+
+    for step_idx in range(nFE):
+        x0_aug = xhatdhat[:, step_idx].copy()
+        scaled_current_input = apply_min_max(system.current_input, data_min[:n_inputs], data_max[:n_inputs])
+        u_prev_dev = scaled_current_input - ss_scaled_inputs
+        y_sp_k = get_y_sp_step(y_sp, step_idx, n_outputs)
+        y_prev_scaled = apply_min_max(y_mpc[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
+        yhat_now = (MPC_obj.C @ x0_aug).reshape(-1)
+        innovation = y_prev_scaled - yhat_now
+
+        step_context = prepare_direct_output_disturbance_step(
+            LMPC_obj=diagnostic_LMPC_obj,
+            x0_aug=x0_aug,
+            y_sp_k=y_sp_k,
+            u_prev_dev=u_prev_dev,
+            u_dev_min=u_dev_min,
+            u_dev_max=u_dev_max,
+            target_mode=target_mode,
+            target_config=target_config,
+            target_H=target_H,
+            x_target_prev_success=x_target_prev_success,
+            step_idx=step_idx,
+            y_prev_scaled=y_prev_scaled,
+            plant_mode=mode,
+            disturbance_after_step=disturbance_after_step,
+            use_target_output_for_tracking=use_target_output_for_tracking,
+        )
+        target_info = step_context["target_info"]
+        target_info_storage.append(target_info)
+        x_target_prev_success = step_context["x_target_prev_success_next"]
+        step_info = step_context["step_info"]
+
+        u_dev_apply, teacher_info = solve_offset_free_mpc_candidate(
+            MPC_obj,
+            y_sp=y_sp_k,
+            u_prev_dev=u_prev_dev,
+            x0_model=x0_aug,
+            IC_opt=IC_opt,
+            bnds=bnds,
+            cons=(),
+            return_debug=True,
+        )
+        if u_dev_apply is None:
+            u_dev_apply = u_prev_dev.copy()
+            method = "offset_free_mpc_fail_hold_prev"
+        else:
+            u_dev_apply = np.clip(np.asarray(u_dev_apply, float).reshape(-1), u_dev_min, u_dev_max)
+            method = "offset_free_mpc"
+        if teacher_info.get("IC_opt_next") is not None:
+            IC_opt = np.asarray(teacher_info["IC_opt_next"], float).reshape(-1).copy()
+
+        diagnostic_eval = evaluate_candidate_action(
+            u_cand=u_dev_apply,
+            xhat_aug=x0_aug,
+            target_info=target_info,
+            ingredients=diagnostic_ingredients,
+            rho=rho_lyap,
+            eps_lyap=lyap_eps,
+            u_min=u_dev_min,
+            u_max=u_dev_max,
+            u_prev=u_prev_dev,
+            du_min=du_min,
+            du_max=du_max,
+        )
+
+        u_scaled = u_dev_apply + ss_scaled_inputs
+        u_phys = reverse_min_max(u_scaled, data_min[:n_inputs], data_max[:n_inputs])
+        u_applied_phys[step_idx, :] = u_phys.copy()
+        delta_u = u_scaled - scaled_current_input
+
+        if mode == "disturb" and not disturbance_after_step:
+            system.hA = ha[step_idx]
+            system.Qs = qs[step_idx]
+            system.Qi = qi[step_idx]
+
+        _set_system_input_phys(system, steady_states, u_phys)
+        system.step()
+
+        if mode == "disturb" and disturbance_after_step:
+            system.hA = ha[step_idx]
+            system.Qs = qs[step_idx]
+            system.Qi = qi[step_idx]
+
+        y_phys = _system_io_phys(system, steady_states)[1]
+        y_mpc[step_idx + 1, :] = y_phys
+        y_current_scaled = apply_min_max(y_mpc[step_idx + 1, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
+        delta_y = y_current_scaled - y_sp_k
+
+        yhat[:, step_idx] = yhat_now
+        xhat_next_openloop = MPC_obj.A @ x0_aug + MPC_obj.B @ u_dev_apply
+        observer_correction = L @ innovation
+        xhatdhat[:, step_idx + 1] = xhat_next_openloop + observer_correction
+
+        y_sp_phys = reverse_min_max(y_sp_k + y_ss_scaled, data_min[n_inputs:], data_max[n_inputs:])
+        reward = reward_fn(delta_y, delta_u, y_sp_phys)
+        rewards[step_idx] = reward
+        delta_y_storage.append(delta_y.copy())
+        delta_u_storage.append(delta_u.copy())
+
+        y_s = target_info.get("y_s")
+        y_target = y_sp_k if y_s is None or not use_target_output_for_tracking else np.asarray(y_s, float).reshape(-1)
+        y_minus_y_target = y_current_scaled - y_target
+        target_mismatch = None if y_s is None else float(np.max(np.abs(np.asarray(y_s, float).reshape(-1) - y_sp_k)))
+        target_quality_bypass = bool(target_info.get("target_quality_bypass", False))
+        diagnostic_accepted = bool(diagnostic_eval.get("accepted", False) or target_quality_bypass)
+
+        step_info.update(
+            {
+                "success": bool(teacher_info.get("success", False)),
+                "method": method,
+                "target_mode": target_mode,
+                "lyapunov_mode": "diagnostic_only",
+                "plant_mode": mode,
+                "disturbance_after_step": disturbance_after_step,
+                "tracking_solver": "offset_free_mpc",
+                "status": teacher_info.get("status"),
+                "message": teacher_info.get("message"),
+                "fun": teacher_info.get("objective_value"),
+                "solver_nit": teacher_info.get("nit"),
+                "u_apply": u_dev_apply.copy(),
+                "u_prev_dev": u_prev_dev.copy(),
+                "V_k": diagnostic_eval.get("V_k"),
+                "V_next_first": diagnostic_eval.get("V_next_cand"),
+                "V_bound": diagnostic_eval.get("V_bound"),
+                "contraction_margin": diagnostic_eval.get("lyap_margin"),
+                "first_step_contraction_satisfied": diagnostic_eval.get("candidate_lyap_ok"),
+                "relaxed_contraction_satisfied": diagnostic_eval.get("candidate_lyap_ok"),
+                "diagnostic_candidate_accepted": diagnostic_accepted,
+                "diagnostic_unsafe": bool((not diagnostic_accepted) and not target_quality_bypass),
+                "diagnostic_unstable": (
+                    False
+                    if diagnostic_eval.get("candidate_lyap_ok") is None
+                    else not bool(diagnostic_eval.get("candidate_lyap_ok"))
+                ),
+                "actual_intervention": False,
+                "diagnostic_reject_reason": (
+                    "target_quality_bypass"
+                    if target_quality_bypass
+                    else diagnostic_eval.get("reject_reason")
+                ),
+                "candidate_bounds_ok": diagnostic_eval.get("candidate_bounds_ok"),
+                "candidate_move_ok": diagnostic_eval.get("candidate_move_ok"),
+                "candidate_lyap_ok": diagnostic_eval.get("candidate_lyap_ok"),
+                "target_mismatch_inf": target_mismatch,
+                "target_quality_enabled": target_info.get("target_quality_enabled"),
+                "target_quality_ok": target_info.get("target_quality_ok"),
+                "target_quality_reason": target_info.get("target_quality_reason"),
+                "target_quality_policy": target_info.get("target_quality_policy"),
+                "target_quality_bypass": target_quality_bypass,
+                "target_quality_mismatch_inf": target_info.get("target_quality_mismatch_inf"),
+                "target_quality_residual_norm": target_info.get("target_quality_residual_norm"),
+                "target_rate_inf": target_info.get("target_rate_inf"),
+                "y_target": y_target.copy(),
+                "y_s_minus_y_sp": None if y_s is None else np.asarray(y_s, float).reshape(-1) - y_sp_k,
+                "y_target_minus_y_sp": y_target - y_sp_k,
+                "y_current_scaled": y_current_scaled.copy(),
+                "xhat_next_openloop": xhat_next_openloop.copy(),
+                "observer_correction": observer_correction.copy(),
+                "xhat_next": xhatdhat[:, step_idx + 1].copy(),
+                "reward": float(reward),
+                "delta_y": delta_y.copy(),
+                "y_minus_y_sp": delta_y.copy(),
+                "y_minus_y_target": y_minus_y_target.copy(),
+                "delta_u": delta_u.copy(),
+                "slack_lyap": 0.0,
+            }
+        )
+        direct_info_storage.append(step_info)
+
+        if step_idx in sub_changes:
+            avg_rewards.append(np.mean(rewards[step_idx - time_in_sub_episodes + 1:step_idx + 1]))
+            last = direct_info_storage[-1]
+            print(
+                "Sub_Episode:", sub_changes[step_idx],
+                "| avg. reward:", avg_rewards[-1],
+                "| method: mpc_only",
+                "| plant_mode:", mode,
+                "| mpc_success:", last.get("success"),
+                "| diagnostic_safe:", last.get("diagnostic_candidate_accepted"),
+                "| target_stage:", last.get("target_stage"),
+                "| contraction_margin:", last.get("contraction_margin"),
+                "| nit:", last.get("solver_nit"),
+            )
+
+    return {
+        "y_system": y_mpc,
+        "u_applied_phys": u_applied_phys,
+        "avg_rewards": avg_rewards,
+        "rewards": rewards,
+        "xhatdhat": xhatdhat,
+        "nFE": int(nFE),
+        "time_in_sub_episodes": int(time_in_sub_episodes),
+        "y_sp": np.asarray(y_sp, float).copy(),
+        "yhat": yhat,
+        "delta_y_storage": delta_y_storage,
+        "delta_u_storage": delta_u_storage,
+        "direct_info_storage": direct_info_storage,
+        "target_info_storage": target_info_storage,
+        "qi": np.asarray(qi, float).copy(),
+        "qs": np.asarray(qs, float).copy(),
+        "ha": np.asarray(ha, float).copy(),
+        "target_mode": target_mode,
+        "lyapunov_mode": "diagnostic_only",
+        "plant_mode": mode,
+        "disturbance_after_step": disturbance_after_step,
+        "use_target_output_for_tracking": bool(use_target_output_for_tracking),
+        "nominal_qi": nominal_qi_value,
+        "nominal_qs": nominal_qs_value,
+        "nominal_ha": nominal_ha_value,
+        "final_qi": float(system.Qi),
+        "final_qs": float(system.Qs),
+        "final_ha": float(system.hA),
+        "rho_lyap": float(rho_lyap),
+        "lyap_eps": float(lyap_eps),
+        "slack_penalty": 0.0,
+        "first_step_contraction_on": bool(first_step_contraction_on),
+        "u_dev_min": u_dev_min.copy(),
+        "u_dev_max": u_dev_max.copy(),
+        "delta_t": float(getattr(system, "delta_t", 1.0)),
+    }
+
+
 def _normalize_step_matrix(values: np.ndarray, n_steps: int, width: int) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     if values.ndim == 1:
@@ -1198,6 +1957,14 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "step": int(info.get("step", len(records))),
             "success": bool(info.get("success", False)),
             "method": info.get("method"),
+            "diagnostic_candidate_accepted": info.get("diagnostic_candidate_accepted"),
+            "diagnostic_unsafe": bool(info.get("diagnostic_unsafe", False)),
+            "diagnostic_unstable": bool(info.get("diagnostic_unstable", False)),
+            "actual_intervention": bool(info.get("actual_intervention", info.get("method") == "direct_lyapunov_mpc")),
+            "diagnostic_reject_reason": info.get("diagnostic_reject_reason"),
+            "candidate_bounds_ok": info.get("candidate_bounds_ok"),
+            "candidate_move_ok": info.get("candidate_move_ok"),
+            "candidate_lyap_ok": info.get("candidate_lyap_ok"),
             "target_mode": info.get("target_mode"),
             "lyapunov_mode": info.get("lyapunov_mode"),
             "plant_mode": info.get("plant_mode"),
@@ -1205,6 +1972,15 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "target_success": bool(info.get("target_success", False)),
             "target_stage": info.get("target_stage"),
             "target_variant": info.get("target_variant"),
+            "target_disturbance_model_mode": info.get("target_disturbance_model_mode"),
+            "target_quality_enabled": info.get("target_quality_enabled"),
+            "target_quality_ok": info.get("target_quality_ok"),
+            "target_quality_reason": info.get("target_quality_reason"),
+            "target_quality_policy": info.get("target_quality_policy"),
+            "target_quality_bypass": info.get("target_quality_bypass"),
+            "target_quality_mismatch_inf": info.get("target_quality_mismatch_inf"),
+            "target_quality_residual_norm": info.get("target_quality_residual_norm"),
+            "target_rate_inf": info.get("target_rate_inf"),
             "target_rank_M": info.get("target_rank_M"),
             "target_cond_M": info.get("target_cond_M"),
             "target_cond_G": info.get("target_cond_G"),
@@ -1303,6 +2079,9 @@ def summarize_direct_lyapunov_bundle(bundle):
         "reward_sum": float(np.sum(rewards)) if rewards.size else None,
         "target_success_rate": float(np.mean(target_success)) if target_success.size else None,
         "solver_success_rate": float(np.mean(solver_success)) if solver_success.size else None,
+        "diagnostic_unsafe_rate": _safe_nanmean(bundle.get("diagnostic_unsafe_flags", [])),
+        "diagnostic_unstable_rate": _safe_nanmean(bundle.get("diagnostic_unstable_flags", [])),
+        "actual_intervention_rate": _safe_nanmean(bundle.get("actual_intervention_flags", [])),
         "hard_contraction_rate": float(np.mean(hard_ok)) if hard_ok.size else None,
         "relaxed_contraction_rate": float(np.mean(relaxed_ok)) if relaxed_ok.size else None,
         "slack_lyap_max": float(np.nanmax(slack)) if slack.size else None,
@@ -1311,6 +2090,14 @@ def summarize_direct_lyapunov_bundle(bundle):
         "contraction_margin_max": float(np.nanmax(bundle["contraction_margin"])) if bundle["contraction_margin"].size else None,
         "contraction_margin_min": float(np.nanmin(bundle["contraction_margin"])) if bundle["contraction_margin"].size else None,
         "target_residual_total_norm_max": float(np.nanmax(bundle["target_residual_total_norm"])) if bundle["target_residual_total_norm"].size else None,
+        "target_quality_ok_rate": _safe_nanmean(bundle.get("target_quality_ok_flags", [])),
+        "target_quality_bypass_rate": _safe_nanmean(bundle.get("target_quality_bypass_flags", [])),
+        "target_quality_mismatch_inf_mean": _safe_nanmean(bundle.get("target_quality_mismatch_inf", [])),
+        "target_quality_mismatch_inf_max": _safe_nanmax(bundle.get("target_quality_mismatch_inf", [])),
+        "target_quality_residual_norm_mean": _safe_nanmean(bundle.get("target_quality_residual_norm", [])),
+        "target_quality_residual_norm_max": _safe_nanmax(bundle.get("target_quality_residual_norm", [])),
+        "target_rate_inf_mean": _safe_nanmean(bundle.get("target_rate_inf", [])),
+        "target_rate_inf_max": _safe_nanmax(bundle.get("target_rate_inf", [])),
         "target_reference_error_inf_mean": _safe_nanmean(bundle.get("target_reference_error_inf", [])),
         "target_reference_error_inf_max": _safe_nanmax(bundle.get("target_reference_error_inf", [])),
         "tracking_reference_error_inf_mean": _safe_nanmean(bundle.get("tracking_reference_error_inf", [])),
@@ -1465,6 +2252,9 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "reward_mean": summary.get("reward_mean"),
         "reward_sum": summary.get("reward_sum"),
         "solver_success_rate": summary.get("solver_success_rate"),
+        "diagnostic_unsafe_rate": summary.get("diagnostic_unsafe_rate"),
+        "diagnostic_unstable_rate": summary.get("diagnostic_unstable_rate"),
+        "actual_intervention_rate": summary.get("actual_intervention_rate"),
         "target_success_rate": summary.get("target_success_rate"),
         "hard_contraction_rate": summary.get("hard_contraction_rate"),
         "relaxed_contraction_rate": summary.get("relaxed_contraction_rate"),
@@ -1472,6 +2262,14 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "slack_lyap_max": summary.get("slack_lyap_max"),
         "slack_lyap_active_steps": summary.get("slack_lyap_active_steps"),
         "target_residual_total_norm_max": summary.get("target_residual_total_norm_max"),
+        "target_quality_ok_rate": summary.get("target_quality_ok_rate"),
+        "target_quality_bypass_rate": summary.get("target_quality_bypass_rate"),
+        "target_quality_mismatch_inf_mean": summary.get("target_quality_mismatch_inf_mean"),
+        "target_quality_mismatch_inf_max": summary.get("target_quality_mismatch_inf_max"),
+        "target_quality_residual_norm_mean": summary.get("target_quality_residual_norm_mean"),
+        "target_quality_residual_norm_max": summary.get("target_quality_residual_norm_max"),
+        "target_rate_inf_mean": summary.get("target_rate_inf_mean"),
+        "target_rate_inf_max": summary.get("target_rate_inf_max"),
         "target_reference_error_inf_mean": summary.get("target_reference_error_inf_mean"),
         "target_reference_error_inf_max": summary.get("target_reference_error_inf_max"),
         "tracking_reference_error_inf_mean": summary.get("tracking_reference_error_inf_mean"),
@@ -1527,7 +2325,14 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
 
 def _comparison_plot_path(output_dir: str, filename: str) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    return os.path.join(output_dir, filename)
+    return os.path.join(
+        output_dir,
+        _maybe_windows_short_filename(
+            output_dir,
+            filename,
+            _DIRECT_COMPARISON_FILENAME_MAP,
+        ),
+    )
 
 
 def _record_series(records, key: str) -> np.ndarray:
@@ -1689,19 +2494,11 @@ def save_direct_lyapunov_comparison_artifacts(
     comparison_csv = os.path.join(study_root, "comparison_table.csv")
     _write_csv(comparison_csv, records)
 
-    comparison_pkl = os.path.join(study_root, "comparison_table.pkl")
-    if HAS_PANDAS:
-        pd.DataFrame(records).to_pickle(comparison_pkl)
-    else:
-        with open(comparison_pkl, "wb") as f:
-            pickle.dump(records, f)
-
     summary = {
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "n_cases": len(records),
         "case_names": [str(record.get("case_name")) for record in records],
         "comparison_table_csv": comparison_csv,
-        "comparison_table_pkl": comparison_pkl,
         "case_debug_dirs": {
             str(record.get("case_name")): record.get("debug_dir")
             for record in records
@@ -1729,7 +2526,7 @@ def save_direct_lyapunov_comparison_artifacts(
             if key.startswith("output") and key.endswith("_rmse")
         ] if records else []
         if output_rmse_keys:
-            _save_comparison_bar(
+            plot_paths["output_rmse"] = _save_comparison_bar(
                 records,
                 output_rmse_keys,
                 output_rmse_keys,
@@ -1737,7 +2534,6 @@ def save_direct_lyapunov_comparison_artifacts(
                 "Direct Lyapunov Four-Scenario Output RMSE",
                 _comparison_plot_path(plot_dir, "comparison_output_rmse.png"),
             )
-            plot_paths["output_rmse"] = os.path.join(plot_dir, "comparison_output_rmse.png")
         plot_paths["solver_contraction_rates"] = _save_comparison_bar(
             records,
             ["solver_success_rate", "hard_contraction_rate", "relaxed_contraction_rate"],
@@ -1775,20 +2571,8 @@ def save_direct_lyapunov_comparison_artifacts(
     summary["plot_paths"] = plot_paths
     with open(comparison_summary_json, "w", encoding="utf-8") as f:
         json.dump(_jsonable(summary), f, indent=2)
-    figure_manifest = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "recommended_figures": [
-            {"key": key, "path": path}
-            for key, path in plot_paths.items()
-            if path is not None and os.path.exists(path)
-        ],
-        "case_debug_dirs": summary["case_debug_dirs"],
-    }
-    with open(os.path.join(study_root, "figure_manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(_jsonable(figure_manifest), f, indent=2)
     return {
         "comparison_table_csv": comparison_csv,
-        "comparison_table_pkl": comparison_pkl,
         "comparison_summary_json": comparison_summary_json,
         "plot_paths": plot_paths,
     }
@@ -1878,6 +2662,26 @@ def build_direct_lyapunov_run_bundle(
         "target_cond_M": np.array([info.get("target_cond_M", np.nan) for info in direct_info_storage], dtype=float),
         "target_cond_G": np.array([info.get("target_cond_G", np.nan) for info in direct_info_storage], dtype=float),
         "target_residual_total_norm": np.array([info.get("target_residual_total_norm", np.nan) for info in direct_info_storage], dtype=float),
+        "target_quality_ok_flags": np.array(
+            [
+                np.nan if info.get("target_quality_ok") is None else (1.0 if bool(info.get("target_quality_ok")) else 0.0)
+                for info in direct_info_storage
+            ],
+            dtype=float,
+        ),
+        "target_quality_bypass_flags": np.array(
+            [1.0 if bool(info.get("target_quality_bypass", False)) else 0.0 for info in direct_info_storage],
+            dtype=float,
+        ),
+        "target_quality_mismatch_inf": np.array(
+            [info.get("target_quality_mismatch_inf", np.nan) for info in direct_info_storage],
+            dtype=float,
+        ),
+        "target_quality_residual_norm": np.array(
+            [info.get("target_quality_residual_norm", np.nan) for info in direct_info_storage],
+            dtype=float,
+        ),
+        "target_rate_inf": np.array([info.get("target_rate_inf", np.nan) for info in direct_info_storage], dtype=float),
         "target_u_ref_penalty": np.array([info.get("target_u_ref_penalty", np.nan) for info in direct_info_storage], dtype=float),
         "target_us_u_ref_inf": np.array([info.get("target_us_u_ref_inf", np.nan) for info in direct_info_storage], dtype=float),
         "target_u_ref_active_flags": np.array([1.0 if bool(info.get("target_u_ref_active", False)) else 0.0 for info in direct_info_storage], dtype=float),
@@ -1902,6 +2706,16 @@ def build_direct_lyapunov_run_bundle(
         ),
         "solver_success_flags": np.array([1.0 if bool(info.get("success", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "target_success_flags": np.array([1.0 if bool(info.get("target_success", False)) else 0.0 for info in direct_info_storage], dtype=float),
+        "diagnostic_candidate_accepted_flags": np.array(
+            [np.nan if info.get("diagnostic_candidate_accepted") is None else (1.0 if bool(info.get("diagnostic_candidate_accepted")) else 0.0) for info in direct_info_storage],
+            dtype=float,
+        ),
+        "diagnostic_unsafe_flags": np.array([1.0 if bool(info.get("diagnostic_unsafe", False)) else 0.0 for info in direct_info_storage], dtype=float),
+        "diagnostic_unstable_flags": np.array([1.0 if bool(info.get("diagnostic_unstable", False)) else 0.0 for info in direct_info_storage], dtype=float),
+        "actual_intervention_flags": np.array(
+            [1.0 if bool(info.get("actual_intervention", info.get("method") == "direct_lyapunov_mpc")) else 0.0 for info in direct_info_storage],
+            dtype=float,
+        ),
         "first_step_contraction_satisfied_flags": np.array([1.0 if bool(info.get("first_step_contraction_satisfied", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "relaxed_contraction_satisfied_flags": np.array([1.0 if bool(info.get("relaxed_contraction_satisfied", False)) else 0.0 for info in direct_info_storage], dtype=float),
         "target_bounded_solution_used_flags": np.array([1.0 if bool(info.get("target_bounded_solution_used", False)) else 0.0 for info in direct_info_storage], dtype=float),
@@ -2048,6 +2862,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     target_rank_M = np.asarray(bundle["target_rank_M"], dtype=float)
     target_bounded_active_lower = np.asarray(bundle["target_bounded_active_lower_count"], dtype=float)
     target_bounded_active_upper = np.asarray(bundle["target_bounded_active_upper_count"], dtype=float)
+    rewards = np.asarray(bundle.get("rewards", []), dtype=float)
 
     nFE = int(bundle["nFE"])
     n_y = y_system.shape[1]
@@ -2211,6 +3026,40 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
             plt.savefig(os.path.join(output_dir, "06_tail_window_summary.png"), dpi=300, bbox_inches="tight")
             plt.close(fig)
 
+        episode_len = int(bundle.get("time_in_sub_episodes", 0))
+        if rewards.size:
+            if episode_len > 0:
+                n_episodes = int(np.ceil(rewards.size / float(episode_len)))
+                episode_reward_mean = np.asarray(
+                    [
+                        np.nanmean(rewards[idx * episode_len : min((idx + 1) * episode_len, rewards.size)])
+                        for idx in range(n_episodes)
+                    ],
+                    dtype=float,
+                )
+            else:
+                n_episodes = 1
+                episode_reward_mean = np.asarray([np.nanmean(rewards)], dtype=float)
+            fig, axes = plt.subplots(2, 1, figsize=(11, 6.5), sharex=False)
+            ep_time = np.arange(n_episodes) + 1
+            axes[0].plot(ep_time, episode_reward_mean, linewidth=1.8, label="episode average reward")
+            axes[0].plot(ep_time, _moving_average(episode_reward_mean, 5), linewidth=2.2, linestyle="--", label="5-episode moving avg")
+            axes[0].set_ylabel("reward")
+            axes[0].grid(True, linestyle="--", alpha=0.35)
+            axes[0].legend(loc="best")
+            step_time = np.arange(rewards.size)
+            reward_window = episode_len if episode_len > 0 else max(1, min(20, rewards.size))
+            axes[1].plot(step_time, rewards, linewidth=1.0, alpha=0.75, label="step reward")
+            axes[1].plot(step_time, _moving_average(rewards, reward_window), linewidth=2.0, linestyle="--", label="episode-window avg")
+            axes[1].set_ylabel("reward")
+            axes[1].set_xlabel("step / episode")
+            axes[1].grid(True, linestyle="--", alpha=0.35)
+            axes[1].legend(loc="best")
+            fig.suptitle(f"{title_prefix}: Reward Summary", fontsize=14, fontweight="bold")
+            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+            plt.savefig(os.path.join(output_dir, "07_reward_summary.png"), dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
 
 def save_direct_lyapunov_debug_artifacts(
     bundle,
@@ -2218,58 +3067,51 @@ def save_direct_lyapunov_debug_artifacts(
     directory=None,
     prefix_name="direct_lyapunov_mpc",
     save_plots=True,
-    save_paper_plots=True,
+    save_paper_plots=False,
     timestamp_subdir=True,
+    export_profile="debug",
 ):
+    export_profile = _normalize_export_profile(export_profile)
     if directory is None:
         directory = os.getcwd()
     if timestamp_subdir:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = os.path.join(directory, prefix_name, timestamp)
+        out_dir = _select_direct_debug_output_dir(
+            directory,
+            prefix_name,
+            timestamp=timestamp,
+            save_paper_plots=save_paper_plots,
+        )
     else:
-        out_dir = os.path.join(directory, prefix_name)
+        out_dir = _unique_directory_candidate(
+            os.path.join(directory, _sanitize_method_slug(prefix_name, default="direct_lyapunov_mpc"))
+        )
     os.makedirs(out_dir, exist_ok=True)
 
-    with open(os.path.join(out_dir, "bundle.pkl"), "wb") as f:
-        pickle.dump(bundle, f)
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(_jsonable(bundle["summary"]), f, indent=2)
 
     summary_rows = [{"key": key, "value": json.dumps(_jsonable(value))} for key, value in bundle["summary"].items()]
     _write_csv(os.path.join(out_dir, "summary.csv"), summary_rows)
-    step_records = make_direct_lyapunov_step_records(bundle["direct_info_storage"])
+    step_records = _filter_direct_step_records(
+        make_direct_lyapunov_step_records(bundle["direct_info_storage"]),
+        export_profile=export_profile,
+    )
     _write_csv(os.path.join(out_dir, "step_table.csv"), step_records)
-    _save_npz(os.path.join(out_dir, "arrays.npz"), bundle)
-
-    step_table_pkl = os.path.join(out_dir, "step_table.pkl")
-    if HAS_PANDAS:
-        pd.DataFrame(step_records).to_pickle(step_table_pkl)
-    else:
-        with open(step_table_pkl, "wb") as f:
-            pickle.dump(step_records, f)
+    _save_npz(os.path.join(out_dir, "arrays.npz"), bundle, export_profile=export_profile)
 
     if save_plots:
-        plot_direct_lyapunov_bundle(bundle, os.path.join(out_dir, "plots"), paper_style=False)
+        plot_direct_lyapunov_bundle(
+            bundle,
+            os.path.join(out_dir, "plots"),
+            paper_style=(export_profile == "compact"),
+        )
         if save_paper_plots:
-            plot_direct_lyapunov_bundle(bundle, os.path.join(out_dir, "paper_plots"), paper_style=True)
-    figure_manifest = {
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "source": bundle.get("source"),
-        "recommended_figures": [
-            {
-                "key": "plots",
-                "path": os.path.join(out_dir, "plots"),
-                "description": "Scenario-level diagnostic plots.",
-            },
-            {
-                "key": "paper_plots",
-                "path": os.path.join(out_dir, "paper_plots"),
-                "description": "Paper-style scenario plots.",
-            },
-        ],
-    }
-    with open(os.path.join(out_dir, "figure_manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(_jsonable(figure_manifest), f, indent=2)
+            plot_direct_lyapunov_bundle(
+                bundle,
+                os.path.join(out_dir, "paper_plots"),
+                paper_style=True,
+            )
     return out_dir
 
 

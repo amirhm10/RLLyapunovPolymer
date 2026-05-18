@@ -26,11 +26,12 @@ except Exception:
     HAS_PANDAS = False
 
 try:
-    from scipy.optimize import lsq_linear
+    from scipy.optimize import lsq_linear, minimize
 
     HAS_SCIPY = True
 except Exception:
     lsq_linear = None
+    minimize = None
     HAS_SCIPY = False
 
 from utils.scaling_helpers import apply_min_max, reverse_min_max
@@ -45,6 +46,11 @@ DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
     "enable_box_analysis": True,
     "box_bound_tol": 1.0e-9,
     "box_use_reduced_first": True,
+    "solve_strategy": "legacy_ls",
+    "lexicographic_primary_tol_abs": 1.0e-10,
+    "lexicographic_primary_tol_rel": 1.0e-8,
+    "lexicographic_maxiter": 200,
+    "lexicographic_ftol": 1.0e-10,
     "u_ref_weight": 0.0,
     "x_ref_weight": 0.0,
     "analysis_target_variant": "hybrid",
@@ -97,6 +103,342 @@ def _inf_norm(value: np.ndarray) -> float:
     if array.size == 0:
         return 0.0
     return float(np.max(np.abs(array)))
+
+
+def _bounded_steady_state_payload(
+    *,
+    A: np.ndarray,
+    B: np.ndarray,
+    C: np.ndarray,
+    structure: Dict[str, Any],
+    rhs: np.ndarray,
+    rhs_output: np.ndarray,
+    d_hat_k: np.ndarray,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    box_bound_tol: float,
+    u_ref: np.ndarray,
+    u_ref_weight: np.ndarray,
+    x_ref: np.ndarray,
+    x_ref_weight: np.ndarray,
+    x_s: np.ndarray,
+    u_s: np.ndarray,
+    solver_name: str,
+    solve_form: str,
+    status: str,
+    message: str,
+    cost: float,
+    nit: int,
+    optimality: float,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    x_s = np.asarray(x_s, dtype=float).reshape(-1)
+    u_s = np.asarray(u_s, dtype=float).reshape(-1)
+    d_s = _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy()
+    y_s = np.asarray(C, dtype=float) @ x_s + d_s
+    residual_dyn = structure["I_minus_A"] @ x_s - np.asarray(B, dtype=float) @ u_s
+    residual_out = np.asarray(C, dtype=float) @ x_s - rhs_output
+    residual_total = structure["M"] @ np.concatenate([x_s, u_s]) - rhs
+    bounds_info = check_box_bounds(u_s, u_min, u_max, tol=box_bound_tol)
+    payload = {
+        "solve_success": True,
+        "solver_name": solver_name,
+        "solve_form": solve_form,
+        "status": str(status),
+        "message": str(message),
+        "x_s": x_s,
+        "u_s": u_s,
+        "d_s": d_s,
+        "y_s": y_s,
+        "residual_dyn": residual_dyn,
+        "residual_out": residual_out,
+        "residual_total": residual_total,
+        "residual_norm": _norm(residual_total),
+        "state_residual_inf": _inf_norm(residual_dyn),
+        "output_residual_inf": _inf_norm(residual_out),
+        "active_lower_mask": bounds_info["active_lower_mask"],
+        "active_upper_mask": bounds_info["active_upper_mask"],
+        "cost": float(cost),
+        "nit": int(nit),
+        "optimality": float(optimality),
+        "u_ref": u_ref.copy(),
+        "u_ref_weight": u_ref_weight.copy(),
+        "u_ref_penalty": float(np.sum(u_ref_weight * np.square(u_s - u_ref))),
+        "x_ref": x_ref.copy(),
+        "x_ref_weight": x_ref_weight.copy(),
+        "x_ref_penalty": float(np.sum(x_ref_weight * np.square(x_s - x_ref))),
+        "xs_x_ref_inf": _inf_norm(x_s - x_ref),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _solve_bounded_steady_state_lexicographic(
+    *,
+    A: np.ndarray,
+    B: np.ndarray,
+    C: np.ndarray,
+    structure: Dict[str, Any],
+    reduced_info: Dict[str, Any],
+    rhs: np.ndarray,
+    rhs_output: np.ndarray,
+    d_hat_k: np.ndarray,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    box_bound_tol: float,
+    use_reduced_first: bool,
+    u_ref: np.ndarray,
+    u_ref_weight: np.ndarray,
+    x_ref: np.ndarray,
+    x_ref_weight: np.ndarray,
+    primary_tol_abs: float,
+    primary_tol_rel: float,
+    maxiter: int,
+    ftol: float,
+) -> Dict[str, Any]:
+    n_states = int(structure["n_states"])
+    n_inputs = int(structure["n_inputs"])
+
+    if not HAS_SCIPY or minimize is None:
+        return {
+            "solve_success": False,
+            "solver_name": "unavailable",
+            "solve_form": "none",
+            "status": "scipy_unavailable",
+            "message": "scipy.optimize.lsq_linear and minimize are required for lexicographic bounded target solves.",
+            "x_s": np.full(n_states, np.nan, dtype=float),
+            "u_s": np.full(n_inputs, np.nan, dtype=float),
+            "d_s": _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy(),
+            "y_s": np.full(C.shape[0], np.nan, dtype=float),
+            "residual_dyn": np.full(n_states, np.nan, dtype=float),
+            "residual_out": np.full(C.shape[0], np.nan, dtype=float),
+            "residual_total": np.full(n_states + n_inputs, np.nan, dtype=float),
+            "residual_norm": float("nan"),
+            "state_residual_inf": float("nan"),
+            "output_residual_inf": float("nan"),
+            "active_lower_mask": np.zeros(n_inputs, dtype=bool),
+            "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+            "u_ref": u_ref.copy(),
+            "u_ref_weight": u_ref_weight.copy(),
+            "u_ref_penalty": float("nan"),
+            "x_ref": x_ref.copy(),
+            "x_ref_weight": x_ref_weight.copy(),
+            "x_ref_penalty": float("nan"),
+            "xs_x_ref_inf": float("nan"),
+        }
+
+    smoothing_active = bool(np.any(u_ref_weight > 0.0) or np.any(x_ref_weight > 0.0))
+    solve_attempts: List[str] = []
+
+    def _primary_limit(primary_best: float) -> float:
+        return float(primary_best + float(primary_tol_abs) + float(primary_tol_rel) * max(1.0, abs(primary_best)))
+
+    def _lex_extra(stage1_cost, stage2_cost, anchor_cost, stage_label, stage2):
+        return {
+            "solve_attempts": solve_attempts.copy(),
+            "lexicographic_stage1_primary_cost": float(stage1_cost),
+            "lexicographic_stage2_primary_cost": float(stage2_cost),
+            "lexicographic_stage2_anchor_cost": float(anchor_cost),
+            "lexicographic_primary_tolerance": float(_primary_limit(stage1_cost) - stage1_cost),
+            "lexicographic_stage": str(stage_label),
+            "lexicographic_stage2_success": None if stage2 is None else bool(stage2.success),
+            "lexicographic_stage2_status": None if stage2 is None else str(getattr(stage2, "message", "")),
+        }
+
+    def _stage2_reduced(G, state_to_input_gain, u_stage1, primary_best):
+        limit = _primary_limit(primary_best)
+
+        def primary_cost(u_val):
+            residual = G @ np.asarray(u_val, dtype=float).reshape(-1) - rhs_output
+            return float(residual @ residual)
+
+        def smooth_cost(u_val):
+            u_val = np.asarray(u_val, dtype=float).reshape(-1)
+            x_val = state_to_input_gain @ u_val
+            return float(
+                np.sum(u_ref_weight * np.square(u_val - u_ref))
+                + np.sum(x_ref_weight * np.square(x_val - x_ref))
+            )
+
+        if not smoothing_active:
+            return u_stage1, None, primary_cost(u_stage1), smooth_cost(u_stage1), "stage1_no_smoothing"
+
+        constraints = ({"type": "ineq", "fun": lambda u_val: limit - primary_cost(u_val)},)
+        bounds = [(float(lo), float(hi)) for lo, hi in zip(u_min, u_max)]
+        result = minimize(
+            smooth_cost,
+            np.asarray(u_stage1, dtype=float).reshape(-1),
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": int(maxiter), "ftol": float(ftol), "disp": False},
+        )
+        u_candidate = np.asarray(result.x, dtype=float).reshape(-1) if result.x is not None else u_stage1
+        primary_candidate = primary_cost(u_candidate)
+        if bool(result.success) and primary_candidate <= limit + max(1.0e-8, 10.0 * float(primary_tol_abs)):
+            return u_candidate, result, primary_candidate, smooth_cost(u_candidate), "stage2_smoothing"
+        return u_stage1, result, primary_cost(u_stage1), smooth_cost(u_stage1), "stage2_failed_used_stage1"
+
+    def _stage2_full(M, z_stage1, primary_best, lower, upper):
+        limit = _primary_limit(primary_best)
+
+        def primary_cost(z_val):
+            residual = M @ np.asarray(z_val, dtype=float).reshape(-1) - rhs
+            return float(residual @ residual)
+
+        def smooth_cost(z_val):
+            z_val = np.asarray(z_val, dtype=float).reshape(-1)
+            x_val = z_val[:n_states]
+            u_val = z_val[n_states:]
+            return float(
+                np.sum(u_ref_weight * np.square(u_val - u_ref))
+                + np.sum(x_ref_weight * np.square(x_val - x_ref))
+            )
+
+        if not smoothing_active:
+            return z_stage1, None, primary_cost(z_stage1), smooth_cost(z_stage1), "stage1_no_smoothing"
+
+        constraints = ({"type": "ineq", "fun": lambda z_val: limit - primary_cost(z_val)},)
+        bounds = [
+            (None if not np.isfinite(lo) else float(lo), None if not np.isfinite(hi) else float(hi))
+            for lo, hi in zip(lower, upper)
+        ]
+        result = minimize(
+            smooth_cost,
+            np.asarray(z_stage1, dtype=float).reshape(-1),
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": int(maxiter), "ftol": float(ftol), "disp": False},
+        )
+        z_candidate = np.asarray(result.x, dtype=float).reshape(-1) if result.x is not None else z_stage1
+        primary_candidate = primary_cost(z_candidate)
+        if bool(result.success) and primary_candidate <= limit + max(1.0e-8, 10.0 * float(primary_tol_abs)):
+            return z_candidate, result, primary_candidate, smooth_cost(z_candidate), "stage2_smoothing"
+        return z_stage1, result, primary_cost(z_stage1), smooth_cost(z_stage1), "stage2_failed_used_stage1"
+
+    if bool(use_reduced_first) and reduced_info["reduced_lstsq_available"]:
+        G = np.asarray(reduced_info["G"], dtype=float)
+        state_to_input_gain = np.asarray(reduced_info["state_to_input_gain"], dtype=float)
+        solve_attempts.append("reduced_lexicographic")
+        try:
+            stage1 = lsq_linear(G, rhs_output, bounds=(u_min, u_max))
+            if stage1.success:
+                u_stage1 = np.asarray(stage1.x, dtype=float).reshape(n_inputs)
+                primary_best = float(np.sum(np.square(G @ u_stage1 - rhs_output)))
+                u_s, stage2, primary_stage2, smooth_stage2, stage_label = _stage2_reduced(
+                    G,
+                    state_to_input_gain,
+                    u_stage1,
+                    primary_best,
+                )
+                x_s = state_to_input_gain @ u_s
+                status = stage_label if stage2 is None else str(getattr(stage2, "message", stage_label))
+                return _bounded_steady_state_payload(
+                    A=A,
+                    B=B,
+                    C=C,
+                    structure=structure,
+                    rhs=rhs,
+                    rhs_output=rhs_output,
+                    d_hat_k=d_hat_k,
+                    u_min=u_min,
+                    u_max=u_max,
+                    box_bound_tol=box_bound_tol,
+                    u_ref=u_ref,
+                    u_ref_weight=u_ref_weight,
+                    x_ref=x_ref,
+                    x_ref_weight=x_ref_weight,
+                    x_s=x_s,
+                    u_s=u_s,
+                    solver_name="scipy.optimize.lsq_linear+slsqp",
+                    solve_form="reduced_lexicographic",
+                    status=status,
+                    message=status,
+                    cost=primary_stage2,
+                    nit=0 if stage2 is None else int(getattr(stage2, "nit", 0)),
+                    optimality=float(getattr(stage1, "optimality", np.nan)),
+                    extra=_lex_extra(primary_best, primary_stage2, smooth_stage2, stage_label, stage2),
+                )
+        except Exception:
+            pass
+
+    solve_attempts.append("full_lexicographic")
+    M = np.asarray(structure["M"], dtype=float)
+    lower = np.concatenate([np.full(n_states, -np.inf, dtype=float), u_min])
+    upper = np.concatenate([np.full(n_states, np.inf, dtype=float), u_max])
+    try:
+        stage1 = lsq_linear(M, rhs, bounds=(lower, upper))
+        if stage1.success:
+            z_stage1 = np.asarray(stage1.x, dtype=float).reshape(n_states + n_inputs)
+            primary_best = float(np.sum(np.square(M @ z_stage1 - rhs)))
+            z_s, stage2, primary_stage2, smooth_stage2, stage_label = _stage2_full(
+                M,
+                z_stage1,
+                primary_best,
+                lower,
+                upper,
+            )
+            x_s = z_s[:n_states]
+            u_s = z_s[n_states:]
+            status = stage_label if stage2 is None else str(getattr(stage2, "message", stage_label))
+            return _bounded_steady_state_payload(
+                A=A,
+                B=B,
+                C=C,
+                structure=structure,
+                rhs=rhs,
+                rhs_output=rhs_output,
+                d_hat_k=d_hat_k,
+                u_min=u_min,
+                u_max=u_max,
+                box_bound_tol=box_bound_tol,
+                u_ref=u_ref,
+                u_ref_weight=u_ref_weight,
+                x_ref=x_ref,
+                x_ref_weight=x_ref_weight,
+                x_s=x_s,
+                u_s=u_s,
+                solver_name="scipy.optimize.lsq_linear+slsqp",
+                solve_form="full_lexicographic",
+                status=status,
+                message=status,
+                cost=primary_stage2,
+                nit=0 if stage2 is None else int(getattr(stage2, "nit", 0)),
+                optimality=float(getattr(stage1, "optimality", np.nan)),
+                extra=_lex_extra(primary_best, primary_stage2, smooth_stage2, stage_label, stage2),
+            )
+    except Exception:
+        pass
+
+    return {
+        "solve_success": False,
+        "solver_name": "scipy.optimize.lsq_linear+slsqp",
+        "solve_form": "none",
+        "status": "failed",
+        "message": "lexicographic bounded least-squares solve failed.",
+        "solve_attempts": solve_attempts,
+        "x_s": np.full(n_states, np.nan, dtype=float),
+        "u_s": np.full(n_inputs, np.nan, dtype=float),
+        "d_s": _as_float_array(d_hat_k, "d_hat_k", ndim=1).copy(),
+        "y_s": np.full(C.shape[0], np.nan, dtype=float),
+        "residual_dyn": np.full(n_states, np.nan, dtype=float),
+        "residual_out": np.full(C.shape[0], np.nan, dtype=float),
+        "residual_total": np.full(n_states + n_inputs, np.nan, dtype=float),
+        "residual_norm": float("nan"),
+        "state_residual_inf": float("nan"),
+        "output_residual_inf": float("nan"),
+        "active_lower_mask": np.zeros(n_inputs, dtype=bool),
+        "active_upper_mask": np.zeros(n_inputs, dtype=bool),
+        "u_ref": u_ref.copy(),
+        "u_ref_weight": u_ref_weight.copy(),
+        "u_ref_penalty": float("nan"),
+        "x_ref": x_ref.copy(),
+        "x_ref_weight": x_ref_weight.copy(),
+        "x_ref_penalty": float("nan"),
+        "xs_x_ref_inf": float("nan"),
+    }
 
 
 def _is_well_conditioned(cond_value: float, threshold: float) -> bool:
@@ -661,6 +1003,11 @@ def solve_bounded_steady_state_least_squares(
     rank_tol: Optional[float] = None,
     box_bound_tol: float = 1.0e-9,
     use_reduced_first: bool = True,
+    solve_strategy: str = "legacy_ls",
+    lexicographic_primary_tol_abs: float = 1.0e-10,
+    lexicographic_primary_tol_rel: float = 1.0e-8,
+    lexicographic_maxiter: int = 200,
+    lexicographic_ftol: float = 1.0e-10,
     u_ref: Optional[np.ndarray] = None,
     u_ref_weight: Any = 0.0,
     x_ref: Optional[np.ndarray] = None,
@@ -725,6 +1072,12 @@ def solve_bounded_steady_state_least_squares(
     use_x_ref_term = bool(np.any(x_ref_weight > 0.0))
     sqrt_x_ref_weight = np.sqrt(x_ref_weight)
 
+    solve_strategy = str(solve_strategy).strip().lower()
+    if solve_strategy in {"legacy", "legacy_lsq", "single_stage", "single_stage_ls"}:
+        solve_strategy = "legacy_ls"
+    if solve_strategy not in {"legacy_ls", "lexicographic"}:
+        raise ValueError("solve_strategy must be 'legacy_ls' or 'lexicographic'.")
+
     if not HAS_SCIPY:
         return {
             "solve_success": False,
@@ -752,6 +1105,30 @@ def solve_bounded_steady_state_least_squares(
             "x_ref_penalty": float("nan"),
             "xs_x_ref_inf": float("nan"),
         }
+
+    if solve_strategy == "lexicographic":
+        return _solve_bounded_steady_state_lexicographic(
+            A=A,
+            B=B,
+            C=C,
+            structure=structure,
+            reduced_info=reduced_info,
+            rhs=rhs,
+            rhs_output=rhs_output,
+            d_hat_k=d_hat_k,
+            u_min=u_min,
+            u_max=u_max,
+            box_bound_tol=box_bound_tol,
+            use_reduced_first=use_reduced_first,
+            u_ref=u_ref,
+            u_ref_weight=u_ref_weight,
+            x_ref=x_ref,
+            x_ref_weight=x_ref_weight,
+            primary_tol_abs=float(lexicographic_primary_tol_abs),
+            primary_tol_rel=float(lexicographic_primary_tol_rel),
+            maxiter=int(lexicographic_maxiter),
+            ftol=float(lexicographic_ftol),
+        )
 
     solve_attempts: List[str] = []
     last_result = None
