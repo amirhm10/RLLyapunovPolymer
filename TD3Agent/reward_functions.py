@@ -9,7 +9,7 @@ def make_reward_fn_relative_QR(
     gamma_out=0.5, gamma_in=0.5,
     beta=5.0, gate="geom", lam_in=1.0,
     bonus_kind="exp", bonus_k=12.0, bonus_p=0.6, bonus_c=20.0,
-    gamma_fallback=0.0, R_fallback_diag=None,
+    gamma_fallback=0.0, fallback_event_penalty=0.0, R_fallback_diag=None,
     maintenance_band_scale=1.0,
     maintenance_move_weight=0.0,
     jitter_weight=0.0,
@@ -24,6 +24,8 @@ def make_reward_fn_relative_QR(
     band_floor_phys    : per-output minimum band in physical units (len = n_outputs)
     Q_diag, R_diag     : quadratic weights (len = n_outputs, len = n_inputs)
     gamma_fallback     : scalar weight on safety-gate correction mismatch
+    fallback_event_penalty
+                       : fixed cost charged for each active safety-gate fallback.
     R_fallback_diag    : optional input-channel weights for correction mismatch.
                          Defaults to R_diag.
     maintenance_*      : optional near-setpoint terms. Defaults preserve the
@@ -41,6 +43,7 @@ def make_reward_fn_relative_QR(
     R_diag = np.asarray(R_diag, float)
     R_fallback_diag = R_diag.copy() if R_fallback_diag is None else np.asarray(R_fallback_diag, float)
     gamma_fallback = float(gamma_fallback)
+    fallback_event_penalty = float(fallback_event_penalty)
     maintenance_band_scale = float(maintenance_band_scale)
     maintenance_move_weight = float(maintenance_move_weight)
     jitter_weight = float(jitter_weight)
@@ -139,11 +142,16 @@ def make_reward_fn_relative_QR(
         dwell_reward = float(dwell_bonus * dwell_count) if dwell_bonus != 0.0 else 0.0
 
         weighted_correction_gap = 0.0
+        fallback_correction_penalty = 0.0
+        fallback_event_penalty_applied = 0.0
         fallback_penalty = 0.0
-        if bool(fallback_active) and fallback_gap is not None and gamma_fallback != 0.0:
-            gap = np.asarray(fallback_gap, float).reshape(-1)
-            weighted_correction_gap = float(np.sum(R_fallback_diag * (gap ** 2)))
-            fallback_penalty = float(gamma_fallback * weighted_correction_gap)
+        if bool(fallback_active):
+            if fallback_gap is not None:
+                gap = np.asarray(fallback_gap, float).reshape(-1)
+                weighted_correction_gap = float(np.sum(R_fallback_diag * (gap ** 2)))
+                fallback_correction_penalty = float(gamma_fallback * weighted_correction_gap)
+            fallback_event_penalty_applied = fallback_event_penalty
+            fallback_penalty = float(fallback_correction_penalty + fallback_event_penalty_applied)
 
         reward_augmented = float(
             reward_base
@@ -158,6 +166,9 @@ def make_reward_fn_relative_QR(
                 "reward": reward_augmented,
                 "reward_base": reward_base,
                 "fallback_penalty": fallback_penalty,
+                "fallback_correction_penalty": fallback_correction_penalty,
+                "fallback_event_penalty": fallback_event_penalty_applied,
+                "fallback_event_penalty_config": fallback_event_penalty,
                 "weighted_correction_gap": weighted_correction_gap,
                 "fallback_active": bool(fallback_active),
                 "maintenance_move_penalty": maintenance_move_penalty,
@@ -189,6 +200,7 @@ def make_reward_fn_relative_QR(
         bonus_p=bonus_p,
         bonus_c=bonus_c,
         gamma_fallback=gamma_fallback,
+        fallback_event_penalty=fallback_event_penalty,
         R_fallback_diag=R_fallback_diag,
         maintenance_band_scale=maintenance_band_scale,
         maintenance_move_weight=maintenance_move_weight,
