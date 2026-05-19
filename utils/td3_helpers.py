@@ -9,12 +9,13 @@ import torch
 from torch.utils.data import Dataset
 
 from Simulation.mpc import augment_state_space, augment_state_space_rawlings
+from utils.path_helpers import resolve_repo_path
 from utils.scaling_helpers import apply_min_max, apply_min_max_pm1
 
 
 def _resolve_system_dict_path(data_dir="Data", system_dict_path=None):
     if system_dict_path is not None:
-        path = os.path.abspath(system_dict_path)
+        path = os.fspath(resolve_repo_path(system_dict_path))
         if os.path.exists(path):
             return path
         alt_path = path + ".pickle"
@@ -24,9 +25,7 @@ def _resolve_system_dict_path(data_dir="Data", system_dict_path=None):
             f"Could not find system_dict at '{path}' or '{alt_path}'."
         )
 
-    full_data_dir = os.path.join(os.getcwd(), data_dir)
-    if not os.path.exists(full_data_dir):
-        os.makedirs(full_data_dir)
+    full_data_dir = os.fspath(resolve_repo_path(data_dir, create=True))
 
     system_dict_path = os.path.join(full_data_dir, "system_dict")
     if os.path.exists(system_dict_path):
@@ -94,9 +93,7 @@ def load_and_prepare_system_data(
     augments the state space, and applies min-max scaling to the steady states
     and setpoint. Returns a dictionary with the processed data.
     """
-    full_data_dir = os.path.join(os.getcwd(), data_dir)
-    if not os.path.exists(full_data_dir):
-        os.makedirs(full_data_dir)
+    full_data_dir = os.fspath(resolve_repo_path(data_dir, create=True))
 
     system_dict_path = _resolve_system_dict_path(data_dir=data_dir, system_dict_path=system_dict_path)
 

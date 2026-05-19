@@ -23,6 +23,7 @@ except Exception:
 
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.plot_style import paper_plot_context
+from utils.path_helpers import repo_root, resolve_repo_path
 
 
 _TARGET_STAGE_CODE_MAP = {
@@ -3038,7 +3039,9 @@ def save_safety_filter_debug_artifacts(
 ):
     export_profile = _normalize_export_profile(export_profile)
     if directory is None:
-        directory = os.getcwd()
+        directory = os.fspath(repo_root())
+    else:
+        directory = os.fspath(resolve_repo_path(directory))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = _select_safety_debug_output_dir(

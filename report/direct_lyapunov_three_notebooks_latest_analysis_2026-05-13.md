@@ -176,7 +176,7 @@ Interpretation:
 
 The direct disturbance figures still support the older structural diagnosis:
 
-![Direct four-method disturbance target vs raw setpoint](../direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png)
+![Direct four-method disturbance target vs raw setpoint](figures/root_migrated/direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png)
 
 The key point is not only that `bounded_hard` oscillates. The more important point is that the selected target `y_s` is not the same object as the raw setpoint `y_sp`, and in the disturbance path it can still move late in the episode.
 

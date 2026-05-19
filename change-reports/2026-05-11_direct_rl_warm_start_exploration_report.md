@@ -9,7 +9,7 @@ Added a research note diagnosing the low warm-start reward behavior in the direc
 ## Added artifacts
 
 - [report/direct_rl_warm_start_exploration_fix_ideas_2026-05-11.md](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/report/direct_rl_warm_start_exploration_fix_ideas_2026-05-11.md>)
-- [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>)
+- [warm_start_reward_and_sigma_2026-05-11.png]((../report/figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png))
 
 The generated figure is also embedded directly in the report Markdown so the analysis and its visual evidence stay together.
 

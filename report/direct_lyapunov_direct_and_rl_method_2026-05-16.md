@@ -416,6 +416,28 @@ $$ r_k = -\left( J_{e,\mathrm{eff}} + J_u + J_{\mathrm{out}} + J_{\mathrm{in}} \
 
 So the direct RL agent is not optimizing the Lyapunov value directly. It is optimizing a shaped tracking-and-move reward while the gate enforces Lyapunov admissibility.
 
+### 8.1 Proposed fallback-activation penalty
+
+The current reward does not directly tell the actor that a rejected action was undesirable. If the candidate is rejected and the direct fallback becomes active, the replay buffer stores the executed safe action, but the reward is still mainly tracking-and-move based.
+
+A useful next extension is to add a fallback mismatch penalty:
+
+`J_fallback = gamma_fallback * I_fallback * ||u_rl - u_exec||_2^2`
+
+where:
+
+- `I_fallback = 1` when the RL candidate is rejected and fallback or hold-previous is executed;
+- `I_fallback = 0` when the candidate is accepted;
+- `u_rl` is the candidate action proposed by the actor in scaled-deviation or actor coordinates;
+- `u_exec` is the action actually applied after the gate;
+- `gamma_fallback` is a tunable penalty weight.
+
+The augmented reward would be:
+
+`r_aug = r_base - J_fallback`
+
+This is a good idea because it gives the critic a direct signal that large corrections by the safety layer are costly. It should be used carefully: the penalty should not punish fallback itself as a safety mechanism; it should punish the actor for proposing actions far away from what the gate can safely execute. For the first diagnostic sweep, use a small `gamma_fallback` and log the penalty separately before folding it into the main reward comparison.
+
 ## 9. Pretrained direct RL notebook
 
 The notebook [DirectLyapunovSafetyGateRL_Pretrained.ipynb](../DirectLyapunovSafetyGateRL_Pretrained.ipynb) loads a TD3 checkpoint:
@@ -442,12 +464,15 @@ The notebook still uses an online teacher phase:
 - `WARMUP_EPISODES = 0`
 - `BC_TEACHER_EPISODES = 20`
 - `bc_actor_updates_per_step = 4`
-- `bc_exploration_std = 0.005`
+- `bc_exploration_std = 0.0`
+- `bc_teacher_policy = "direct_lyapunov_mpc"`
+- `bc_behavior_source = "direct_lyapunov_mpc"`
+- `bc_behavior_noise = "none"`
 
-So the pretrained notebook is not "checkpoint then immediate pure TD3". It is:
+So the pretrained notebook is not "checkpoint then immediate pure TD3" and no longer uses a policy-driven warmup. It is:
 
 - loaded TD3 weights
-- then 20 teacher-driven BC cycles
+- then 20 direct-MPC teacher behavioral-cloning cycles from step 0
 - then full RL under the direct gate
 
 ## 10. Cold-start direct RL notebook
@@ -459,20 +484,24 @@ Its current phase schedule is also:
 - `WARMUP_EPISODES = 0`
 - `BC_TEACHER_EPISODES = 20`
 - `bc_actor_updates_per_step = 4`
-- `bc_exploration_std = 0.005`
+- `bc_exploration_std = 0.0`
+- `bc_teacher_policy = "direct_lyapunov_mpc"`
+- `bc_behavior_source = "direct_lyapunov_mpc"`
+- `bc_behavior_noise = "none"`
 
 So the currently saved cold-start notebook begins with:
 
 randomly initialized $\theta_0$ and $\phi_0$,
 
-and then immediately enters the teacher-driven behavioral-cloning phase.
+and then immediately enters the direct-MPC teacher behavioral-cloning phase.
 
 A subtle but important note:
 
-- `warmup_behavior_source` differs between the pretrained and cold-start notebooks
-- but `WARMUP_EPISODES = 0` in both
+- both notebooks now use `WARMUP_EPISODES = 0`
+- both notebooks now use direct-MPC behavior during the online BC block
+- both notebooks disable BC exploration noise for the diagnostic run
 
-So that warmup-source difference does not currently affect execution.
+This removes the previous ambiguity where the pretrained notebook could self-clone the loaded policy's executed actions during the BC block instead of cloning the direct-MPC teacher.
 
 ## 11. Behavioral cloning: there are two different BC mechanisms here
 
@@ -542,14 +571,14 @@ At each step:
 1. solve the direct target problem
 2. solve the direct Lyapunov tracking MPC
 3. convert its first move to actor coordinates
-4. optionally add Gaussian noise with standard deviation `0.005`
+4. for the current diagnostic configuration, use no BC Gaussian noise
 5. pass that action through the same direct safety gate and plant interface
 
 The teacher action before noise is:
 
 $$ a_k^{\mathrm{teacher}} = T^{-1}(u_k^{\mathrm{direct}}). $$
 
-If Gaussian teacher noise is active:
+If Gaussian teacher noise is later re-enabled for an exploration sweep:
 
 $$ \tilde a_k^{\mathrm{teacher}} = a_k^{\mathrm{teacher}} + \varepsilon_k, \qquad \varepsilon_k \sim \mathcal{N}(0, \sigma_{\mathrm{BC}}^2 I). $$
 

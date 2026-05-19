@@ -8,7 +8,7 @@ Added a new analysis report:
 
 Added a supporting figure and embedded it directly in the report:
 
-- `direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png`
+- [direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png](../report/figures/root_migrated/direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png)
 
 ## Why
 

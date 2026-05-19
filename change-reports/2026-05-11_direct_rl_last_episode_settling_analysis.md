@@ -9,9 +9,9 @@ Rewrote the direct RL last-episode settling note using the newer complete `rho_l
 ## Updated artifacts
 
 - [report/direct_rl_last_episode_settling_analysis_2026-05-11.md](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/report/direct_rl_last_episode_settling_analysis_2026-05-11.md>)
-- [last_episode_settling_rho99_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_rho99_compare_2026-05-11.png>)
-- [last_episode_output_tracking_rho99_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_output_tracking_rho99_compare_2026-05-11.png>)
-- [pretrained_anchor_bias_tracking_2026-05-12.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/pretrained_anchor_bias_tracking_2026-05-12.png>)
+- [last_episode_settling_rho99_compare_2026-05-11.png]((../report/figures/root_migrated/last_episode_settling_rho99_compare_2026-05-11.png))
+- [last_episode_output_tracking_rho99_compare_2026-05-11.png]((../report/figures/root_migrated/last_episode_output_tracking_rho99_compare_2026-05-11.png))
+- [pretrained_anchor_bias_tracking_2026-05-12.png]((../report/figures/root_migrated/pretrained_anchor_bias_tracking_2026-05-12.png))
 
 The new figure is embedded directly in the report.
 

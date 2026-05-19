@@ -57,7 +57,9 @@ pip install numpy scipy matplotlib pandas torch cvxpy control scikit-learn jobli
 - `Plotting_fns/`
   MPC and RL plotting utilities.
 - `Data/`
-  Runtime data assets and serialized model/scaling files.
+  Core runtime data assets and serialized model/scaling files.
+- `results/`
+  Saved experiment bundles and retained latest run exports.
 
 ## Preferred Lyapunov Files
 When a request is about Lyapunov MPC, use these files first:
@@ -78,13 +80,11 @@ If a change only concerns the standard Lyapunov path, do not start from those fi
 ## Important Notebooks
 These appear to be the main experiment entrypoints:
 
-- `LyapMPC.ipynb`
-- `StandardLyapMPC.ipynb`
+- `DirectLyapunovMPC_FourMethodDisturbance.ipynb`
+- `DirectLyapunovSafetyGateRL_Pretrained.ipynb`
+- `DirectLyapunovSafetyGateRL_ColdStart.ipynb`
 - `MPCOffsetFree.ipynb`
-- `MPCOffsetFree1.ipynb`
-- `OnlineTrainingWPreTrain.ipynb`
-- `OnlineTrainingWPreTrainLyapunov.ipynb`
-- `ComparePlots.ipynb`
+- `systemIdentification.ipynb`
 
 Notebook cells often import modules directly, so keep public function names stable unless the notebook code is updated too.
 
@@ -125,6 +125,7 @@ Most control bugs here come from mixing those representations.
 - Keep optional `cvxpy` imports guarded.
 - Avoid renaming the Lyapunov rollout return tuple unless notebook callers and exporters are updated too.
 - Do not rewrite files under `Data/` unless the user explicitly asks for regenerated assets.
+- Prefer writing new experiment bundles under `results/`, not `Data/`.
 - Ignore `__pycache__/`.
 
 ## Markdown Report Formatting
@@ -132,6 +133,10 @@ Most control bugs here come from mixing those representations.
 - Keep numeric columns right-aligned, use consistent precision within each table, and keep units or shorthand terms defined in the surrounding text.
 - Put long text fields such as failure clusters, interpretation notes, or caveats in bullets below the table instead of forcing them into wide table cells.
 - Prefer compact labels such as `S1 high` or `Residual mean` when the meaning is clear from the surrounding paragraph.
+- Use rendered Markdown math for equations in `.md` reports. Use `$...$` for short inline symbols and `$$...$$` for displayed equations. Do not put equations in fenced `text` or code blocks unless the content is actual code or terminal output.
+- For multi-line equations, use readable display math such as `aligned` blocks. Keep notation compact and define symbols in prose or bullets around the equation. Avoid very wide equations that force horizontal scrolling in GitHub or IDE previews.
+- Keep code/config examples in fenced blocks, but keep mathematical method statements, optimization problems, observer equations, constraints, and reward definitions as rendered math.
+- When a report uses figures, embed them inline in the Markdown report with relative image paths near the relevant discussion. Do not leave figures only as bare file links at the end.
 - Before finishing a Markdown report, scan the rendered table shape in plain text: it should remain readable in an IDE preview and on GitHub without horizontal scrolling for the main conclusions.
 
 ## Commit And Change-Report Workflow

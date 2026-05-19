@@ -10,6 +10,7 @@ import numpy as np
 plt.style.use('default')
 
 from utils.plot_style import PAPER_COLORS, paper_plot_context
+from utils.path_helpers import repo_root, resolve_repo_path
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 
 
@@ -66,7 +67,9 @@ def plot_mpc_results_cstr(
     """
 
     if directory is None:
-        directory = os.getcwd()
+        directory = os.fspath(repo_root())
+    else:
+        directory = os.fspath(resolve_repo_path(directory))
 
     if timestamp_subdir:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -340,7 +343,9 @@ def plot_mpc_rl_results_cstr(
     """
 
     if directory is None:
-        directory = os.getcwd()
+        directory = os.fspath(repo_root())
+    else:
+        directory = os.fspath(resolve_repo_path(directory))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(directory, prefix_name, timestamp)

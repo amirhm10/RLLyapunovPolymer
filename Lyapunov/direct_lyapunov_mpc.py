@@ -64,6 +64,7 @@ from utils.lyapunov_utils import (
     tracking_solver_sequence,
 )
 from utils.plot_style import PAPER_COLORS, paper_plot_context
+from utils.path_helpers import repo_root, resolve_repo_path
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 
 
@@ -3073,7 +3074,9 @@ def save_direct_lyapunov_debug_artifacts(
 ):
     export_profile = _normalize_export_profile(export_profile)
     if directory is None:
-        directory = os.getcwd()
+        directory = os.fspath(repo_root())
+    else:
+        directory = os.fspath(resolve_repo_path(directory))
     if timestamp_subdir:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = _select_direct_debug_output_dir(

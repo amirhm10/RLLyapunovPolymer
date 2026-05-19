@@ -5,6 +5,7 @@ import os
 from Simulation.system_functions import PolymerCSTR
 # import matlab.engine
 # import matlab
+from utils.path_helpers import resolve_repo_path
 from utils.td3_helpers import apply_min_max, reverse_min_max
 
 
@@ -188,9 +189,7 @@ def run_cstr_experiment(step_value, step_channel, save_filename,
     # Save the combined data (here we concatenate the input and the outputs excluding the initial output)
     # Adjust the column names as appropriate.
     data_to_save = np.concatenate((results['inputs'], results['outputs'][1:]), axis=1)
-    data_dir = os.path.join(os.getcwd(), 'Data')
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
+    data_dir = os.fspath(resolve_repo_path("Data", create=True))
     save_path = os.path.join(data_dir, save_filename)
     column_names = ["Qc", "Qm", "Etha", "T"]
     save_simulation_data(data_to_save, save_path, column_names)

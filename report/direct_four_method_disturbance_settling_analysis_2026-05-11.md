@@ -87,7 +87,7 @@ The latest folder does **not** contain the combined `bounded_hard_u_prev_0p1_xs_
 
 The figure below shows the final episode in physical units for the latest disturbance export. The dashed black line is the tracking reference used by the MPC stage, and the orange dash-dot line is the selected target `$y_s$`.
 
-![Final-episode output, raw setpoint, and selected target](../direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png)
+![Final-episode output, raw setpoint, and selected target](figures/root_migrated/direct_four_method_disturbance_last_episode_target_vs_setpoint_2026-05-11.png)
 
 ## Quantitative Findings
 

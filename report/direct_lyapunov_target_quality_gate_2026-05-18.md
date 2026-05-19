@@ -12,6 +12,14 @@ The key conclusion is unchanged:
 
 `mpc_only` is often better because it tracks the raw setpoint directly, while the Lyapunov-gated controller can enforce contraction around a target that is a poor certificate anchor under the disturbed plant.
 
+## Figure Summary
+
+The figures below are copied into this report from the reviewed result bundles, with one compact summary figure generated from the three comparison tables. They are intentionally placed near the claims they support so the report can be read without opening the raw `results/` folders.
+
+![Three-bundle metric summary](figures/2026-05-18_direct_lyapunov_target_quality_gate/three_bundle_metric_summary.png)
+
+The summary figure shows the same pattern as the tables: the safe/Lyapunov path has higher mean output RMSE and lower reward than `mpc_only` in all three reviewed bundles. In the RL cases, the actor is accepted most of the time, so the remaining gap is not only a fallback-frequency issue. It is more consistent with a target/certificate alignment issue.
+
 ## Result Bundles Reviewed
 
 ### No-RL Direct MPC
@@ -36,6 +44,14 @@ Interpretation:
 
 The `mpc_only` run nearly removes the tail offset, while the Lyapunov path keeps a clear residual error, especially in the temperature-like output. This is not an RL reward issue because this notebook does not use an RL policy. The failure has to be in the direct target, disturbance model, finite-horizon constraint interaction, or Lyapunov certificate anchor.
 
+![No-RL direct output overlay](figures/2026-05-18_direct_lyapunov_target_quality_gate/direct_outputs_overlay.png)
+
+The output overlay is the most direct visual evidence. Both controllers see the same disturbed two-setpoint schedule, but the Lyapunov case shows larger transients and a visible late deviation, while `mpc_only` stays closer to the dashed raw setpoint.
+
+![No-RL direct reference errors](figures/2026-05-18_direct_lyapunov_target_quality_gate/direct_reference_errors.png)
+
+The reference-error bars separate target quality from tracking quality. The Lyapunov case has a larger mean target-setpoint gap and a larger mean output-setpoint gap than `mpc_only`, which supports the diagnosis that the certificate target can be a worse anchor than the raw setpoint.
+
 ### RL Cold-Start
 
 Bundle:
@@ -51,6 +67,12 @@ Interpretation:
 
 The safe gate improves over the worse no-RL Lyapunov behavior, but it still underperforms `mpc_only`. The likely reason is the same: actions are judged against the Lyapunov target, not directly against raw setpoint performance. A safe action can be poor if the target used for safety is poor.
 
+![Cold-start RL last-episode output overlay](figures/2026-05-18_direct_lyapunov_target_quality_gate/rl_cold_outputs_last_episode.png)
+
+![Cold-start RL safety-gate rates](figures/2026-05-18_direct_lyapunov_target_quality_gate/rl_cold_rates.png)
+
+In the cold-start run, the last-episode output overlay shows the safe-gate policy is not catastrophically wrong, but it still leaves more tracking structure than `mpc_only`. The gate-rate plot shows that most steps are verified and accepted, so the issue is not simply excessive fallback. The accepted safe action can still be inferior for raw setpoint tracking.
+
 ### RL Pretrained
 
 Bundle:
@@ -65,6 +87,12 @@ Bundle:
 Interpretation:
 
 Pretraining narrows the gap, but it does not remove it. That means the bottleneck is not only policy quality. A stronger policy still passes through a target/certificate layer whose reference may be misaligned with the raw setpoint under disturbance.
+
+![Pretrained RL last-episode output overlay](figures/2026-05-18_direct_lyapunov_target_quality_gate/rl_pretrained_outputs_last_episode.png)
+
+![Pretrained RL safety-gate rates](figures/2026-05-18_direct_lyapunov_target_quality_gate/rl_pretrained_rates.png)
+
+The pretrained actor has slightly better reward and RMSE than cold-start safe-gate RL, but the gap to `mpc_only` remains. This figure pair supports the interpretation that better policy initialization helps locally but does not remove the target/certificate bottleneck.
 
 ## What The Numbers Mean
 
@@ -86,6 +114,380 @@ The important separation is:
 
 The old method mixed these. It could certify contraction even when the target itself was the wrong object to contract around.
 
+## Full Mathematical Logic
+
+This section writes the controller in rendered mathematical form. Symbols are defined in prose so the equations can be read as method logic rather than as code snippets.
+
+### Physical Plant And Scaled Deviation Coordinates
+
+The physical polymer CSTR can be viewed as:
+
+$$
+\begin{aligned}
+x_{\mathrm{phys}}(k+1) &= f_{\mathrm{phys}}\!\left(x_{\mathrm{phys}}(k), u_{\mathrm{phys}}(k), p_{\mathrm{dist}}(k)\right),\\
+y_{\mathrm{phys}}(k) &= h_{\mathrm{phys}}\!\left(x_{\mathrm{phys}}(k), u_{\mathrm{phys}}(k), p_{\mathrm{dist}}(k)\right).
+\end{aligned}
+$$
+
+Here $u_{\mathrm{phys}} = [Q_c, Q_m]$, $y_{\mathrm{phys}} = [\eta, T]$, and $p_{\mathrm{dist}}$ collects plant disturbances such as $Q_i$, $Q_s$, and $hA$.
+
+The direct Lyapunov notebooks do not optimize directly in physical units. They mostly use scaled deviation variables around the nominal steady state:
+
+$$
+\begin{aligned}
+x(k) &= S_x\!\left(x_{\mathrm{phys}}(k)-x_{\mathrm{ss}}\right),\\
+u(k) &= S_u\!\left(u_{\mathrm{phys}}(k)-u_{\mathrm{ss}}\right),\\
+y(k) &= S_y\!\left(y_{\mathrm{phys}}(k)-y_{\mathrm{ss}}\right),\\
+y_{\mathrm{sp}}(k) &= S_y\!\left(y_{\mathrm{sp,phys}}(k)-y_{\mathrm{ss}}\right).
+\end{aligned}
+$$
+
+The local prediction model is then written as:
+
+$$
+\begin{aligned}
+x(k+1) &= A x(k) + B u(k),\\
+y(k) &= C x(k) + d_y(k).
+\end{aligned}
+$$
+
+This coordinate choice matters. A target that looks close in scaled deviation coordinates may still produce a noticeable physical error in `eta` or `T`, and a physical disturbance such as a heat-transfer change is not guaranteed to look like a pure additive output disturbance.
+
+### Offset-Free Observer
+
+The observer state is augmented:
+
+$$
+\hat z(k) =
+\begin{bmatrix}
+\hat x(k)\\
+\hat d(k)
+\end{bmatrix}.
+$$
+
+The generic observer update is:
+
+$$
+\begin{aligned}
+e_y(k) &= y_{\mathrm{meas}}(k)-C_{\mathrm{aug}}\hat z(k),\\
+\hat z(k+1) &= A_{\mathrm{aug}}\hat z(k)+B_{\mathrm{aug}}u(k)+L e_y(k),\\
+\hat x(k+1) &= \mathrm{state\ block}\!\left(\hat z(k+1)\right),\\
+\hat d(k+1) &= \mathrm{disturbance\ block}\!\left(\hat z(k+1)\right).
+\end{aligned}
+$$
+
+For the frozen output-disturbance target, the disturbance estimate is interpreted as an additive output correction:
+
+$$
+y_s = Cx_s + \hat d_y.
+$$
+
+This is the key modelling assumption behind the target selector. If the real disturbed plant changes the state dynamics instead of only shifting the output, the target can be feasible for the frozen model and still be a poor anchor for the physical plant.
+
+### Steady Target Selector
+
+At every control step, the target selector finds a steady target. The decision variables are $x_s$ and $u_s$. The data are the requested setpoint $y_{\mathrm{sp}}(k)$, the disturbance estimate $\hat d(k)$, the input smoothing reference $u_{\mathrm{ref}}$, and the state smoothing reference $x_{\mathrm{ref}}$. The input target must obey:
+
+$$
+u_{\min} \le u_s \le u_{\max}.
+$$
+
+The steady-state equations are:
+
+$$
+\begin{aligned}
+x_s &= A x_s + B u_s,\\
+y_s &= C x_s + \hat d_y.
+\end{aligned}
+$$
+
+Equivalently, the residuals are:
+
+$$
+\begin{aligned}
+r_{\mathrm{dyn}} &= x_s-Ax_s-Bu_s,\\
+r_y &= Cx_s+\hat d_y-y_{\mathrm{sp}}(k).
+\end{aligned}
+$$
+
+The primary target-quality objective is:
+
+$$
+J_{\mathrm{primary}}
+=
+r_{\mathrm{dyn}}^\top W_{\mathrm{dyn}} r_{\mathrm{dyn}}
++
+r_y^\top W_y r_y.
+$$
+
+In compact notation, $\|v\|_W^2 = v^\top Wv$.
+
+The old bounded least-squares target mixed output quality and smoothing in one problem:
+
+$$
+\begin{aligned}
+\min_{x_s,u_s}\quad
+&J_{\mathrm{primary}}
++ w_u\|u_s-u_{\mathrm{ref}}\|_2^2
++ w_x\|x_s-x_{\mathrm{ref}}\|_2^2\\
+\mathrm{s.t.}\quad
+&u_{\min}\le u_s\le u_{\max}.
+\end{aligned}
+$$
+
+That objective can sacrifice output fit to stay close to the previous input or previous target state. In a constrained disturbed run, this can make the selected target smooth but wrong.
+
+The lexicographic target solve separates the roles. Stage 1 finds the best reachable target:
+
+$$
+\begin{aligned}
+J_1 =
+\min_{x_s,u_s}\quad
+&J_{\mathrm{primary}}\\
+\mathrm{s.t.}\quad
+&u_{\min}\le u_s\le u_{\max}.
+\end{aligned}
+$$
+
+Stage 2 then smooths the target only while preserving Stage-1 quality:
+
+$$
+\begin{aligned}
+\min_{x_s,u_s}\quad
+&w_u\|u_s-u_{\mathrm{ref}}\|_2^2
++w_x\|x_s-x_{\mathrm{ref}}\|_2^2\\
+\mathrm{s.t.}\quad
+&u_{\min}\le u_s\le u_{\max},\\
+&J_{\mathrm{primary}}\le J_1+\varepsilon_{\mathrm{lex}}.
+\end{aligned}
+$$
+
+The logic is: first find the best reachable output target, then smooth only inside a small loss of primary target quality.
+
+### Direct Lyapunov Tracking MPC
+
+Given a target $x_s,u_s,y_s$, the direct MPC solves for $x_0,\ldots,x_N$, $u_0,\ldots,u_{N-1}$, and optional slack variables. The initial condition and prediction model are:
+
+$$
+\begin{aligned}
+x_0 &= \hat x(k),\\
+x_{i+1} &= A x_i + B u_i,\\
+y_i &= Cx_i+\hat d_y.
+\end{aligned}
+$$
+
+The tracking objective has the usual finite-horizon form:
+
+$$
+\begin{aligned}
+\min_{\{x_i,u_i\}}\quad
+&\sum_{i=0}^{N-1}\|y_i-y_{\mathrm{ref},i}\|_{Q_y}^2
++\sum_{i=0}^{N-1}\|u_i-u_s\|_{R_u}^2\\
+&+\sum_{i=0}^{N-1}\|u_i-u_{i-1}\|_{R_{\Delta u}}^2
++\|x_N-x_s\|_P^2
++J_{\mathrm{slack}}.
+\end{aligned}
+$$
+
+The controller has two possible references:
+
+$$
+\begin{aligned}
+\text{target tracking:}\quad y_{\mathrm{ref},i} &= y_s,\\
+\text{raw setpoint tracking:}\quad y_{\mathrm{ref},i} &= y_{\mathrm{sp}}(k+i).
+\end{aligned}
+$$
+
+The failure mode diagnosed in this report appears when the optimizer is judged or constrained around `x_s` even when the raw setpoint `y_sp` is the real performance target.
+
+The first-step Lyapunov decrease uses:
+
+$$
+\begin{aligned}
+e_{\mathrm{now}} &= x_0-x_s,\\
+e_{\mathrm{next}} &= x_1-x_s,\\
+V(e) &= e^\top P e.
+\end{aligned}
+$$
+
+The hard contraction condition is:
+
+$$
+V(e_{\mathrm{next}})
+\le
+\rho V(e_{\mathrm{now}})+\varepsilon_{\mathrm{lyap}}.
+$$
+
+The terminal condition has the same anchor:
+
+$$
+V(x_N-x_s)\le r_{\mathrm{terminal}}+\varepsilon_{\mathrm{terminal}}.
+$$
+
+These inequalities are only useful for raw setpoint tracking when `x_s` is a good representation of the requested setpoint under the current disturbance. If `x_s` is poor, the Lyapunov certificate can make the controller faithfully contract toward the wrong anchor.
+
+### Target Quality Gate
+
+The new target-quality gate computes three diagnostic quantities:
+
+$$
+\begin{aligned}
+m_{\infty} &= \|y_s-y_{\mathrm{sp}}(k)\|_{\infty},\\
+r_{\mathrm{target}} &= \text{target residual norm reported by the selector},\\
+\Delta x_{s,\infty} &= \|x_s-x_{s,\mathrm{prev}}\|_{\infty}.
+\end{aligned}
+$$
+
+The target is accepted only if:
+
+$$
+\begin{aligned}
+m_{\infty} &\le m_{\infty,\max},\\
+r_{\mathrm{target}} &\le r_{\max},\\
+\Delta x_{s,\infty} &\le \Delta x_{s,\infty,\max}.
+\end{aligned}
+$$
+
+When `target_quality.enabled=True` and the policy is `bypass_hard_lyap`, the logic is:
+
+- If the target is acceptable, keep the hard first-step Lyapunov contraction, keep the terminal set constraint, and use the normal target/certificate path.
+- If the target is poor, log `target_quality_bypass=True`, track the raw setpoint in the direct solver, disable hard first-step contraction, and skip the terminal set constraint.
+
+This does not claim the poor target is safe. It says the target is not reliable enough to be used as a hard certificate anchor.
+
+### RL Safety Gate
+
+The direct RL safety gate starts from an actor action:
+
+$$
+a(k)=\pi_{\theta}(s_{\mathrm{RL}}(k)).
+$$
+
+In the original full-authority interpretation:
+
+$$
+u_{\mathrm{cand}}=\mathrm{map\_to\_bounds}(a(k)).
+$$
+
+In the residual-RL interpretation:
+
+$$
+\begin{aligned}
+\tilde u_{\mathrm{cand}} &= u_{\mathrm{base}}+\alpha(k)a(k),\\
+u_{\mathrm{cand}} &= \mathrm{clip}(\tilde u_{\mathrm{cand}},u_{\min},u_{\max}).
+\end{aligned}
+$$
+
+The authority can shrink near the setpoint:
+
+$$
+e_{\infty}(k)=\|y(k)-y_{\mathrm{sp}}(k)\|_{\infty}.
+$$
+
+$$
+\alpha(k)=
+\begin{cases}
+\alpha_{\min}\alpha_0, & e_{\infty}(k)\le e_{\mathrm{shrink}},\\
+\alpha_0, & e_{\infty}(k)>e_{\mathrm{shrink}}.
+\end{cases}
+$$
+
+The safety gate checks whether the candidate respects input bounds, move limits, solver status, and Lyapunov decrease around the selected target:
+
+$$
+\begin{aligned}
+\mathrm{safe}(u_{\mathrm{cand}})=
+&\ \mathrm{bounds\_ok}
+\land \mathrm{move\_ok}
+\land \mathrm{target\_success}\\
+&\land
+V(x_{\mathrm{next,cand}}-x_s)
+\le
+\rho V(x_{\mathrm{now}}-x_s)+\varepsilon.
+\end{aligned}
+$$
+
+If `candidate_safe=False`, the controller applies the fallback direct MPC action. If `candidate_safe=True`, the old logic could accept the action even when its one-step raw tracking cost was worse than the fallback.
+
+### Performance Guard
+
+The performance guard adds the missing raw-tracking comparison. It computes:
+
+$$
+J_{\mathrm{perf}}(u)
+=
+\|y_{\mathrm{next}}(u)-y_{\mathrm{sp}}(k+1)\|_{Q_{\mathrm{perf}}}^2
++
+\|u-u_{\mathrm{prev}}\|_{R_{\mathrm{perf}}}^2.
+$$
+
+Then it compares the safe RL candidate against a reference action. The strongest reference is the direct-MPC fallback action:
+
+$$
+u_{\mathrm{ref,perf}} = u_{\mathrm{direct\ MPC}}.
+$$
+
+In a cheaper ablation, the reference can instead be the previous input:
+
+$$
+u_{\mathrm{ref,perf}}=u_{\mathrm{prev}}.
+$$
+
+The safe RL action is accepted only if:
+
+$$
+J_{\mathrm{perf}}(u_{\mathrm{cand}})
+\le
+(1+\tau_{\mathrm{rel}})J_{\mathrm{perf}}(u_{\mathrm{ref,perf}})
+\tau_{\mathrm{abs}}.
+$$
+
+This is the correct separation of roles for the current failure mode:
+
+- The Lyapunov gate answers: "Is the action certifiable around the current target?"
+- The performance guard answers: "Is the action at least competitive for raw setpoint tracking?"
+
+### Reward Maintenance Terms
+
+The baseline RL reward can be summarized as:
+
+$$
+r_{\mathrm{base}}(k)
+=
+-\|y(k)-y_{\mathrm{sp}}(k)\|_{Q_r}^2
+-\|u(k)-u(k-1)\|_{R_r}^2
+-r_{\mathrm{safety/fallback}}(k).
+$$
+
+The maintenance additions activate only inside a tracking band:
+
+$$
+\mathrm{inside\_band}(k)
+\Longleftrightarrow
+\|y(k)-y_{\mathrm{sp}}(k)\|_{\infty}
+\le
+b_{\mathrm{maint}}.
+$$
+
+When inside the band:
+
+$$
+\begin{aligned}
+r(k)
+=&\ r_{\mathrm{base}}(k)
+-w_{\mathrm{move}}\|u(k)-u(k-1)\|_2^2\\
+&-w_{\mathrm{jitter}}
+\left\|
+\left(y(k)-y_{\mathrm{sp}}(k)\right)
+-
+\left(y(k-1)-y_{\mathrm{sp}}(k-1)\right)
+\right\|_2^2\\
+&+b_{\mathrm{dwell}}\,n_{\mathrm{dwell}}(k).
+\end{aligned}
+$$
+
+These terms are useful after the target and gate are fixed. They should not be used to explain the pure `mpc_only` offset, because `mpc_only` does not optimize the RL reward.
+
 ## Previous Direct Lyapunov Method
 
 This section reconstructs the method before the new changes.
@@ -102,25 +504,37 @@ Important variables:
 - `u_dev_min`, `u_dev_max`: input bounds in scaled deviation coordinates.
 - `x_s`, `u_s`, `d_s`, `y_s`: steady target selected for the current setpoint and disturbance estimate.
 
-Observer update, in plain notation:
+Observer update:
 
-`xhatdhat(k+1) = A_aug * xhatdhat(k) + B_aug * u(k) + L * innovation(k)`
+$$
+\hat z(k+1)=A_{\mathrm{aug}}\hat z(k)+B_{\mathrm{aug}}u(k)+L\,e_y(k).
+$$
 
 where:
 
-`innovation(k) = y_measured_scaled(k) - C_aug * xhatdhat(k)`
+$$
+e_y(k)=y_{\mathrm{measured,scaled}}(k)-C_{\mathrm{aug}}\hat z(k).
+$$
 
 ### Old Target Solve
 
 The direct target layer solved a frozen output-disturbance target. In the output-disturbance case, the disturbance estimate acts directly at the output:
 
-`y_s = C * x_s + d_hat`
+$$
+y_s=Cx_s+\hat d_y.
+$$
 
 The target equations were:
 
-`x_s = A * x_s + B * u_s`
+$$
+x_s=Ax_s+Bu_s.
+$$
 
-`y_s should match y_sp`
+The output target should also satisfy:
+
+$$
+y_s \approx y_{\mathrm{sp}}.
+$$
 
 When the exact target was outside input bounds, the old bounded fallback used a single least-squares problem. That problem combined:
 
@@ -137,7 +551,11 @@ Once the target was selected, the direct tracking MPC solved over an input seque
 
 The hard first-step Lyapunov condition was effectively:
 
-`V(x_next - x_s) <= rho * V(x_now - x_s) + eps`
+$$
+V(x_{\mathrm{next}}-x_s)
+\le
+\rho V(x_{\mathrm{now}}-x_s)+\varepsilon.
+$$
 
 If `x_s` is a poor target, this condition can reject or reshape actions that would track the raw setpoint well.
 
@@ -253,6 +671,14 @@ Important review note:
 
 The current implementation still lets a numerically successful but poor target update `x_target_prev_success_next`. If we want poor targets not to seed the next target-smoothing reference, change the update condition from `target_success` to `target_success and target_quality_ok`. This is a reasonable follow-up if the next run shows target-quality bypasses clustered after large target jumps.
 
+![Direct target residual and bounded activity](figures/2026-05-18_direct_lyapunov_target_quality_gate/direct_target_residual_bounded_activity.png)
+
+This diagnostic explains why the target-quality gate is needed. A target solve can be numerically successful while still having large target residual or bounded-solution activity. Such a target should not automatically receive hard Lyapunov authority.
+
+![Direct solver and contraction rates](figures/2026-05-18_direct_lyapunov_target_quality_gate/direct_solver_contraction_rates.png)
+
+The contraction-rate plot separates feasibility from usefulness. A high contraction or solver-success rate does not prove raw tracking quality if contraction is measured around a poor target.
+
 ### Change 2: Lexicographic Bounded Target Solve
 
 Main files:
@@ -286,21 +712,38 @@ Stage 1:
 
 Minimize the primary steady-target quality. In reduced form this is the output mismatch:
 
-`primary_cost = norm(G * u_s - rhs_output)^2`
+$$
+J_{\mathrm{primary}}=\|G u_s-b_y\|_2^2.
+$$
 
 In full form it minimizes the stacked steady-state residual:
 
-`primary_cost = norm(M * [x_s, u_s] - rhs)^2`
+$$
+J_{\mathrm{primary}}=\left\|M
+\begin{bmatrix}
+x_s\\
+u_s
+\end{bmatrix}
+-b\right\|_2^2.
+$$
 
 Stage 2:
 
 Minimize smoothing only inside a small tolerance of the Stage 1 primary cost:
 
-`anchor_cost = weighted_norm(u_s - u_ref)^2 + weighted_norm(x_s - x_ref)^2`
+$$
+J_{\mathrm{anchor}}
+=
+\|u_s-u_{\mathrm{ref}}\|_{W_u}^2
++
+\|x_s-x_{\mathrm{ref}}\|_{W_x}^2.
+$$
 
 The Stage 2 constraint is:
 
-`primary_cost <= stage1_primary_cost + tolerance`
+$$
+J_{\mathrm{primary}}\le J_1+\varepsilon_{\mathrm{lex}}.
+$$
 
 Why this matters:
 
@@ -392,13 +835,19 @@ Step-by-step behavior:
 
 The one-step raw tracking cost is:
 
-`cost = weighted_output_error_next + weighted_move`
+$$
+J_{\mathrm{perf}}=J_y+J_{\Delta u}.
+$$
 
 where:
 
-`weighted_output_error_next = sum(Q_i * (y_next_i - y_sp_i)^2)`
+$$
+J_y=\sum_i Q_i\left(y_{\mathrm{next},i}-y_{\mathrm{sp},i}\right)^2.
+$$
 
-`weighted_move = sum(R_j * (u_j - u_prev_j)^2)`
+$$
+J_{\Delta u}=\sum_j R_j\left(u_j-u_{\mathrm{prev},j}\right)^2.
+$$
 
 Why this matters:
 
@@ -436,11 +885,15 @@ residual_rl_config = {
 
 Old RL action interpretation:
 
-`u = map_actor_action_to_input_bounds(action)`
+$$
+u=\mathrm{map\_actor\_action\_to\_input\_bounds}(a).
+$$
 
 New residual option:
 
-`u = u_baseline + authority * action`
+$$
+u=u_{\mathrm{baseline}}+\alpha a.
+$$
 
 Then the input is clipped to bounds.
 
@@ -532,6 +985,158 @@ Useful summary metrics:
 | `target_quality_residual_norm_max` | Worst target residual. |
 
 ## Recommended Config For The Next No-RL Run
+
+### Latest Change 2 Ablation: Lexicographic Target Solve With `y_sp` Versus `y_s` Tracking
+
+After the initial diagnosis, two no-RL direct runs were made with the Change 2 lexicographic bounded target solve and stronger target smoothing weights:
+
+- `results/direct_lyap_ch2_lex/20260518_204423/`: lexicographic target solve, dynamic MPC tracks raw `y_sp`.
+- `results/direct_lyap_ch2_lex/20260518_204533/`: lexicographic target solve, dynamic MPC tracks selected target `y_s`.
+
+Both runs used the disturbed two-setpoint plant case with `u_ref_weight=0.5`, `x_ref_weight=0.5`, `disturbance_model_mode="output"`, and `target_quality.enabled=False`. The `mpc_only` case is unchanged and remains the baseline.
+
+![Change 2 summary](figures/2026-05-18_change2_lex_ysp_vs_ys/change2_ysp_vs_ys_summary.png)
+
+The result is mixed. Tracking `y_s` is more internally consistent with target-selector MPC and it substantially reduces the error to the active target. However, it does not beat `mpc_only` on raw setpoint performance or reward.
+
+| Run | Case | Tracks | RMSE mean | Reward mean | Mean target gap | Mean active-target error |
+|---|---|---|---:|---:|---:|---:|
+| 204423 | Lyap | raw `y_sp` | 0.853 | -14.52 | 1.895 | 1.408 |
+| 204423 | mpc_only | raw `y_sp` | 0.357 | -3.88 | 0.494 | 0.450 |
+| 204533 | Lyap | selected `y_s` | 0.655 | -22.94 | 1.786 | 0.291 |
+| 204533 | mpc_only | selected `y_s` diagnostic | 0.357 | -3.88 | 0.494 | 0.327 |
+
+The most important separation is:
+
+- `y_s` tracking improved the controller's ability to follow the target it was given: mean active-target error dropped from 1.408 to 0.291.
+- Raw setpoint performance is still poor over the full run: Lyap RMSE is 0.655 with `y_s` tracking versus 0.357 for `mpc_only`.
+- Reward became worse with `y_s` tracking because the reward is still evaluated against raw `y_sp`, and the selected target is often far from `y_sp`.
+
+![Change 2 tail decomposition](figures/2026-05-18_change2_lex_ysp_vs_ys/change2_tail_error_decomposition.png)
+
+The tail-window view is more encouraging but still not enough:
+
+| Run | Tail raw error | Tail active-target error | Tail target gap | Final physical error |
+|---|---:|---:|---:|---:|
+| Lyap tracks `y_sp` | 1.547 | 1.547 | 2.165 | `[-0.236, 1.423]` |
+| Lyap tracks `y_s` | 0.517 | 0.214 | 0.449 | `[0.011, 0.018]` |
+| `mpc_only` | 0.054 | 0.052 | 0.006 | `[0.004, -0.020]` |
+
+So `y_s` tracking fixes one part of the logic: the controller can track the selected target. It does not fix the main bottleneck: the selected target is still frequently not a good representation of the requested setpoint under the disturbed plant.
+
+![Lexicographic run tracking raw setpoint](figures/2026-05-18_change2_lex_ysp_vs_ys/lex_ysp_outputs_vs_targets.png)
+
+When the MPC objective tracks raw `y_sp`, the Lyapunov certificate still pulls the trajectory around a poor target anchor. The output deviates strongly, especially in the temperature-like output.
+
+![Lexicographic run tracking selected target](figures/2026-05-18_change2_lex_ysp_vs_ys/lex_ys_outputs_vs_targets.png)
+
+When the MPC objective tracks `y_s`, the trajectory follows the selected target much more closely. But the selected target itself drifts away from the requested setpoint for long intervals, so the closed loop can look good relative to `y_s` while remaining poor relative to `y_sp`.
+
+### Latest Weight Sweep: `0.1` Versus `0.0` Smoothing Weights
+
+Two additional no-RL runs tested the same Change 2 lexicographic target solve with `use_target_output_for_tracking=True`, but reduced the target smoothing penalties:
+
+- `results/direct_lyap_ch2_lex/20260518_205113/`: `u_ref_weight=0.1`, `x_ref_weight=0.1`.
+- `results/direct_lyap_ch2_lex/20260518_205354/`: `u_ref_weight=0.0`, `x_ref_weight=0.0`.
+
+This sweep is important because the previous `0.5`, `0.5` run could hide whether the target selector was bad because of the disturbance representation or simply because the secondary objective was holding the target too close to the previous/reference anchor.
+
+![Change 2 weight sweep summary](figures/2026-05-18_change2_weight_sweep/change2_weight_sweep_summary.png)
+
+The zero-weight run is clearly the best Lyapunov case so far. The `0.1`, `0.1` run is worse, not better.
+
+| Run | Weights | RMSE mean | Reward mean | Full raw error | Tail raw error | Tail target gap |
+|---|---:|---:|---:|---:|---:|---:|
+| 204533 | 0.5 | 0.655 | -22.94 | 0.658 | 0.517 | 0.449 |
+| 205113 | 0.1 | 0.802 | -24.50 | 0.837 | 2.021 | 1.914 |
+| 205354 | 0.0 | 0.567 | -22.69 | 0.523 | 0.081 | 0.038 |
+| 205354 `mpc_only` | diagnostic | 0.357 | -3.88 | 0.287 | 0.054 | 0.006 |
+
+The mechanism is visible in the error decomposition:
+
+![Change 2 weight sweep late decomposition](figures/2026-05-18_change2_weight_sweep/change2_weight_sweep_late_decomposition.png)
+
+With `0.1`, `0.1`, the closed-loop error to the active target is moderate, but the selected target moves far from the requested setpoint late in the run. In the last 200 steps, mean `|y_s-y_sp|` is 1.914, while mean `|y-y_s|` is 0.499. That means the dominant late-run error is target selection, not dynamic MPC tracking.
+
+With `0.0`, `0.0`, the selected target stays close to the requested setpoint in the tail window. Mean `|y_s-y_sp|` drops to 0.038 and mean `|y-y_sp|` drops to 0.081, close to the `mpc_only` tail value of 0.054. The final physical error is also small: `[-0.028, 0.036]`.
+
+![Change 2 weight sweep outputs and targets](figures/2026-05-18_change2_weight_sweep/change2_weight_sweep_outputs_targets.png)
+
+This changes the diagnosis. The target selector is not fundamentally unable to produce useful targets, because the zero-weight run does produce a good late target. But the target selector is still not good enough over the full horizon:
+
+- Full-run Lyap RMSE is 0.567 for zero weights, still worse than 0.357 for `mpc_only`.
+- Full-run mean `|y_s-y_sp|` is 0.457 for zero weights, still much larger than the tail value of 0.038.
+- The target residual remains large in some intervals: max residual norm is 6.036.
+- Reward is still much worse than `mpc_only` because reward is evaluated against raw `y_sp`.
+
+![Change 2 weight sweep residual and reward](figures/2026-05-18_change2_weight_sweep/change2_weight_sweep_residual_reward.png)
+
+Mathematically, the diagnostic split is:
+
+$$
+e_{\mathrm{raw}}(k) = y(k) - y_{\mathrm{sp}}(k)
+$$
+
+$$
+e_{\mathrm{track}}(k) = y(k) - y_s(k)
+$$
+
+$$
+e_{\mathrm{target}}(k) = y_s(k) - y_{\mathrm{sp}}(k)
+$$
+
+and therefore:
+
+$$
+e_{\mathrm{raw}}(k) = e_{\mathrm{track}}(k) + e_{\mathrm{target}}(k)
+$$
+
+The latest runs show that the bad cases are dominated by `e_target`, not only by `e_track`.
+
+On the disturbance question: if the experimental assumption is that the true disturbance is unmeasured, that is acceptable. We should not claim access to `Qi`, `Qs`, or `hA` as measured controller inputs. But the controller still needs an internal offset or disturbance estimate in the target equations, otherwise the steady target is solved for the wrong plant. The current target selector is effectively solving:
+
+$$
+x_s = A x_s + B u_s
+$$
+
+$$
+y_s = C x_s + \hat d_y
+$$
+
+with input bounds and secondary smoothing penalties. So even if the real disturbance is unmeasured, the question is not whether to ignore disturbance completely. The question is whether the estimated output-bias term `d_hat_y` is a good enough internal representation for the target selector. The new evidence says: first remove smoothing and improve the selector logic; only revisit a richer disturbance model if `y_s-y_sp` remains large after that.
+
+### Interpretation Of Change 2
+
+Change 2 helped structurally, but it did not solve the disturbed direct Lyapunov problem by itself.
+
+What it helped:
+
+- It makes the target-selector hierarchy more principled: output/steady-state residual is protected before smoothing is applied.
+- In the `y_s`-tracking run, solver success improved to 0.999 compared with 0.990 for the raw-`y_sp` tracking run.
+- The maximum target residual dropped from 15.234 in the raw-`y_sp` tracking run to 5.937 in the `y_s` tracking run.
+- The final physical error in the `y_s` tracking run was small.
+
+What it did not fix:
+
+- The full-run Lyap RMSE is still worse than `mpc_only`.
+- The selected target remains far from the requested setpoint for substantial parts of the run.
+- The reward remains much worse because reward is evaluated against `y_sp`, not `y_s`.
+- The result is sensitive to target smoothing weights. The zero-weight run is the best Lyapunov case, while the `0.1`, `0.1` run is worse than both `0.5`, `0.5` and `0.0`, `0.0`.
+
+There is also a diagnostic/export issue: the summary still labels bounded target stages as `frozen_output_disturbance_bounded_ls`, even when `solve_strategy="lexicographic"` was passed. The step table does not make the active solve strategy obvious enough. The next export should include `target_solve_strategy` and lexicographic stage costs in the compact comparison table.
+
+### Updated Recommendation
+
+Do not move to RL yet. The latest no-RL evidence says the next work should focus on the target selector:
+
+1. Run `use_target_output_for_tracking=True`, because this is the internally consistent tracking-MPC form.
+2. Keep `u_ref_weight=0.0` and `x_ref_weight=0.0` as the current best diagnostic setting.
+3. Keep `solve_strategy="lexicographic"` fixed.
+4. Judge success by three metrics together: small `y-y_s`, small `y_s-y_sp`, and small `y-y_sp`.
+5. Add a target-quality gate so poor targets do not receive hard Lyapunov authority.
+6. Only after the zero-weight target selector is healthy should we revisit richer disturbance modeling.
+
+The strongest next hypothesis is no longer simply "wrong disturbance model." The more precise hypothesis is: the target selector is over-regularized or under-gated during difficult intervals. The zero-weight run proves that useful targets are possible, but the full-horizon target quality is still not consistently good enough.
 
 Start with the no-RL direct comparison, not RL training. The goal is to confirm that the target/certificate fix is working before touching reward design.
 
@@ -653,4 +1258,4 @@ The target-solver smoke test passed. The full direct-controller smoke test could
 
 ## Bottom Line
 
-The next experiment should not start with reward tuning. First, rerun the no-RL disturbed direct comparison with lexicographic target selection and target-quality bypass enabled. If that fixes the Lyap tail offset, then run a short RL smoke test with the performance guard and residual-RL authority. Reward maintenance terms should be the third step, after the target and gate are no longer the bottleneck.
+The next experiment should not start with reward tuning or RL. The latest Change 2 weight sweep shows that `y_s` tracking can work, and the zero-smoothing target selector is the best Lyapunov case so far. But full-horizon performance is still worse than `mpc_only`, so the target selector is not yet reliable enough. Keep `solve_strategy="lexicographic"`, `use_target_output_for_tracking=True`, and `u_ref_weight=x_ref_weight=0.0`; then add target-quality gating and inspect the intervals where `y_s-y_sp` is still large. Treat the true disturbance as unmeasured, but keep an internal offset/disturbance estimate in the target equations.

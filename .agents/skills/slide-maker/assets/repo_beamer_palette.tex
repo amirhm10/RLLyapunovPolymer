@@ -1,0 +1,38 @@
+% Reusable Beamer palette aligned with the MACC2026 slides in this repo.
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+
+\definecolor{maroon1}{rgb}{0.478, 0, 0.235}
+\definecolor{lightgray}{rgb}{0.94,0.94,0.97}
+\definecolor{maccblue}{RGB}{28,74,117}
+\definecolor{maccgreen}{RGB}{44,118,92}
+\definecolor{maccred}{RGB}{156,58,52}
+\definecolor{softblue}{RGB}{236,243,250}
+\definecolor{softgreen}{RGB}{235,247,242}
+\definecolor{softred}{RGB}{251,239,238}
+
+\usetheme{Copenhagen}
+\usecolortheme[named=maroon1]{structure}
+\setbeamertemplate{navigation symbols}{}
+\setbeamerfont{caption}{size=\scriptsize}
+\setbeamercolor{block body}{fg=black,bg=lightgray}
+\setbeamercolor{block title}{fg=white,bg=maroon1}
+\graphicspath{{./}{Figures/}{MACC2026/Figures/}}
+
+\newcommand{\RepoFigurePanel}[2]{%
+  {\setlength{\fboxsep}{1pt}\setlength{\fboxrule}{0.35pt}%
+  \noindent\fcolorbox{black!25}{white}{%
+    \begin{minipage}[c][#2][c]{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}
+      \centering
+      \includegraphics[width=0.98\linewidth,height=#2,keepaspectratio]{#1}
+    \end{minipage}}}%
+}
+
+\newcommand{\RepoResultCallout}[3]{%
+  {\setlength{\fboxsep}{2pt}\setlength{\fboxrule}{0.55pt}%
+  \noindent\fcolorbox{#1}{#2}{%
+    \begin{minipage}[c][0.13\textheight][c]{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}
+      \centering #3
+    \end{minipage}}}%
+}

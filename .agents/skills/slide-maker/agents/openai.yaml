@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slide Maker"
+  short_description: "Build and audit PhD research slides and figures"
+  default_prompt: "Inspect the repository, gather the relevant report, figures, and results, then create or improve scientifically rigorous slides."

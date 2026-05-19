@@ -5,6 +5,7 @@ __pycache__/
 .ipynb_checkpoints/
 .idea/
 .vscode/
+.jupyter-config/
 
 Data/debug_exports/
 Data/agent_2507171027.pkl
@@ -64,3 +65,5 @@ StatsControl2026/rl_math_check*.png
 .pycache_tmp/
 .pycache_validation/
 pycache_validation/
+pycache_validation_pathfix_*/
+tmp_*.patch

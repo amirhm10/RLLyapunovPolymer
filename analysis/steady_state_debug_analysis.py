@@ -35,6 +35,7 @@ except Exception:
     HAS_SCIPY = False
 
 from utils.scaling_helpers import apply_min_max, reverse_min_max
+from utils.path_helpers import resolve_repo_path
 
 
 DEFAULT_ANALYSIS_CONFIG: Dict[str, Any] = {
@@ -2862,7 +2863,9 @@ def save_offsetfree_ss_debug_artifacts(
 ) -> str:
     config = bundle.get("config", {})
     if directory is None:
-        directory = os.path.join(os.getcwd(), "Data")
+        directory = os.fspath(resolve_repo_path("Data", create=True))
+    else:
+        directory = os.fspath(resolve_repo_path(directory))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(directory, prefix_name, timestamp)

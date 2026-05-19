@@ -29,7 +29,7 @@ Saved-run evidence comes from:
 - [Simulation/run_rl_lyapunov.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/Simulation/run_rl_lyapunov.py>)
 - [TD3Agent/agent.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/TD3Agent/agent.py>)
 - [TD3Agent/reward_functions.py](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/TD3Agent/reward_functions.py>)
-- [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>)
+- [warm_start_reward_and_sigma_2026-05-11.png]((figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png))
 
 ## 2. What the current method is doing
 
@@ -145,9 +145,9 @@ The current direct notebooks do not use the user-specified `reward_scale=0.01`. 
 
 I generated:
 
-- [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>)
+- [warm_start_reward_and_sigma_2026-05-11.png]((figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png))
 
-![Warm-start reward and effective exploration sigma](../warm_start_reward_and_sigma_2026-05-11.png)
+![Warm-start reward and effective exploration sigma](figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png)
 
 Figure 1. Episode-mean shaped reward for the pretrained and cold-start runs, together with the effective exploration schedule used by the current direct RL setup.
 
@@ -320,13 +320,13 @@ Second, the safety gate may alter the effective data distribution enough that so
 ## 10. Files changed
 
 - [report/direct_rl_warm_start_exploration_fix_ideas_2026-05-11.md](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/report/direct_rl_warm_start_exploration_fix_ideas_2026-05-11.md>)
-- [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>)
+- [warm_start_reward_and_sigma_2026-05-11.png]((figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png))
 
 ## 11. How to verify the analysis
 
 1. Re-open the direct notebooks and confirm the current phase configuration values.
 2. Inspect the saved episode tables and reproduce the phase-average reward, fallback count, and RMSE values.
-3. Open [warm_start_reward_and_sigma_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/warm_start_reward_and_sigma_2026-05-11.png>) and confirm that full RL begins after the exploration schedule has already decayed substantially.
+3. Open [warm_start_reward_and_sigma_2026-05-11.png]((figures/root_migrated/warm_start_reward_and_sigma_2026-05-11.png)) and confirm that full RL begins after the exploration schedule has already decayed substantially.
 4. If you implement experiment A, compare:
    - warmup reward,
    - BC-phase reward,

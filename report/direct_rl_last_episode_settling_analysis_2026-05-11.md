@@ -70,13 +70,13 @@ So `rho_lyap = 0.99` is a major part of the story, but not the only part.
 
 The figure below compares final-episode tail-settling error for output 2 across all four cases, for pretrained and cold-start, under `rho_lyap = 0.98` versus `rho_lyap = 0.99`.
 
-![Final-episode settling comparison for rho](../last_episode_settling_rho99_compare_2026-05-11.png)
+![Final-episode settling comparison for rho](figures/root_migrated/last_episode_settling_rho99_compare_2026-05-11.png)
 
 Figure 1. Final-episode tail mean absolute error to raw setpoint for output 2. Lower is better.
 
 The next figure compares the actual bounded-hard final-episode output trajectories against the raw setpoint for both studies.
 
-![Bounded-hard final-episode output tracking](../last_episode_output_tracking_rho99_compare_2026-05-11.png)
+![Bounded-hard final-episode output tracking](figures/root_migrated/last_episode_output_tracking_rho99_compare_2026-05-11.png)
 
 Figure 2. Bounded-hard final-episode output tracking for `rho_lyap = 0.98` versus `rho_lyap = 0.99`.
 
@@ -205,7 +205,7 @@ That means the chain is:
 
 So the controller is not failing to settle. It is settling to the wrong place because the target regularization is too strong.
 
-![Pretrained anchor bias tracking](../pretrained_anchor_bias_tracking_2026-05-12.png)
+![Pretrained anchor bias tracking](figures/root_migrated/pretrained_anchor_bias_tracking_2026-05-12.png)
 
 Figure 3. Latest pretrained anchored runs: output 2, raw setpoint, and selected target. Higher anchor weights reduce jitter but pull the selected target away from `y_sp`.
 
@@ -334,9 +334,9 @@ The best next targeted experiment is:
 ## Files changed
 
 - [report/direct_rl_last_episode_settling_analysis_2026-05-11.md](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/report/direct_rl_last_episode_settling_analysis_2026-05-11.md>)
-- [last_episode_settling_rho99_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_settling_rho99_compare_2026-05-11.png>)
-- [last_episode_output_tracking_rho99_compare_2026-05-11.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/last_episode_output_tracking_rho99_compare_2026-05-11.png>)
-- [pretrained_anchor_bias_tracking_2026-05-12.png](</c:/Users/HAMEDI/OneDrive - McMaster University/PythonProjects/Lyapunov_polymer/pretrained_anchor_bias_tracking_2026-05-12.png>)
+- [last_episode_settling_rho99_compare_2026-05-11.png]((figures/root_migrated/last_episode_settling_rho99_compare_2026-05-11.png))
+- [last_episode_output_tracking_rho99_compare_2026-05-11.png]((figures/root_migrated/last_episode_output_tracking_rho99_compare_2026-05-11.png))
+- [pretrained_anchor_bias_tracking_2026-05-12.png]((figures/root_migrated/pretrained_anchor_bias_tracking_2026-05-12.png))
 
 ## Bottom line
 
