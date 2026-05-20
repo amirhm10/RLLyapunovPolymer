@@ -117,9 +117,9 @@ training_phase_config = {
     "warmup_buffer_only_episodes": WARMUP_EPISODES,
     "behavior_clone_teacher_episodes": BC_TEACHER_EPISODES,
     "bc_actor_updates_per_step": 4,
-    "bc_exploration_std": 0.0,
+    "bc_exploration_std": 0.2,
     "full_rl_exploration_std_start": 0.2,
-    "full_rl_exploration_std_end": 0.0,
+    "full_rl_exploration_std_end": 0.1,
     "full_rl_exploration_decay_mode": "linear",
     "bc_teacher_policy": "direct_lyapunov_mpc",
     "bc_behavior_source": "policy_with_lmpc_teacher_demo",
@@ -127,7 +127,7 @@ training_phase_config = {
     "handoff_blend": "linear",
     "warmup_behavior_source": "direct_lyapunov_mpc",
     "warmup_behavior_noise": "none",
-    "bc_behavior_noise": "none",
+    "bc_behavior_noise": "gaussian",
     "full_rl_behavior_noise": "gaussian",
 }
 
