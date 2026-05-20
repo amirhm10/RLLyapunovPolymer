@@ -181,7 +181,7 @@ ACTOR_LR = 5e-5
 CRITIC_LR = 5e-4
 SMOOTHING_STD = 0.01
 NOISE_CLIP = 0.01
-GAMMA = 0.99
+GAMMA = 0.995
 TAU = 0.005
 MAX_ACTION = 1
 POLICY_DELAY = 2
@@ -218,8 +218,8 @@ reward_config, reward_fn = make_reward_fn_relative_QR(
     fallback_event_penalty=fallback_event_penalty,
     R_fallback_diag=Rdu_diag,
     maintenance_band_scale=0.5,
-    maintenance_move_weight=0.2,
-    jitter_weight=0.05,
+    maintenance_move_weight=0.0,
+    jitter_weight=0.0,
     dwell_bonus=0.0,
 )
 

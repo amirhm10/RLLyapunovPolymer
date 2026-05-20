@@ -200,7 +200,7 @@ $$
 r_k=r_{\rm base}-J_{\rm fb}-J_{\rm maint}-J_{\rm jitter}+B_{\rm dwell}.
 $$
 
-### Current Parameters
+### Parameters Used In This Analyzed Run
 
 | Parameter | Current value | Role |
 | --- | ---: | --- |
@@ -218,9 +218,9 @@ $$
 | `maintenance_move_weight` | `0.1` | Move suppression inside maintenance band |
 | `jitter_weight` | `0.02` | Output jitter penalty |
 
-### Recommended Next Reward Setup
+### Implemented Next-Run Reward Setup
 
-The next reward should make fallback events more visible and make temperature offset more expensive near steady state. I would change only a few knobs first so the next experiment is interpretable:
+The next reward makes fallback events more visible and makes temperature offset more expensive near steady state. The implemented diagnostic setup also removes maintenance and jitter penalties while exploration remains intentionally active:
 
 | Parameter | Current | Proposed | Reason |
 | --- | ---: | ---: | --- |
@@ -230,10 +230,11 @@ The next reward should make fallback events more visible and make temperature of
 | `beta` | `2.0` | `1.0` | Reduce the chance that bonus hides small steady offset |
 | `gamma_fallback` | `2.0` | `3.0` | Increase correction-gap cost |
 | `fallback_event_penalty` | `0.5` | `2.0` | Make frequent small fallbacks visible to the average reward |
-| `maintenance_move_weight` | `0.1` | `0.2` | Discourage chattering once close to setpoint |
-| `jitter_weight` | `0.02` | `0.05` | Penalize oscillatory output behavior more clearly |
+| `maintenance_move_weight` | `0.1` | `0.0` | Disable near-setpoint move penalty during high-exploration diagnosis |
+| `jitter_weight` | `0.02` | `0.0` | Avoid penalizing exploration-induced output movement during this run |
+| TD3 `GAMMA` | `0.99` | `0.995` | Slightly increase long-horizon credit assignment |
 
-This is a stricter reward, so it should be tested with the new nonzero exploration floors already added to both RL scripts. If fallback count decreases but tracking worsens, the event penalty is too high. If fallback count stays high, the actor still cannot find gate-compatible actions and the issue is policy adaptation rather than reward scale.
+This setup is stricter on fallback and in-band offset, but deliberately disables maintenance and jitter while exploration is high. If fallback count decreases but tracking worsens, the event penalty is too high. If fallback count stays high, the actor still cannot find gate-compatible actions and the issue is policy adaptation rather than reward scale. The Lyapunov contraction factor remains $\rho=0.99$; only the TD3 discount factor is changed to `0.995`.
 
 ### Why Not Only Increase Fallback Penalty
 
