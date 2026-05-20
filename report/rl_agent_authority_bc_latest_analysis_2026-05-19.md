@@ -825,3 +825,202 @@ Increasing only `fallback_event_penalty` would train the actor to avoid gate act
 - The new BC formulation is working as intended because the actor remains the candidate policy and the safety gate records meaningful authority/fallback differences between cold and pretrained agents.
 - Direct LMPC is slower than the RL safety-gate cases and has higher full-horizon raw-setpoint RMSE here, mostly because its direct target construction allows significant modified-target behavior.
 - The next useful experiment is to reduce pretrained policy mismatch rather than discard pretraining: use a short adapter BC phase, lower initial pretrained actor authority, or preload only lower layers while letting the output head adapt to the strict fallback reward.
+
+## Project History And Already-Tried Changes
+
+This final section is the project-level handoff note. It is intentionally broader than the latest run so a future reader, including ChatGPT, does not suggest ideas that have already been implemented, tested, or deliberately rejected.
+
+### Active Entrypoints And Current Scope
+
+- The active root scripts are `DirectLyapunovMPC.py`, `DirectLyapunovSafetyGateRL_ColdStart.py`, and `DirectLyapunovSafetyGateRL_Pretrained.py`.
+- Root notebooks were converted or archived. New work should edit Python scripts unless a notebook is explicitly requested.
+- Top-level result folders are now `results/directLyap/...`, `results/ColdStart/...`, and `results/Pretrain/...`.
+- The current direct/RL disturbance study uses two setpoints, `n_episodes = 200`, `set_points_len = 400`, `rho_lyap = 0.99`, and `lyap_eps = 1e-3`.
+- All three active scripts keep `u_prev_penalty_weight = 0.1`, `xs_prev_penalty_weight = 0.1`, and `case_variants = ("mixed",)`.
+- The active direct/RL direct-tracking calls use `use_target_output_for_tracking = False`, so the online tracking objective follows raw $y_{\rm sp}$ while the direct target still supplies the Lyapunov center.
+
+The active direct LMPC script keeps this direct-study reward/target shaping configuration:
+
+```text
+Qy_diag = [5.0, 1.0]
+Rdu_diag = [1.0, 1.0]
+k_rel = [0.003, 0.0003]
+band_floor_phys = [0.006, 0.07]
+gamma_out = 0.5
+gamma_in = 0.5
+gate = "geom"
+lam_in = 1.0
+bonus_kind = "exp"
+beta = 7.0
+```
+
+### Target Selector Work Already Done
+
+- A four-mode target-selector API was implemented first with `current_exact_fallback_frozen_d`, `free_disturbance_prior`, `compromised_reference`, and `single_stage_robust_sstp`.
+- That four-mode surface was later narrowed because it added complexity without solving the centering problem. The active standard selector is now the single refined Step A selector.
+- The old selector-mode strings are kept only as compatibility inputs. They resolve to the refined Step A implementation rather than representing active competing methods.
+- The refined Step A selector fixes $d_s=\hat d_k$ and solves for a steady package using output tracking, input anchoring, previous-input smoothing, previous-state smoothing, and a weak current-state anchor.
+- The refined selector objective is conceptually:
+
+$$
+\begin{aligned}
+J_{\rm sel}={}&
+\|r_s-y_{\rm sp}\|_{Q_r}^2
++\alpha_u\|u_s-u_{k-1}\|_{R_u}^2 \\
+&+\alpha_{\Delta u}\|u_s-u_{s,k-1}\|_{R_{\Delta u}}^2
++\alpha_{\Delta x}\|x_s-x_{s,k-1}\|_{Q_{\Delta x}}^2
++\alpha_x\|x_s-\hat x_k\|_{Q_x}^2 .
+\end{aligned}
+$$
+
+- The refined Step A defaults already tried include `alpha_u_ref = 0.5`, `alpha_du_sel = 0.5`, `alpha_dx_sel = 0.05`, `alpha_x_ref = 0.01`, `x_weight_base = "CtQC"`, and `use_output_bounds_in_selector = True`.
+- Selector warm-start was added and the runners pass previous target values into CVXPY when enabled.
+- Effective-target backup was added: if the current selector fails, the safety path can use the last valid target instead of treating the target as unavailable.
+- Debug exports already include selector objective terms, target residuals, current/effective target distinction, whether the effective target was reused, and target margins.
+
+### Safety Filter And First-Step Contraction Work Already Done
+
+- Lyapunov tolerance semantics were standardized everywhere as:
+
+$$
+V(x_{k+1}) \le \rho V(x_k)+\epsilon .
+$$
+
+- The hard safety-filter acceptance path was clarified. Slack-enabled solves can still be rejected by the hard post-check, and debug data separates attempted, solved, and hard-accepted stages.
+- Trust-region enablement and trust-region slack were separated as different knobs.
+- A first-step-contraction upstream-MPC experiment was built around the baseline offset-free MPC objective with one hard first-step Lyapunov inequality.
+- That upstream first-step experiment intentionally has no QCQP projection stage. If the constrained MPC solve fails, it falls back to ordinary offset-free MPC and logs whether the fallback would have satisfied contraction.
+- Earlier first-step/bounded-frozen target work added bounded steady-state analysis, `u_prev` anchoring, and `x_s` smoothing. Those ideas informed the current direct bounded target variants.
+
+### Direct Output-Disturbance Lyapunov MPC Work Already Done
+
+- A direct frozen-output-disturbance target path was implemented in `Lyapunov/frozen_output_disturbance_target.py`.
+- The direct target freezes $d_s=\hat d_k$ and solves for $x_s,u_s$ using the output-disturbance model.
+- Both unbounded and bounded direct targets were implemented. Bounded targets can use regularization toward $u_{k-1}$ and the previous $x_s$.
+- The direct Lyapunov MPC path was implemented in `Lyapunov/direct_lyapunov_mpc.py` with one target solve and one direct Lyapunov MPC solve per online step.
+- Hard and soft Lyapunov modes were implemented. Soft mode uses nonnegative Lyapunov slack with a large slack penalty, but the current active disturbance scripts use bounded hard mixed cases.
+- Four-method and expanded scenario studies were already tried: unbounded hard, bounded hard, unbounded soft, bounded soft, bounded hard with `u_prev`, bounded hard with `x_s` smoothing, and mixed anchoring/smoothing.
+- The direct objective was deliberately simplified. Extra steady-input objective terms and terminal objective terms were removed from the direct path. The active direct objective is output tracking plus input-move penalty, with Lyapunov enforced through the contraction constraint and related checks.
+- The direct setpoint schedule length has been changed during the project. The current active setting is back to `set_points_len = 400`.
+- Target-output tracking was tried in the RL direct-gate path. It produced poor training behavior, so the active RL direct tracking was reverted to raw $y_{\rm sp}$ with `direct_tracking_use_target_output = False`.
+
+### Target-Quality, Lexicographic, And Guard Ideas Already Implemented
+
+- Target-quality diagnostics and bypass fields were added to the direct path.
+- Lexicographic bounded target support was implemented as an option for bounded steady-state target solves.
+- Disturbance-model routing was added for output-disturbance and generic augmented selector paths.
+- Direct-gate performance-guard hooks were added in the RL runner.
+- Residual-RL hooks were added so an actor can represent a bounded residual around a baseline policy.
+- These guard/residual/lexicographic tools are available, but the active scripts keep the current mixed bounded direct setup unless those options are explicitly turned on.
+
+### RL Safety-Gate Work Already Done
+
+- The direct RL safety gate uses `projection_backend = "direct_accept_or_fallback"`.
+- The RL actor proposes a candidate action. The gate accepts it only if it satisfies the direct Lyapunov contraction check; otherwise the direct LMPC fallback is executed.
+- Replay stores the executed safe action, not an unsafe raw proposal.
+- The direct LMPC fallback/teacher action is computed with the same direct output-disturbance target family as the direct no-RL script.
+- MPC-only cases execute offset-free MPC and keep actual fallback zero. Their fallback-count plot uses diagnostic would-be gate activation, not actual fallback zero, unless explicitly labeled actual fallback.
+- Phase-aware warm-start, teacher BC, parameter-noise exploration, Gaussian exploration, and executed-action BC were all tried earlier.
+- The current design is agent-authority BC: the actor proposes the candidate during BC, the safety gate decides the executed action, and direct LMPC is stored only as the imitation target for actor BC loss.
+- The current BC setup uses `WARMUP_EPISODES = 0`, `BC_TEACHER_EPISODES = 20`, `bc_actor_updates_per_step = 4`, and a 5-episode linear handoff after BC.
+- Recommending direct teacher execution during BC would undo the current design. The current hypothesis is that the actor needs authority from the beginning, protected by the gate.
+
+### Reward Changes Already Tried
+
+The reward function now supports a fixed fallback event cost:
+
+$$
+J_{\rm fb}=\gamma_{\rm fb}\sum_j R_{{\rm fb},j}g_j^2+c_{\rm fb}I_{\rm fb}.
+$$
+
+The latest analyzed run in this report used the earlier strict-offset candidate:
+
+```text
+Qy_diag = [8.0, 4.0]
+Rdu_diag = [1.0, 1.0]
+k_rel = [0.0015, 0.00015]
+band_floor_phys = [0.003, 0.035]
+gamma_in = 2.0
+lam_in = 2.0
+beta = 2.0
+gamma_fallback = 2.0
+fallback_event_penalty = 0.5
+maintenance_move_weight = 0.1
+jitter_weight = 0.02
+```
+
+That run showed the fixed event penalty was too small after averaging over time: only about `0.0067` reward units per step for cold RL and `0.0143` for pretrained RL.
+
+The current next-run RL reward defaults already implement the stricter follow-up:
+
+```text
+Qy_diag = [8.0, 6.0]
+Rdu_diag = [1.0, 1.0]
+k_rel = [0.0015, 0.00015]
+band_floor_phys = [0.003, 0.035]
+tau_frac = 0.5
+gamma_out = 1.0
+gamma_in = 3.0
+gate = "prod"
+lam_in = 3.0
+bonus_kind = "quadratic"
+beta = 1.0
+gamma_fallback = 3.0
+fallback_event_penalty = 2.0
+maintenance_band_scale = 0.5
+maintenance_move_weight = 0.0
+jitter_weight = 0.0
+dwell_bonus = 0.0
+```
+
+Do not suggest only "increase fallback penalty from 0.5" as a new idea. That has already been implemented through a larger correction-gap multiplier and a larger fixed event cost. The useful next check is whether the new `gamma_fallback = 3.0` and `fallback_event_penalty = 2.0` reduce activation without damaging tracking.
+
+### Exploration, Policy Noise, And Discount Already Changed
+
+- Cold start now uses BC exploration `0.2`, full-RL exploration decaying linearly from `0.2` to `0.1`, and TD3 target policy smoothing noise `0.1`.
+- Pretrained now uses BC exploration `0.02`, full-RL exploration decaying linearly from `0.02` to `0.01`, and TD3 target policy smoothing noise `0.01`.
+- BC exploration is active through `bc_behavior_noise = "gaussian"`. It does not use a smaller special BC noise floor.
+- The TD3 discount factor is now `GAMMA = 0.995`. This is different from the Lyapunov contraction factor, which remains `rho_lyap = 0.99`.
+- Maintenance and jitter weights are currently zero on purpose because exploration is active. Reintroducing them should be a later low-exploration polishing test, not the next diagnostic run.
+
+### Lyapunov Epsilon Interpretation
+
+The value `lyap_eps = 1e-3` has already been tried and improved the runs. It does not make the controller MPC-only by itself. The safety gate still evaluates:
+
+$$
+V(x_{k+1}) \le \rho V(x_k) + \epsilon,
+$$
+
+with $\rho = 0.99$ and $\epsilon = 10^{-3}$. A larger $\epsilon$ relaxes strict contraction, especially near small $V(x_k)$, but it does not remove the gate, fallback path, direct LMPC teacher, or activation diagnostics. If future results look too MPC-like, the right check is activation, fallback, contraction-margin, and correction-gap logs, not epsilon alone.
+
+### Diagnostics And Report Infrastructure Already Added
+
+- Wall-clock timing is saved for total seconds, seconds per episode, seconds per control step, and steps per second.
+- Activation/contraction diagnostics include raw per-episode counts and a moving 10-episode average.
+- Result bundles include training-phase metadata, reward parameters, timing fields, and trained-agent paths when saving is enabled.
+- Safety/debug exports include target diagnostics, correction modes, fallback counts, reward components, episode tables, step tables, NPZ arrays, and comparison plots.
+- The report has both Markdown and a self-contained HTML export with embedded figures for sharing.
+
+### Results Already Observed
+
+- In the latest analyzed run, pretrained RL had better full-horizon reward and RMSE than cold-start RL.
+- Cold-start RL had better safety-gate authority: fewer fallback activations, smaller correction gaps, and smaller fallback penalty.
+- Cold-start RL also had the smaller final-tail temperature offset among the two RL agents.
+- Direct LMPC had good final-tail offset, but worse full-horizon raw-setpoint RMSE and slower runtime than safety-gated RL.
+- The RL safety-gate cases were about `1.8x` faster than direct LMPC in seconds per control step in the latest timed run.
+- Direct MPC-only was much faster, but it is a diagnostic baseline, not the same controller as direct LMPC or safety-gated RL.
+- Earlier direct-target diagnosis showed a key failure mode: the Lyapunov controller can contract around a poor or modified admissible target while raw-setpoint tracking looks worse than MPC-only.
+
+### Do Not Re-Suggest Without New Evidence
+
+- Do not re-suggest the old four-mode selector as the next fix; it was already implemented and then collapsed to refined Step A.
+- Do not re-suggest selector warm-start, last-valid target backup, or logging current versus effective targets; those are already implemented.
+- Do not re-suggest a generic first-step-contraction upstream MPC as a new architecture; it was already built without QCQP projection.
+- Do not re-suggest adding `u_prev` or `x_s` target regularization as a new concept; both have already been implemented and the current active mixed case uses both at weight `0.1`.
+- Do not re-suggest adding target-quality diagnostics, lexicographic bounded targets, residual-RL hooks, or a performance guard as if they are missing; these hooks exist and only need to be deliberately enabled if selected.
+- Do not re-suggest converting active notebooks to scripts, cleaning root entrypoints, saving trained agents, or adding wall-clock timing; those are already done.
+- Do not re-suggest plotting MPC-only fallback as zero; the report now uses would-be gate activation for that diagnostic.
+- Do not re-suggest making BC execute the LMPC teacher directly; the current design intentionally keeps the RL actor in authority.
+- Do not re-suggest pretrained exploration `0.02 -> 0.01` or cold-start exploration `0.2 -> 0.1`; these are already active, including during BC.
+- Do not re-suggest maintenance or jitter penalties during the current high-exploration diagnostic run; they are intentionally disabled for now.
+- Do not treat `lyap_eps = 1e-3` as proof that the method is MPC-only. It is a relaxed Lyapunov gate and should be judged together with activation, fallback, and correction-gap logs.
