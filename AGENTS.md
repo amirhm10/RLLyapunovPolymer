@@ -137,6 +137,7 @@ Most control bugs here come from mixing those representations.
 - For multi-line equations, use readable display math such as `aligned` blocks. Keep notation compact and define symbols in prose or bullets around the equation. Avoid very wide equations that force horizontal scrolling in GitHub or IDE previews.
 - Keep code/config examples in fenced blocks, but keep mathematical method statements, optimization problems, observer equations, constraints, and reward definitions as rendered math.
 - When a report uses figures, embed them inline in the Markdown report with relative image paths near the relevant discussion. Do not leave figures only as bare file links at the end.
+- For MPC-only cases in safety-gate RL reports, do not plot fallback count as only zero unless the plot is explicitly labeled as actual fallback. Use the diagnostic Lyapunov contraction failure or `diagnostic_unsafe_count` as the MPC-only "would-be fallback if the gate were active" count. Keep actual fallback and would-be fallback clearly separated in labels, legends, and tables.
 - Before finishing a Markdown report, scan the rendered table shape in plain text: it should remain readable in an IDE preview and on GitHub without horizontal scrolling for the main conclusions.
 
 ## Commit And Change-Report Workflow

@@ -140,6 +140,10 @@ The pretrained MPC-only strict-band score is 0% because eta sits slightly outsid
 
 The fixed fallback event penalty is active for the RL cases, but the correction-size penalty is still the dominant part of the actual fallback cost. For MPC-only, the actual fallback count is zero by construction because the MPC action is directly executed. To make the diagnostic fair, the table and plot also show a "would-be fallback" rate: the fraction of MPC-only steps where the diagnostic candidate would not satisfy the Lyapunov contraction gate if the gate were active.
 
+The dedicated fallback-count plot below uses actual fallback counts for RL and diagnostic would-be fallback counts for MPC-only. This avoids the misleading zero fallback line for MPC-only.
+
+![Actual and would-be fallback counts](figures/2026-05-19_latest_strict_reward_rl_analysis/fallback_count_actual_vs_would_be.png)
+
 ![Reward and fallback decomposition](figures/2026-05-19_latest_strict_reward_rl_analysis/reward_fallback_decomposition.png)
 
 Safety-gate metrics:

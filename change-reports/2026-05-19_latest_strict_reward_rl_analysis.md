@@ -10,6 +10,7 @@ Added a new report analyzing the latest complete cold-start and pretrained direc
 - Generated supporting figures under `report/figures/2026-05-19_latest_strict_reward_rl_analysis/`.
 - Compared RL against matched MPC-only diagnostics for reward, RMSE, final-tail offset, fallback dependence, and input activity.
 - Updated the fallback plots and report tables to show MPC-only "would-be fallback" counts using the diagnostic Lyapunov unsafe/contraction-failure flags, since actual fallback is zero by construction for MPC-only.
+- Added a dedicated fallback-count plot named `fallback_count_actual_vs_would_be.png`.
 - Flagged that the latest runs use stricter Lyapunov settings than the earlier `eps=1e-3` discussion:
   cold start uses `rho=0.99`, `eps=1e-6`, while pretrained uses `rho=0.995`, `eps=0.0`.
 - Noted that the active local scripts had since been edited toward a matched relaxed-gate rerun with `rho=0.99` and `eps=1e-3`, so those future reruns should be analyzed separately.
