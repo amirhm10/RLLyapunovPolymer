@@ -714,6 +714,8 @@ dwell_bonus = 0.0
 TD3 GAMMA = 0.995
 ```
 
+Next experiment note: after this analyzed run, the active cold-start and pretrained RL scripts were updated to use `fallback_event_penalty = 10.0` while keeping `gamma_fallback = 3.0`. The goal is to make fallback event frequency itself more expensive, not only large correction gaps. If fallback rates stay near the latest values, this would increase the mean fixed event contribution from about `0.027` to `0.125` per step for cold RL and from about `0.068` to `0.334` per step for pretrained RL.
+
 ## Target Diagnostics
 
 The target diagnostics still point to the same unresolved issue: the direct target can be acceptable to the Lyapunov machinery while still being a poor raw-setpoint tracking center.
@@ -889,7 +891,15 @@ dwell_bonus = 0.0
 TD3 GAMMA = 0.995
 ```
 
-Do not suggest only "increase fallback penalty from 0.5" as a new idea. That has already been implemented through a larger correction-gap multiplier and a larger fixed event cost. The latest data show this penalty is now visible, especially for pretrained RL, where the mean fallback penalty is about `31.4%` of the base reward magnitude. The remaining problem is that the larger penalty did not remove gate dependence, so the next fix should focus on policy adaptation and target compatibility, not only on increasing this scalar again.
+After that analysis, the active next-run scripts were changed again to:
+
+```text
+fallback_event_penalty = 10.0
+```
+
+All other reward weights above remain unchanged for the next experiment. This isolates the effect of fixed event frequency cost from the correction-gap multiplier.
+
+Do not suggest only "increase fallback penalty from 0.5" as a new idea. That has already been implemented through a larger correction-gap multiplier and a larger fixed event cost. The latest data show this penalty is now visible, especially for pretrained RL, where the mean fallback penalty is about `31.4%` of the base reward magnitude. The next run specifically tests whether increasing the fixed event cost from `2.0` to `10.0` reduces fallback frequency without damaging raw tracking.
 
 ### Exploration, Policy Noise, And Discount Already Changed
 
