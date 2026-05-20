@@ -69,6 +69,7 @@ _SAFETY_PAPER_FILENAME_MAP = {
     "qcqp_status.png": "qcqp_status.png",
     "reward_trace.png": "reward_trace.png",
     "reward_average_summary.png": "reward_avg_sum.png",
+    "activation_contraction_counts.png": "activation_counts.png",
     "correction_modes.png": "correction_modes.png",
     "solver_status_counts.png": "solver_status_counts.png",
     "fallback_solver_status_counts.png": "fallback_solver_counts.png",
@@ -85,6 +86,7 @@ _SAFETY_COMPARISON_FILENAME_MAP = {
     "comparison_correction_modes.png": "cmp_modes.png",
     "comparison_executed_action_gap_box.png": "cmp_gap_box.png",
     "comparison_fallback_count_per_episode_box.png": "cmp_fallback_box.png",
+    "comparison_wall_clock_runtime.png": "cmp_wall_clock.png",
     "comparison_target_diagnostics.png": "cmp_target_diag.png",
 }
 
@@ -494,6 +496,14 @@ def make_safety_filter_step_records(lyap_info_storage):
             "fallback_penalty": info.get("fallback_penalty"),
             "weighted_correction_gap": info.get("weighted_correction_gap"),
             "reward_fallback_active": bool(info.get("reward_fallback_active", False)),
+            "policy_phase": info.get("policy_phase"),
+            "behavior_policy_source": info.get("behavior_policy_source"),
+            "behavior_noise_mode": info.get("behavior_noise_mode"),
+            "training_update_mode": info.get("training_update_mode"),
+            "handoff_active": bool(info.get("handoff_active", False)),
+            "handoff_alpha": info.get("handoff_alpha"),
+            "bc_teacher_gap_inf": info.get("bc_teacher_gap_inf"),
+            "handoff_candidate_gap_inf": info.get("handoff_candidate_gap_inf"),
             "candidate_bounds_ok": info.get("candidate_bounds_ok"),
             "candidate_move_ok": info.get("candidate_move_ok"),
             "candidate_lyap_ok": info.get("candidate_lyap_ok"),
@@ -632,6 +642,11 @@ def make_safety_filter_step_records(lyap_info_storage):
             "u_prev": json.dumps(_jsonable(info.get("u_prev"))),
             "u_s": json.dumps(_jsonable(info.get("u_s"))),
             "u_fallback_mpc": json.dumps(_jsonable(info.get("u_fallback_mpc"))),
+            "behavior_action_pre_filter": json.dumps(_jsonable(info.get("behavior_action_pre_filter"))),
+            "teacher_action_pre_filter": json.dumps(_jsonable(info.get("teacher_action_pre_filter"))),
+            "teacher_u_dev_pre_filter": json.dumps(_jsonable(info.get("teacher_u_dev_pre_filter"))),
+            "policy_action_pre_handoff": json.dumps(_jsonable(info.get("policy_action_pre_handoff"))),
+            "policy_u_dev_pre_handoff": json.dumps(_jsonable(info.get("policy_u_dev_pre_handoff"))),
             "target_u_ref": json.dumps(_jsonable(info.get("target_u_ref"))),
             "target_u_ref_weight": json.dumps(_jsonable(info.get("target_u_ref_weight"))),
             "target_x_ref": json.dumps(_jsonable(info.get("target_x_ref"))),
@@ -765,7 +780,26 @@ def summarize_safety_filter_bundle(bundle):
         "target_xs_x_ref_inf_max": _safe_nanmax(bundle.get("target_xs_x_ref_inf", [])),
         "executed_action_gap_inf_mean": _safe_nanmean(bundle.get("executed_action_gap_inf", [])),
         "executed_action_gap_inf_max": _safe_nanmax(bundle.get("executed_action_gap_inf", [])),
+        "handoff_active_rate": _safe_nanmean(bundle.get("handoff_active_flags", [])),
+        "bc_teacher_gap_inf_mean": _safe_nanmean(bundle.get("bc_teacher_gap_inf", [])),
+        "bc_teacher_gap_inf_max": _safe_nanmax(bundle.get("bc_teacher_gap_inf", [])),
     }
+    timing = {}
+    if isinstance(bundle.get("extra"), dict) and isinstance(bundle["extra"].get("timing"), dict):
+        timing.update(bundle["extra"]["timing"])
+    if isinstance(bundle.get("config"), dict):
+        for key in (
+            "wall_clock_seconds",
+            "wall_clock_seconds_per_episode",
+            "wall_clock_seconds_per_step",
+            "wall_clock_steps_per_second",
+            "wall_clock_n_steps",
+            "wall_clock_n_episodes",
+        ):
+            if key in bundle["config"]:
+                timing[key] = bundle["config"][key]
+    for key, value in timing.items():
+        summary[key] = value
     summary["fallback_rate"] = None if summary["n_steps"] <= 0 else float(
         (summary["n_fallback_mpc_verified"] + summary["n_fallback_mpc_unverified"]) / float(summary["n_steps"])
     )
@@ -846,6 +880,11 @@ def build_safety_filter_run_bundle(
         "u_safe_dev_store": u_safe_dev_store.copy(),
         "u_cand_dev_store": _stack_vectors(lyap_info_storage, "u_cand", n_u),
         "u_prev_dev_store": _stack_vectors(lyap_info_storage, "u_prev", n_u),
+        "behavior_action_pre_filter_store": _stack_vectors(lyap_info_storage, "behavior_action_pre_filter", n_u),
+        "teacher_action_pre_filter_store": _stack_vectors(lyap_info_storage, "teacher_action_pre_filter", n_u),
+        "teacher_u_dev_pre_filter_store": _stack_vectors(lyap_info_storage, "teacher_u_dev_pre_filter", n_u),
+        "policy_action_pre_handoff_store": _stack_vectors(lyap_info_storage, "policy_action_pre_handoff", n_u),
+        "policy_u_dev_pre_handoff_store": _stack_vectors(lyap_info_storage, "policy_u_dev_pre_handoff", n_u),
         "u_target_dev_store": _stack_vectors(lyap_info_storage, "u_s", n_u),
         "u_fallback_mpc_dev_store": _stack_vectors(lyap_info_storage, "u_fallback_mpc", n_u),
         "x_target_store": _stack_vectors(lyap_info_storage, "x_s", xhatdhat.shape[0] - n_y),
@@ -1160,6 +1199,16 @@ def build_safety_filter_run_bundle(
             ],
             dtype=float,
         ),
+        "handoff_active_flags": np.array(
+            [1.0 if bool(info.get("handoff_active", False)) else 0.0 for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "handoff_alpha": np.array([info.get("handoff_alpha", np.nan) for info in lyap_info_storage], dtype=float),
+        "bc_teacher_gap_inf": np.array([info.get("bc_teacher_gap_inf", np.nan) for info in lyap_info_storage], dtype=float),
+        "handoff_candidate_gap_inf": np.array(
+            [info.get("handoff_candidate_gap_inf", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
         "diagnostic_safety_active_flags": np.maximum(
             np.array([1.0 if bool(info.get("diagnostic_unsafe", False)) else 0.0 for info in lyap_info_storage], dtype=float),
             np.array([1.0 if bool(info.get("diagnostic_unstable", False)) else 0.0 for info in lyap_info_storage], dtype=float),
@@ -1463,6 +1512,10 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
         "episode_reward_mean": _safe_nanmean([row.get("reward_mean") for row in episode_records]),
         "episode_fallback_mean": _safe_nanmean([row.get("fallback_count") for row in episode_records]),
         "episode_gap_inf_max": _safe_nanmax([row.get("max_executed_action_gap_inf") for row in episode_records]),
+        "wall_clock_seconds": summary.get("wall_clock_seconds"),
+        "wall_clock_seconds_per_episode": summary.get("wall_clock_seconds_per_episode"),
+        "wall_clock_seconds_per_step": summary.get("wall_clock_seconds_per_step"),
+        "wall_clock_steps_per_second": summary.get("wall_clock_steps_per_second"),
         "debug_dir": None if debug_dir is None else str(debug_dir),
     }
     for idx, value in enumerate(rmse):
@@ -1495,6 +1548,11 @@ def _safety_npz_arrays(bundle, export_profile="debug"):
         "ha": bundle["ha"],
         "u_safe_dev_store": bundle["u_safe_dev_store"],
         "u_cand_dev_store": bundle["u_cand_dev_store"],
+        "behavior_action_pre_filter_store": bundle["behavior_action_pre_filter_store"],
+        "teacher_action_pre_filter_store": bundle["teacher_action_pre_filter_store"],
+        "teacher_u_dev_pre_filter_store": bundle["teacher_u_dev_pre_filter_store"],
+        "policy_action_pre_handoff_store": bundle["policy_action_pre_handoff_store"],
+        "policy_u_dev_pre_handoff_store": bundle["policy_u_dev_pre_handoff_store"],
         "u_target_dev_store": bundle["u_target_dev_store"],
         "u_fallback_mpc_dev_store": bundle["u_fallback_mpc_dev_store"],
         "y_target_store": bundle["y_target_store"],
@@ -1518,6 +1576,10 @@ def _safety_npz_arrays(bundle, export_profile="debug"):
         "diagnostic_unstable_flags": bundle["diagnostic_unstable_flags"],
         "diagnostic_safety_active_flags": bundle["diagnostic_safety_active_flags"],
         "actual_intervention_flags": bundle["actual_intervention_flags"],
+        "handoff_active_flags": bundle["handoff_active_flags"],
+        "handoff_alpha": bundle["handoff_alpha"],
+        "bc_teacher_gap_inf": bundle["bc_teacher_gap_inf"],
+        "handoff_candidate_gap_inf": bundle["handoff_candidate_gap_inf"],
         "fallback_verified_flags": bundle["fallback_verified_flags"],
         "reward_fallback_active_flags": bundle["reward_fallback_active_flags"],
         "projection_active_flags": bundle["projection_active_flags"],
@@ -1627,6 +1689,19 @@ def _record_series(records, key):
             except Exception:
                 out.append(np.nan)
     return np.asarray(out, dtype=float)
+
+
+def _episode_fallback_or_would_activate_counts(case_name, bundle):
+    records = make_safety_filter_episode_records(bundle)
+    config = bundle.get("config", {}) if isinstance(bundle.get("config"), dict) else {}
+    is_mpc_only = (
+        str(case_name).strip().lower() == "mpc_only"
+        or str(config.get("controller_mode", "")).strip().lower() == "mpc_only"
+        or str(config.get("projection_backend", "")).strip().lower() in {"mpc_only", "mpc_only_diagnostic"}
+    )
+    key = "diagnostic_unsafe_count" if is_mpc_only else "fallback_count"
+    values = np.asarray([row.get(key, np.nan) for row in records], dtype=float)
+    return values[np.isfinite(values)]
 
 
 def _save_safety_comparison_bar(records, keys, labels, ylabel, title, path):
@@ -2684,6 +2759,66 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
             fig.savefig(plot_path("reward_average_summary.png"), dpi=300, bbox_inches="tight")
             plt.close(fig)
 
+            def _episode_sum(flags):
+                flags = np.asarray(flags, dtype=float).reshape(-1)
+                return np.asarray(
+                    [
+                        np.nansum(flags[idx * episode_len : min((idx + 1) * episode_len, flags.size)] > 0.5)
+                        for idx in range(n_episodes)
+                    ],
+                    dtype=float,
+                )
+
+            actual_safety_count = _episode_sum(safety_active_flags)
+            would_activate_count = _episode_sum(diagnostic_safety_active_flags)
+            fallback_count = _episode_sum(fallback_mpc_active)
+            contraction_failure_flags = np.asarray(candidate_first_step_lyap_ok_flags, dtype=float)
+            contraction_failure_flags = np.where(
+                np.isfinite(contraction_failure_flags),
+                contraction_failure_flags < 0.5,
+                diagnostic_safety_active_flags > 0.5,
+            )
+            contraction_failure_count = _episode_sum(contraction_failure_flags)
+
+            fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+            axes[0].plot(ep_time + 1, would_activate_count, linewidth=1.8, color="tab:orange", label="would activate")
+            axes[0].plot(
+                ep_time + 1,
+                _moving_average(would_activate_count, 10),
+                linewidth=2.2,
+                linestyle="--",
+                color="tab:orange",
+                label="would activate, 10-episode avg",
+            )
+            axes[0].plot(ep_time + 1, actual_safety_count, linewidth=1.8, color="tab:red", label="actual safety active")
+            axes[0].plot(
+                ep_time + 1,
+                _moving_average(actual_safety_count, 10),
+                linewidth=2.2,
+                linestyle="--",
+                color="tab:red",
+                label="actual safety, 10-episode avg",
+            )
+            axes[0].set_ylabel("count / episode")
+            axes[1].plot(ep_time + 1, contraction_failure_count, linewidth=1.8, color="tab:blue", label="contraction not satisfied")
+            axes[1].plot(
+                ep_time + 1,
+                _moving_average(contraction_failure_count, 10),
+                linewidth=2.2,
+                linestyle="--",
+                color="tab:blue",
+                label="contraction failures, 10-episode avg",
+            )
+            axes[1].plot(ep_time + 1, fallback_count, linewidth=1.6, linestyle=":", color="tab:purple", label="actual fallback")
+            axes[1].set_ylabel("count / episode")
+            axes[1].set_xlabel("episode")
+            for ax in axes:
+                ax.grid(True, linestyle="--", alpha=0.35)
+                ax.legend(loc="best")
+            fig.tight_layout()
+            fig.savefig(plot_path("activation_contraction_counts.png"), dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
             def _episode_plot_name(chosen_episode, block_start=None, block_end=None, *, last_episode=False):
                 if last_episode:
                     if use_short_names:
@@ -3170,24 +3305,24 @@ def save_safety_filter_comparison_artifacts(
             plot_paths["executed_action_gap_box"] = gap_plot
         fallback_episode_plot = _save_safety_distribution_boxplot(
             [
-                (
-                    case_name,
-                    np.asarray(
-                        [row.get("fallback_count", np.nan) for row in make_safety_filter_episode_records(bundle)],
-                        dtype=float,
-                    )[np.isfinite(np.asarray(
-                        [row.get("fallback_count", np.nan) for row in make_safety_filter_episode_records(bundle)],
-                        dtype=float,
-                    ))],
-                )
+                (case_name, _episode_fallback_or_would_activate_counts(case_name, bundle))
                 for case_name, bundle in bundles_by_case.items()
             ],
-            "fallback count per episode",
-            "Fallback Count Per Episode",
+            "fallback count per episode (MPC-only uses would-be gate activations)",
+            "Fallback Count Per Episode And MPC-only Would-be Activations",
             _comparison_plot_path(plot_dir, "comparison_fallback_count_per_episode_box.png"),
         )
         if fallback_episode_plot is not None:
             plot_paths["fallback_count_per_episode_box"] = fallback_episode_plot
+        if records and any(record.get("wall_clock_seconds_per_step") is not None for record in records):
+            plot_paths["wall_clock"] = _save_safety_comparison_bar(
+                records,
+                ["wall_clock_seconds", "wall_clock_seconds_per_step"],
+                ["total seconds", "seconds per step"],
+                "wall-clock time",
+                "Wall-clock Runtime Comparison",
+                _comparison_plot_path(plot_dir, "comparison_wall_clock_runtime.png"),
+            )
         plot_paths["target_diagnostics"] = _save_safety_comparison_bar(
             records,
             ["target_cond_M_max", "target_residual_total_norm_max"],

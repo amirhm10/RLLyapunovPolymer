@@ -10,6 +10,7 @@
 # %%
 from utils.path_helpers import repo_path
 import os
+import time
 from datetime import datetime
 from pprint import pprint
 
@@ -49,7 +50,7 @@ from utils.td3_helpers import load_and_prepare_system_data
 predict_h = 9
 cont_h = 3
 rho_lyap = 0.99
-lyap_eps = 1e-6
+lyap_eps = 1e-3
 lyap_tol = 1e-10
 slack_penalty = 1e6
 plant_mode = "disturb"
@@ -121,7 +122,9 @@ training_phase_config = {
     "full_rl_exploration_std_end": 0.0,
     "full_rl_exploration_decay_mode": "linear",
     "bc_teacher_policy": "direct_lyapunov_mpc",
-    "bc_behavior_source": "direct_lyapunov_mpc",
+    "bc_behavior_source": "policy_with_lmpc_teacher_demo",
+    "handoff_episodes": 5,
+    "handoff_blend": "linear",
     "warmup_behavior_source": "direct_lyapunov_mpc",
     "warmup_behavior_noise": "none",
     "bc_behavior_noise": "none",
@@ -305,7 +308,7 @@ def make_td3_agent():
     )
 
 # %%
-SAVE_TRAINED_AGENT = False
+SAVE_TRAINED_AGENT = True
 
 study_name = "rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start"
 study_root = os.path.join(os.fspath(repo_path()), "results", study_name, study_timestamp)
@@ -361,6 +364,7 @@ def run_case(case_spec):
         "initial_agent_path": None,
     }
 
+    case_timer_start = time.perf_counter()
     results_case = run_rl_train(
         system=cstr_case,
         y_sp_scenario=y_sp_scenario,
@@ -402,6 +406,25 @@ def run_case(case_spec):
         disturbance_after_step=disturbance_after_step,
         training_phase_config=case_training_phase_config,
     )
+    case_wall_clock_seconds = float(time.perf_counter() - case_timer_start)
+    case_steps = int(results_case[5])
+    case_episode_len = int(results_case[6])
+    case_episodes = int(np.ceil(case_steps / float(case_episode_len))) if case_episode_len > 0 else 0
+    timing_metadata = {
+        "wall_clock_seconds": case_wall_clock_seconds,
+        "wall_clock_seconds_per_episode": (
+            None if case_episodes <= 0 else case_wall_clock_seconds / float(case_episodes)
+        ),
+        "wall_clock_seconds_per_step": (
+            None if case_steps <= 0 else case_wall_clock_seconds / float(case_steps)
+        ),
+        "wall_clock_steps_per_second": (
+            None if case_wall_clock_seconds <= 0.0 else case_steps / case_wall_clock_seconds
+        ),
+        "wall_clock_n_steps": case_steps,
+        "wall_clock_n_episodes": case_episodes,
+    }
+    case_config.update(timing_metadata)
 
     bundle_case = build_safety_filter_run_bundle(
         source=case_name,
@@ -419,6 +442,7 @@ def run_case(case_spec):
             "reward_config": reward_config,
             "actor_losses": case_agent.actor_losses,
             "critic_losses": case_agent.critic_losses,
+            "timing": timing_metadata,
         },
     )
     debug_dir_case = save_safety_filter_debug_artifacts(
@@ -431,6 +455,9 @@ def run_case(case_spec):
     if SAVE_TRAINED_AGENT:
         trained_agent_path = case_agent.save(debug_dir_case, prefix="trained_agent", include_optim=False)
         record_case["trained_agent_path"] = trained_agent_path
+        bundle_case["extra"]["trained_agent_path"] = trained_agent_path
+        bundle_case["config"]["trained_agent_path"] = trained_agent_path
+    record_case.update(timing_metadata)
     print(f"Completed {case_name}")
     pprint(record_case)
     return bundle_case, debug_dir_case, record_case
@@ -456,4 +483,3 @@ print("Saved cold-start RL direct-gate study:")
 pprint(comparison_artifacts)
 comparison_df = pd.DataFrame(comparison_records) if pd is not None else comparison_records
 comparison_df
-

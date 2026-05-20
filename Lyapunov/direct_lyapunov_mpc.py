@@ -89,6 +89,7 @@ _DIRECT_COMPARISON_FILENAME_MAP = {
     "comparison_slack.png": "cmp_slack.png",
     "comparison_target_residual_bounded_activity.png": "cmp_target_diag.png",
     "comparison_reference_errors.png": "cmp_ref_err.png",
+    "comparison_wall_clock_runtime.png": "cmp_wall_clock.png",
     "comparison_outputs_overlay.png": "cmp_out_overlay.png",
     "comparison_inputs_overlay.png": "cmp_in_overlay.png",
 }
@@ -2122,6 +2123,22 @@ def summarize_direct_lyapunov_bundle(bundle):
         "bounded_active_lower_count_max": float(np.nanmax(bundle["target_bounded_active_lower_count"])) if bundle["target_bounded_active_lower_count"].size else None,
         "bounded_active_upper_count_max": float(np.nanmax(bundle["target_bounded_active_upper_count"])) if bundle["target_bounded_active_upper_count"].size else None,
     }
+    timing = {}
+    if isinstance(bundle.get("extra"), dict) and isinstance(bundle["extra"].get("timing"), dict):
+        timing.update(bundle["extra"]["timing"])
+    if isinstance(bundle.get("config"), dict):
+        for key in (
+            "wall_clock_seconds",
+            "wall_clock_seconds_per_episode",
+            "wall_clock_seconds_per_step",
+            "wall_clock_steps_per_second",
+            "wall_clock_n_steps",
+            "wall_clock_n_episodes",
+        ):
+            if key in bundle["config"]:
+                timing[key] = bundle["config"][key]
+    for key, value in timing.items():
+        summary[key] = value
     summary["method_counts"] = {name: methods.count(name) for name in sorted(set(methods))}
     summary["target_stage_counts"] = {name: target_stages.count(name) for name in sorted(set(target_stages))}
     summary["solver_status_counts"] = {name: solver_statuses.count(name) for name in sorted(set(solver_statuses))}
@@ -2316,6 +2333,10 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "method_counts": json.dumps(_jsonable(summary.get("method_counts", {}))),
         "solver_status_counts": json.dumps(_jsonable(summary.get("solver_status_counts", {}))),
         "target_stage_counts": json.dumps(_jsonable(summary.get("target_stage_counts", {}))),
+        "wall_clock_seconds": summary.get("wall_clock_seconds"),
+        "wall_clock_seconds_per_episode": summary.get("wall_clock_seconds_per_episode"),
+        "wall_clock_seconds_per_step": summary.get("wall_clock_seconds_per_step"),
+        "wall_clock_steps_per_second": summary.get("wall_clock_steps_per_second"),
         "debug_dir": None if debug_dir is None else str(debug_dir),
     }
     for idx, value in enumerate(rmse):
@@ -2567,6 +2588,15 @@ def save_direct_lyapunov_comparison_artifacts(
             "Direct Lyapunov Four-Scenario Reference Errors",
             _comparison_plot_path(plot_dir, "comparison_reference_errors.png"),
         )
+        if records and any(record.get("wall_clock_seconds_per_step") is not None for record in records):
+            plot_paths["wall_clock"] = _save_comparison_bar(
+                records,
+                ["wall_clock_seconds", "wall_clock_seconds_per_step"],
+                ["total seconds", "seconds per step"],
+                "wall-clock time",
+                "Direct Lyapunov Four-Scenario Runtime",
+                _comparison_plot_path(plot_dir, "comparison_wall_clock_runtime.png"),
+            )
         plot_paths.update(_save_comparison_overlay_plots(bundles_by_case, plot_dir))
 
     summary["plot_paths"] = plot_paths

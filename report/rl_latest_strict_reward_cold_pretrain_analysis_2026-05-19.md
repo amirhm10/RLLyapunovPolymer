@@ -47,6 +47,23 @@ This matters because the safety gate is now stricter than the relaxed $\epsilon_
 
 At the time this report was written, the local script files had been edited toward a matched relaxed-gate setup with $\rho=0.99$ and $\epsilon_{\mathrm{lyap}}=10^{-3}$. That active source setting is different from the saved result folders analyzed here, so a new rerun is needed before drawing conclusions about the matched $\epsilon_{\mathrm{lyap}}=10^{-3}$ case.
 
+## Implementation Update For Next Runs
+
+The next cold-start and pretrained scripts now use an agent-authority BC setup. During the BC phase the actor proposes $u_{\mathrm{RL}}$, the direct LMPC controller is still solved to obtain the teacher action $u_{\mathrm{LMPC}}$, and the actor is trained toward that teacher action through the actor demo buffer. The executed action is not forced to be the teacher action. Instead, $u_{\mathrm{RL}}$ is passed through the safety gate and the plant receives either the accepted actor action or the safety fallback.
+
+The scripts also add a 5-episode post-BC soft handoff, trained-agent saving, and wall-clock timing fields. Timing comparisons should therefore be made only after rerunning with the updated scripts, because the result folders analyzed above were generated before the timing instrumentation existed.
+
+New saved timing fields are:
+
+| Field | Meaning |
+|---|---|
+| `wall_clock_seconds` | Total case runtime |
+| `wall_clock_seconds_per_episode` | Runtime normalized by episode count |
+| `wall_clock_seconds_per_step` | Runtime normalized by control step count |
+| `wall_clock_steps_per_second` | Throughput for direct comparison |
+
+The fallback-count comparison plot was also updated so MPC-only cases use the diagnostic Lyapunov contraction failure count as the would-be gate activation count. This avoids showing zero fallback for MPC-only when the more useful question is how often the gate would have activated if it had been enabled.
+
 ## Method Summary
 
 At each step the actor proposes a candidate input $u_{\mathrm{cand}}$. The direct Lyapunov safety gate accepts it only if the predicted Lyapunov decrease condition is satisfied:

@@ -512,10 +512,19 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             source = "executed_action"
         if source in {"mpc", "normal_mpc", "offset_free_mpc_only"}:
             source = "offset_free_mpc"
-        if source not in {"direct_lyapunov_mpc", "offset_free_mpc", "policy", "executed_action"}:
+        if source in {"policy_lmpc_demo", "policy_with_teacher_demo", "policy_with_direct_lmpc_teacher_demo"}:
+            source = "policy_with_lmpc_teacher_demo"
+        if source not in {
+            "direct_lyapunov_mpc",
+            "offset_free_mpc",
+            "policy",
+            "executed_action",
+            "policy_with_lmpc_teacher_demo",
+        }:
             raise ValueError(
                 f"training_phase_config['{name}'] must be 'direct_lyapunov_mpc', "
-                "'offset_free_mpc', 'policy', or 'executed_action'."
+                "'offset_free_mpc', 'policy', 'executed_action', or "
+                "'policy_with_lmpc_teacher_demo'."
             )
         return source
 
@@ -559,7 +568,7 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         )
     if bc_behavior_noise == "parameter":
         raise ValueError(
-            "training_phase_config['bc_behavior_noise'] cannot be 'parameter' because the BC phase uses teacher behavior."
+            "training_phase_config['bc_behavior_noise'] cannot be 'parameter' during the BC phase."
         )
 
     parameter_noise_resample_scope = str(
@@ -568,12 +577,19 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     if parameter_noise_resample_scope != "cycle":
         raise ValueError("training_phase_config['parameter_noise_resample_scope'] must be 'cycle'.")
 
+    handoff_blend = str(cfg.get("handoff_blend", "linear")).strip().lower()
+    if handoff_blend not in {"linear", "none"}:
+        raise ValueError("training_phase_config['handoff_blend'] must be 'linear' or 'none'.")
+
     return {
         "episode_unit": episode_unit,
         "warmup_buffer_only_episodes": warmup_episodes,
         "behavior_clone_teacher_episodes": bc_episodes,
         "warmup_end_step": warmup_steps,
         "bc_end_step": warmup_steps + bc_steps,
+        "handoff_episodes": max(0, int(cfg.get("handoff_episodes", 0))),
+        "handoff_steps": max(0, int(cfg.get("handoff_episodes", 0))) * int(time_in_sub_episodes),
+        "handoff_blend": handoff_blend,
         "bc_actor_updates_per_step": max(1, int(cfg.get("bc_actor_updates_per_step", 1))),
         "bc_exploration_std": float(max(0.0, cfg.get("bc_exploration_std", 0.0))),
         "full_rl_exploration_std_start": float(
@@ -763,16 +779,46 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     elif step_idx < int(phase_cfg["bc_end_step"]):
         policy_phase = "behavior_clone_teacher"
         bc_behavior_source = str(phase_cfg.get("bc_behavior_source", "direct_lyapunov_mpc")).strip().lower()
-        teacher_behavior_source = bc_behavior_source
+        teacher_behavior_source = (
+            str(phase_cfg.get("bc_teacher_policy", "direct_lyapunov_mpc")).strip().lower()
+            if bc_behavior_source == "policy_with_lmpc_teacher_demo"
+            else bc_behavior_source
+        )
         use_teacher_behavior = bc_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
         behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "critic_td_plus_actor_bc"
     else:
         policy_phase = "full_rl"
-        teacher_behavior_source = None
+        bc_end_step = int(phase_cfg.get("bc_end_step", 0))
+        handoff_steps = int(phase_cfg.get("handoff_steps", 0))
+        handoff_active = bool(
+            (not test)
+            and handoff_steps > 0
+            and step_idx >= bc_end_step
+            and step_idx < bc_end_step + handoff_steps
+            and str(phase_cfg.get("handoff_blend", "linear")).strip().lower() != "none"
+        )
+        teacher_behavior_source = (
+            str(phase_cfg.get("bc_teacher_policy", "direct_lyapunov_mpc")).strip().lower()
+            if handoff_active
+            else None
+        )
         use_teacher_behavior = False
         behavior_noise_mode = "none" if test else str(phase_cfg.get("full_rl_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "td3_full"
+
+    if "handoff_active" not in locals():
+        handoff_active = False
+    if handoff_active:
+        handoff_steps = max(1, int(phase_cfg.get("handoff_steps", 1)))
+        handoff_step = max(0, int(step_idx) - int(phase_cfg.get("bc_end_step", 0)))
+        handoff_alpha = float(np.clip(1.0 - handoff_step / float(handoff_steps), 0.0, 1.0))
+    else:
+        handoff_alpha = 0.0
+    compute_teacher_demo = bool(
+        (policy_phase == "behavior_clone_teacher" and str(phase_cfg.get("bc_behavior_source", "")).strip().lower() == "policy_with_lmpc_teacher_demo")
+        or handoff_active
+    )
 
     if use_teacher_behavior:
         teacher_label = "offset_free_mpc" if teacher_behavior_source == "offset_free_mpc" else "direct_lyapunov_mpc"
@@ -783,12 +829,22 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         else:
             behavior_policy_source = f"{teacher_label}_nominal"
     elif policy_phase == "behavior_clone_teacher":
-        if test:
+        if bc_behavior_source == "policy_with_lmpc_teacher_demo":
+            if test:
+                behavior_policy_source = "policy_eval_with_lmpc_demo"
+            elif behavior_noise_mode == "gaussian":
+                behavior_policy_source = "policy_explore_with_lmpc_demo"
+            else:
+                behavior_policy_source = "policy_nominal_with_lmpc_demo"
+        elif test:
             behavior_policy_source = "executed_action_eval"
         elif behavior_noise_mode == "gaussian":
             behavior_policy_source = "executed_action_gaussian"
         else:
             behavior_policy_source = "executed_action_nominal"
+    elif handoff_active:
+        teacher_label = "offset_free_mpc" if teacher_behavior_source == "offset_free_mpc" else "direct_lyapunov_mpc"
+        behavior_policy_source = f"policy_{teacher_label}_handoff"
     else:
         if test:
             behavior_policy_source = "policy_eval"
@@ -806,6 +862,9 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         "bc_behavior_source": str(phase_cfg.get("bc_behavior_source", "direct_lyapunov_mpc")),
         "teacher_behavior_source": teacher_behavior_source,
         "use_teacher_behavior": bool(use_teacher_behavior),
+        "compute_teacher_demo": bool(compute_teacher_demo),
+        "handoff_active": bool(handoff_active),
+        "handoff_alpha": float(handoff_alpha),
         "explore_behavior": behavior_noise_mode != "none",
         "push_demo": bool((not test) and (use_teacher_behavior or policy_phase == "behavior_clone_teacher")),
         "run_critic_only_update": (not test) and (policy_phase == "behavior_clone_teacher"),
@@ -821,6 +880,8 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["behavior_policy_source"] = str(phase_state.get("behavior_policy_source"))
     info["behavior_noise_mode"] = str(phase_state.get("behavior_noise_mode", "none"))
     info["training_update_mode"] = str(phase_state.get("training_update_mode"))
+    info["handoff_active"] = bool(phase_state.get("handoff_active", False))
+    info["handoff_alpha"] = float(phase_state.get("handoff_alpha", 0.0))
     if behavior_debug is not None:
         info["parameter_noise_active"] = bool(behavior_debug.get("parameter_noise_active", False))
         info["parameter_noise_std"] = float(behavior_debug.get("parameter_noise_std", 0.0))
@@ -830,6 +891,26 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
         info["behavior_action_pre_filter"] = np.asarray(
             behavior_debug.get("behavior_action_pre_filter", []), float
         ).reshape(-1).copy()
+        if behavior_debug.get("teacher_action_pre_filter") is not None:
+            info["teacher_action_pre_filter"] = np.asarray(
+                behavior_debug.get("teacher_action_pre_filter"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("teacher_u_dev_pre_filter") is not None:
+            info["teacher_u_dev_pre_filter"] = np.asarray(
+                behavior_debug.get("teacher_u_dev_pre_filter"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_action_pre_handoff") is not None:
+            info["policy_action_pre_handoff"] = np.asarray(
+                behavior_debug.get("policy_action_pre_handoff"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_u_dev_pre_handoff") is not None:
+            info["policy_u_dev_pre_handoff"] = np.asarray(
+                behavior_debug.get("policy_u_dev_pre_handoff"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("bc_teacher_gap_inf") is not None:
+            info["bc_teacher_gap_inf"] = float(behavior_debug.get("bc_teacher_gap_inf"))
+        if behavior_debug.get("handoff_candidate_gap_inf") is not None:
+            info["handoff_candidate_gap_inf"] = float(behavior_debug.get("handoff_candidate_gap_inf"))
         info["residual_rl_enabled"] = bool(behavior_debug.get("residual_rl_enabled", False))
         info["residual_rl_baseline_policy"] = behavior_debug.get("residual_rl_baseline_policy")
         info["residual_rl_authority_multiplier"] = behavior_debug.get("residual_rl_authority_multiplier")
@@ -840,10 +921,11 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     return info
 
 
-def _apply_agent_training_updates(agent, phase_state, rl_state, action_used, reward, next_state, done):
+def _apply_agent_training_updates(agent, phase_state, rl_state, action_used, reward, next_state, done, demo_action=None):
     agent.push(rl_state, action_used, float(reward), next_state, float(done))
     if phase_state.get("push_demo", False):
-        agent.push_actor_demo(rl_state, action_used)
+        demo_action_used = action_used if demo_action is None else demo_action
+        agent.push_actor_demo(rl_state, demo_action_used)
     if phase_state.get("run_critic_only_update", False):
         _ = agent.train_step(actor_update=False)
     if phase_state.get("run_actor_bc_update", False):
@@ -1176,6 +1258,9 @@ def run_rl_train(
         step_fallback_ic = fallback_ic
         offset_free_teacher_info = None
         offset_free_teacher_u_dev = None
+        teacher_action = None
+        teacher_u_dev = None
+        demo_action = None
 
         if (
             (not test)
@@ -1191,7 +1276,14 @@ def run_rl_train(
                 last_param_noise_cycle_idx = current_cycle_idx
                 parameter_noise_resampled_this_step = True
 
-        if phase_state["use_teacher_behavior"] and phase_state.get("teacher_behavior_source") == "direct_lyapunov_mpc":
+        needs_teacher_action = bool(
+            phase_state.get("use_teacher_behavior", False)
+            or phase_state.get("compute_teacher_demo", False)
+            or phase_state.get("handoff_active", False)
+        )
+        teacher_source = phase_state.get("teacher_behavior_source")
+
+        if needs_teacher_action and teacher_source == "direct_lyapunov_mpc":
             precomputed_direct_step_context = prepare_direct_output_disturbance_step(
                 LMPC_obj=MPC_obj,
                 x0_aug=xhat_aug_store[:, k],
@@ -1236,18 +1328,23 @@ def run_rl_train(
                 step_fallback_ic = np.asarray(teacher_fallback_ic_next, float).reshape(-1).copy()
 
             teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
-            if phase_state["behavior_noise_mode"] == "gaussian":
-                action = agent.apply_exploration(
-                    teacher_action,
-                    sigma_override=sigma_override,
-                    advance_step=True,
-                )
+            demo_action = teacher_action.copy()
+            teacher_u_dev = np.clip(np.asarray(teacher_u_dev, float).reshape(-1), u_min, u_max)
+            if phase_state.get("use_teacher_behavior", False):
+                if phase_state["behavior_noise_mode"] == "gaussian":
+                    action = agent.apply_exploration(
+                        teacher_action,
+                        sigma_override=sigma_override,
+                        advance_step=True,
+                    )
+                else:
+                    agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
+                    agent._parameter_noise_last_resampled = False
+                    agent._expl_sigma = 0.0
+                    action = np.clip(teacher_action, -1.0, 1.0)
             else:
-                agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
-                agent._parameter_noise_last_resampled = False
-                agent._expl_sigma = 0.0
-                action = np.clip(teacher_action, -1.0, 1.0)
-        elif phase_state["use_teacher_behavior"] and phase_state.get("teacher_behavior_source") == "offset_free_mpc":
+                action = None
+        elif needs_teacher_action and teacher_source == "offset_free_mpc":
             teacher_u_dev, teacher_info = solve_offset_free_mpc_candidate(
                 MPC_obj=MPC_obj,
                 y_sp=y_sp_k,
@@ -1267,28 +1364,45 @@ def run_rl_train(
                 teacher_u_dev = np.clip(np.asarray(teacher_u_dev, float).reshape(-1), u_min, u_max)
             offset_free_teacher_u_dev = teacher_u_dev.copy()
             teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
+            demo_action = teacher_action.copy()
             offset_free_teacher_info = teacher_info
-            if phase_state["behavior_noise_mode"] == "gaussian":
-                action = agent.apply_exploration(
-                    teacher_action,
-                    sigma_override=sigma_override,
-                    advance_step=True,
-                )
+            if phase_state.get("use_teacher_behavior", False):
+                if phase_state["behavior_noise_mode"] == "gaussian":
+                    action = agent.apply_exploration(
+                        teacher_action,
+                        sigma_override=sigma_override,
+                        advance_step=True,
+                    )
+                else:
+                    agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
+                    agent._parameter_noise_last_resampled = False
+                    agent._expl_sigma = 0.0
+                    action = np.clip(teacher_action, -1.0, 1.0)
             else:
-                agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
-                agent._parameter_noise_last_resampled = False
-                agent._expl_sigma = 0.0
-                action = np.clip(teacher_action, -1.0, 1.0)
-        elif test:
-            agent._behavior_noise_mode = "none"
-            agent._parameter_noise_last_resampled = False
-            action = agent.act_eval(rl_state)
+                action = None
         else:
-            action = agent.take_behavior_action(
-                rl_state,
-                behavior_noise_mode=phase_state["behavior_noise_mode"],
-                sigma_override=sigma_override,
-            )
+            action = None
+
+        if action is None:
+            if test:
+                agent._behavior_noise_mode = "none"
+                agent._parameter_noise_last_resampled = False
+                action = agent.act_eval(rl_state)
+            else:
+                action = agent.take_behavior_action(
+                    rl_state,
+                    behavior_noise_mode=phase_state["behavior_noise_mode"],
+                    sigma_override=sigma_override,
+                )
+
+        policy_action_pre_handoff = np.asarray(action, float).reshape(-1).copy()
+        if phase_state.get("handoff_active", False) and teacher_u_dev is not None:
+            policy_u_dev_pre_handoff = np.clip(map_to_bounds(policy_action_pre_handoff, u_min, u_max), u_min, u_max)
+            alpha = float(phase_state.get("handoff_alpha", 0.0))
+            u_handoff_dev = np.clip(alpha * teacher_u_dev + (1.0 - alpha) * policy_u_dev_pre_handoff, u_min, u_max)
+            action = inv_map_from_bounds(u_handoff_dev, u_min, u_max).astype(np.float32)
+        else:
+            policy_u_dev_pre_handoff = None
 
         action = np.asarray(action, float).reshape(-1)
         action = np.clip(action, -1.0, 1.0)
@@ -1298,9 +1412,23 @@ def run_rl_train(
         )
         behavior_debug["parameter_noise_resampled_this_step"] = bool(parameter_noise_resampled_this_step)
         behavior_debug["behavior_action_pre_filter"] = action.copy()
+        if teacher_action is not None:
+            behavior_debug["teacher_action_pre_filter"] = np.asarray(teacher_action, float).reshape(-1).copy()
+        if teacher_u_dev is not None:
+            behavior_debug["teacher_u_dev_pre_filter"] = np.asarray(teacher_u_dev, float).reshape(-1).copy()
+        if phase_state.get("handoff_active", False):
+            behavior_debug["policy_action_pre_handoff"] = policy_action_pre_handoff.copy()
+            if policy_u_dev_pre_handoff is not None:
+                behavior_debug["policy_u_dev_pre_handoff"] = policy_u_dev_pre_handoff.copy()
         if offset_free_teacher_info is not None:
             behavior_debug["offset_free_mpc_teacher_info"] = offset_free_teacher_info
         u_rl_dev = np.clip(map_to_bounds(action, u_min, u_max), u_min, u_max)
+        if teacher_u_dev is not None:
+            behavior_debug["bc_teacher_gap_inf"] = float(
+                np.max(np.abs(u_rl_dev - np.asarray(teacher_u_dev, float).reshape(-1)))
+            )
+        if policy_u_dev_pre_handoff is not None:
+            behavior_debug["handoff_candidate_gap_inf"] = float(np.max(np.abs(u_rl_dev - policy_u_dev_pre_handoff)))
         residual_baseline_dev = None
         if residual_rl_cfg.get("enabled", False):
             baseline_policy = str(residual_rl_cfg.get("baseline_policy", "offset_free_mpc"))
@@ -1590,6 +1718,7 @@ def run_rl_train(
                     reward=float(r),
                     next_state=next_state,
                     done=float(done),
+                    demo_action=demo_action,
                 )
                 if (
                     phase_state.get("run_td3_full_update", False)
@@ -1919,6 +2048,7 @@ def run_rl_train(
                     reward=float(r),
                     next_state=next_state,
                     done=0.0,
+                    demo_action=demo_action,
                 )
                 if (
                     phase_state.get("run_td3_full_update", False)
@@ -2415,6 +2545,7 @@ def run_rl_train(
                     reward=float(r),
                     next_state=next_state,
                     done=float(done),
+                    demo_action=demo_action,
                 )
                 if (
                     phase_state.get("run_td3_full_update", False)
@@ -2932,6 +3063,7 @@ def run_rl_train(
                 reward=float(r),
                 next_state=next_state,
                 done=float(done),
+                demo_action=demo_action,
             )
             if (
                 phase_state.get("run_td3_full_update", False)
