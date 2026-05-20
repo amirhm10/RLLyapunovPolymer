@@ -138,18 +138,20 @@ The pretrained MPC-only strict-band score is 0% because eta sits slightly outsid
 
 ## Fallback And Safety-Gate Dependence
 
-The fixed fallback event penalty is active, but the correction-size penalty is still the dominant part of the fallback cost.
+The fixed fallback event penalty is active for the RL cases, but the correction-size penalty is still the dominant part of the actual fallback cost. For MPC-only, the actual fallback count is zero by construction because the MPC action is directly executed. To make the diagnostic fair, the table and plot also show a "would-be fallback" rate: the fraction of MPC-only steps where the diagnostic candidate would not satisfy the Lyapunov contraction gate if the gate were active.
 
 ![Reward and fallback decomposition](figures/2026-05-19_latest_strict_reward_rl_analysis/reward_fallback_decomposition.png)
 
 Safety-gate metrics:
 
-| Case | Fallback rate | Actual intervention | Accepted rate | Solver holds |
+| Case | Actual fallback | Would-be fallback | Actual intervention | Solver holds |
 |---|---:|---:|---:|---:|
-| Cold RL | 1.40% | 1.40% | 98.60% | 150 |
-| Cold MPC-only | 0.00% | 0.00% | 0.00% | 0 |
-| Pretrained RL | 3.04% | 3.04% | 96.96% | 5 |
-| Pretrained MPC-only | 0.00% | 0.00% | 0.00% | 0 |
+| Cold RL | 1.40% | 0.00% | 1.40% | 150 |
+| Cold MPC-only | 0.00% | 11.48% | 0.00% | 0 |
+| Pretrained RL | 3.04% | 0.00% | 3.04% | 5 |
+| Pretrained MPC-only | 0.00% | 29.41% | 0.00% | 0 |
+
+The MPC-only would-be fallback rates are not actual interventions. They mean that if the same Lyapunov gate were used as an accept/reject test, the cold MPC-only trajectory would fail the diagnostic contraction test on 11.48% of steps and the pretrained MPC-only trajectory would fail it on 29.41% of steps.
 
 Reward penalty decomposition:
 
@@ -162,7 +164,7 @@ Reward penalty decomposition:
 
 The fixed event penalty behaves correctly, but its average contribution is small because it is only $0.5$ times the fallback rate. For pretrained RL, the fixed contribution is about 0.015 reward units per step, while the correction-size term contributes about 0.794. This means the current fallback punishment is mostly driven by large correction gaps, not the event count itself.
 
-The pretrained RL fallback rate is higher than cold RL. That is a warning sign: pretraining gives better base reward and better full-horizon tracking than cold RL, but the safety gate still needs to intervene more often.
+The pretrained RL fallback rate is higher than cold RL. That is a warning sign: pretraining gives better base reward and better full-horizon tracking than cold RL, but the safety gate still needs to intervene more often. At the same time, the MPC-only diagnostic is also revealing: the nominal MPC-only action would fail the same contraction check much more often than the safety-gated RL candidate, especially in the pretrained run. This suggests the RL gate is doing real Lyapunov filtering work, even though the resulting closed-loop tracking is not yet better than MPC-only.
 
 ## Input Activity
 
@@ -185,14 +187,14 @@ The pretrained cases move less and hit constraints less often than the cold case
 
 Last-episode metrics:
 
-| Case | Last reward | Last eta RMSE | Last T RMSE | Last fallback count |
-|---|---:|---:|---:|---:|
-| Cold RL | -3.219 | 0.113 | 0.209 | 16 |
-| Cold MPC-only | -2.670 | 0.113 | 0.198 | 0 |
-| Pretrained RL | -4.076 | 0.122 | 0.243 | 31 |
-| Pretrained MPC-only | -2.781 | 0.115 | 0.194 | 0 |
+| Case | Last reward | Last eta RMSE | Last T RMSE | Actual fallback | Would-be fallback |
+|---|---:|---:|---:|---:|---:|
+| Cold RL | -3.219 | 0.113 | 0.209 | 16 | 0 |
+| Cold MPC-only | -2.670 | 0.113 | 0.198 | 0 | 431 |
+| Pretrained RL | -4.076 | 0.122 | 0.243 | 31 | 0 |
+| Pretrained MPC-only | -2.781 | 0.115 | 0.194 | 0 | 378 |
 
-This last-episode view confirms the full-horizon story. RL is not collapsing, but it is also not beating MPC-only. The pretrained RL policy is still leaning on fallback more than desired, and its last-episode temperature tracking is worse than the matched MPC-only diagnostic.
+This last-episode view confirms the full-horizon story. RL is not collapsing, but it is also not beating MPC-only. The pretrained RL policy is still leaning on fallback more than desired, and its last-episode temperature tracking is worse than the matched MPC-only diagnostic. However, the MPC-only last episode would violate the diagnostic contraction gate hundreds of times if the safety gate were active, so its better tracking comes with weaker Lyapunov-contraction compliance.
 
 ## Scientific Interpretation
 
@@ -203,6 +205,7 @@ The current result separates three effects:
 - Reward alignment improved: fallback penalties now visibly reduce the augmented reward when safety intervention occurs.
 - Safety feasibility remains the bottleneck: RL has nonzero fallback, especially in the pretrained case.
 - Offset-free tracking is still dominated by MPC-only: the final-tail temperature error remains better under MPC-only.
+- MPC-only is not Lyapunov-clean under the diagnostic gate: its actual fallback is zero only because no gate is applied, while its would-be fallback rate is high.
 
 The key practical conclusion is that we should not make the reward harsher blindly. The strict reward already makes RL worse in scalar reward when it uses fallback. The next change should help the actor learn the feasible MPC-like correction, not only punish it afterward.
 
