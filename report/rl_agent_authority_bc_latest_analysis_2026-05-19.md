@@ -10,13 +10,105 @@ Analyzed folders:
 - Pretrained: `results/rl_direct_safety_gate_four_method_two_setpoint_disturb_pretrained/20260519_212739`
 - Direct LMPC: `results/direct_lyap_ch2_lex/20260519_212725`
 
-## Setup Checked
+Active scripts for future reruns:
 
-The RL scripts use the new BC authority setup. The actor proposes the candidate action, the direct LMPC controller supplies the demo target for actor BC, and the safety gate decides whether the actor action or fallback action is executed. Both RL scripts use $\rho=0.99$, $\epsilon_{\mathrm{lyap}}=10^{-3}$, strict offset reward defaults, trained-agent saving, and wall-clock timing.
+- Direct Lyapunov MPC: `DirectLyapunovMPC.py`, saving to `results/directLyap/...`
+- Cold-start safety-gate RL: `DirectLyapunovSafetyGateRL_ColdStart.py`, saving to `results/ColdStart/...`
+- Pretrained safety-gate RL: `DirectLyapunovSafetyGateRL_Pretrained.py`, saving to `results/Pretrain/...`
 
-![Performance and runtime](figures/2026-05-19_agent_authority_bc_latest_analysis/performance_runtime_summary.png)
+## Methodology
+
+This section describes the implemented workflow before interpreting the numerical results.
+
+### Step 1: Plant, Scaling, And Setpoints
+
+The case study is the polymer CSTR. The manipulated inputs are coolant flow $Q_c$ and monomer flow $Q_m$. The controlled outputs are viscosity-like $\eta$ and reactor temperature $T$. The scripts run in physical plant coordinates, but the MPC and RL calculations use scaled deviation variables around the steady-state anchors:
+
+$$
+\Delta u_k = u_k^{\rm scaled}-u_{\rm ss}^{\rm scaled}.
+$$
+
+$$
+\Delta y_k = y_k^{\rm scaled}-y_{\rm ss}^{\rm scaled}.
+$$
+
+The two-step setpoint schedule is generated from the same physical setpoints for all three scripts. Each setpoint block has length `set_points_len`, and each full episode spans both setpoint blocks. For the analyzed runs, the direct LMPC and RL cases used the same disturbance pattern and the same direct-output-disturbance augmentation.
+
+### Step 2: Offset-Free Augmented Model
+
+The controller model is augmented with an output-disturbance state. The observer state is written as $xhatdhat_k$, which combines the estimated plant state and the estimated disturbance. The observer gain $L$ updates this augmented estimate from the measured output error. This is important because all three controllers are evaluated under disturbance, so good behavior means tracking the requested output while compensating the estimated output disturbance.
+
+### Step 3: Direct Lyapunov MPC Candidate
+
+The direct LMPC path first builds an admissible steady target from the current augmented state, disturbance estimate, setpoint, and input bounds. The target selector returns a steady target $(x_s,d_s,u_s,y_s)$. The online MPC then computes a first input move subject to input bounds, terminal ingredients, and a first-step Lyapunov contraction test:
+
+$$
+V_{k+1}^{\rm first} \le \rho V_k + \epsilon_{\rm lyap}.
+$$
+
+In these runs, $\rho=0.99$ and $\epsilon_{\rm lyap}=10^{-3}$. The direct LMPC script executes this direct controller. The RL scripts use the same direct LMPC machinery as the safety-gate fallback and as the behavioral-cloning teacher.
+
+### Step 4: MPC-Only Diagnostic Meaning
+
+The MPC-only rows are not safety-gated RL controllers. They are diagnostic baselines. Actual fallback is zero by construction for MPC-only. Therefore, for MPC-only activation plots and tables, the meaningful count is the would-be gate activation count: how many steps would have failed the Lyapunov contraction check if the safety gate had been active.
+
+### Step 5: TD3 State And Action
+
+The TD3 actor receives an augmented RL state containing the estimated augmented state, current setpoint information, and previous input information. The actor output is a bounded input-deviation action:
+
+$$
+u_{\rm rl,dev,k} = \pi_\theta(s_k).
+$$
+
+This action is interpreted in scaled input-deviation coordinates. It is converted consistently before plant execution, reward calculation, and safety diagnostics.
+
+### Step 6: Agent-Authority Behavioral Cloning
+
+The behavioral-cloning phase keeps the RL actor in authority. At each BC step:
+
+1. The actor proposes $u_{\rm rl,dev,k}$.
+2. The direct LMPC teacher independently computes $u_{\rm lmpc,dev,k}$.
+3. The safety gate evaluates the actor candidate, not the teacher action.
+4. The plant executes the accepted actor action or the fallback action.
+5. The critic replay buffer stores the executed safe action.
+6. The actor demo buffer stores $u_{\rm lmpc,dev,k}$ as the imitation target.
+
+This design avoids the older issue where BC execution could become identical to LMPC execution. The teacher guides the actor through BC loss, but the actor remains the proposed controller from the start.
+
+### Step 7: Safety Gate And Fallback
+
+The safety gate checks whether the actor candidate satisfies the first-step Lyapunov contraction condition. If it passes, the actor action is executed. If it fails, the gate solves or reuses the direct LMPC fallback. The logged correction gap is:
+
+$$
+g_k=u_{\rm cand,k}-u_{\rm exec,k}.
+$$
+
+This separates candidate-policy quality from final safe closed-loop behavior. A controller can track well after fallback while still being a poor autonomous actor if the correction gap and fallback rate remain high.
+
+### Step 8: Soft Handoff
+
+After the BC phase, the scripts apply a short linear handoff over five episodes. The candidate action is blended from the teacher-shaped behavior toward the pure actor candidate before the safety gate checks it. This avoids an abrupt switch from imitation-dominated behavior to full online RL behavior.
+
+### Step 9: Reward And Learning Objective
+
+The reward combines output tracking, input movement, near-setpoint residual error, fallback correction cost, and a fixed fallback event cost. The analyzed runs used the earlier strict reward with `fallback_event_penalty = 0.5`. The next-run scripts now use the stricter fallback and offset settings described later in this report, with maintenance and jitter weights set to zero during the high-exploration diagnostic run.
+
+The TD3 discount factor for future runs is now `GAMMA = 0.995`. This changes the RL return horizon only. It does not change the Lyapunov contraction factor, which remains $\rho=0.99$.
+
+### Step 10: Evaluation Metrics
+
+The report separates four kinds of evidence:
+
+- Full-horizon tracking: reward mean, output RMSE, and mean RMSE across the whole run.
+- Tail offset: final-window absolute output error, used as a steady-offset diagnostic.
+- Authority diagnostics: fallback rate, actual intervention rate, correction gap, and BC teacher gap.
+- Runtime diagnostics: total seconds, seconds per episode, seconds per control step, and steps per second.
+
+This separation matters because a controller can have good raw tracking but poor safety-gate authority, or good final offset but poor transient behavior.
 
 ## Full-Horizon Results
+
+![Performance and runtime](figures/2026-05-19_agent_authority_bc_latest_analysis/performance_runtime_summary.png)
 
 | Case | Reward mean | eta RMSE | T RMSE | Mean RMSE | ms per step |
 | --- | ---: | ---: | ---: | ---: | ---: |

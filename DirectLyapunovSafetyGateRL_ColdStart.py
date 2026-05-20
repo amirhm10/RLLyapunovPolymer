@@ -310,7 +310,7 @@ def make_td3_agent():
 # %%
 SAVE_TRAINED_AGENT = True
 
-study_name = "rl_direct_safety_gate_four_method_two_setpoint_disturb_cold_start"
+study_name = "ColdStart"
 study_root = os.path.join(os.fspath(repo_path()), "results", study_name, study_timestamp)
 os.makedirs(study_root, exist_ok=True)
 

@@ -77,14 +77,14 @@ Legacy or secondary Lyapunov files still present at the top level are:
 
 If a change only concerns the standard Lyapunov path, do not start from those files.
 
-## Important Notebooks
-These appear to be the main experiment entrypoints:
+## Important Entrypoints
+These are the main active experiment entrypoints in the repository root:
 
-- `DirectLyapunovMPC_FourMethodDisturbance.ipynb`
-- `DirectLyapunovSafetyGateRL_Pretrained.ipynb`
-- `DirectLyapunovSafetyGateRL_ColdStart.ipynb`
-- `MPCOffsetFree.ipynb`
-- `systemIdentification.ipynb`
+- `DirectLyapunovMPC.py`
+- `DirectLyapunovSafetyGateRL_Pretrained.py`
+- `DirectLyapunovSafetyGateRL_ColdStart.py`
+
+Legacy notebooks are archived under `archive/` and should not be used as active entrypoints unless explicitly restored.
 
 Notebook cells often import modules directly, so keep public function names stable unless the notebook code is updated too.
 
