@@ -28,7 +28,10 @@ def apply_rl_scaled(min_max_dict, x_d_states, y_sp, u):
 
 def generate_setpoints_training_rl_gradually(y_sp_scenario, n_tests, set_points_len, warm_start, test_cycle,
                                              nominal_qi, nominal_qs, nominal_ha,
-                                             qi_change, qs_change, ha_change):
+                                             qi_change, qs_change, ha_change,
+                                             *,
+                                             force_final_test=True,
+                                             disturbance_profile=None):
     # For each scenario, create a block of size (set_points_len, n_outputs)
     blocks = [np.full((set_points_len, y_sp_scenario.shape[1]), scenario)
               for scenario in y_sp_scenario]
@@ -38,10 +41,15 @@ def generate_setpoints_training_rl_gradually(y_sp_scenario, n_tests, set_points_
     # Repeat the cycle 'repetitions' times
     y_sp = np.concatenate([cycle] * n_tests, axis=0)
 
-    # Test train scenario
-    test_cycle = test_cycle * int(n_tests / len(test_cycle))
-    # Try making everything trainable but te end cycle should be only for testing
-    test_cycle[-1] = True
+    # Test/train scenario. Repeat and slice so short patterns such as [False]
+    # or [True] can define any number of episodes without changing callers.
+    if len(test_cycle) == 0:
+        raise ValueError("test_cycle must contain at least one boolean value")
+    repetitions = int(np.ceil(n_tests / len(test_cycle)))
+    test_cycle = list(test_cycle) * repetitions
+    test_cycle = test_cycle[:n_tests]
+    if force_final_test:
+        test_cycle[-1] = True
 
     time_in_sub_episodes = set_points_len * len(y_sp_scenario)
 
@@ -57,9 +65,26 @@ def generate_setpoints_training_rl_gradually(y_sp_scenario, n_tests, set_points_
         test_train_dict[idxs_tests[i]] = test_cycle[i]
     warm_start = list(test_train_dict.keys())[warm_start]
 
-    qi = np.linspace(nominal_qi, nominal_qi * qi_change, nFE)
-    qs = np.linspace(nominal_qs, nominal_qs * qs_change, nFE)
-    ha = np.linspace(nominal_ha, nominal_ha * ha_change, int(nFE / 2))
-    ha = np.hstack((ha, np.tile(nominal_ha * ha_change, int(nFE/ 2))))
+    if disturbance_profile is None:
+        qi = np.linspace(nominal_qi, nominal_qi * qi_change, nFE)
+        qs = np.linspace(nominal_qs, nominal_qs * qs_change, nFE)
+        ha = np.linspace(nominal_ha, nominal_ha * ha_change, int(nFE / 2))
+        ha = np.hstack((ha, np.tile(nominal_ha * ha_change, int(nFE/ 2))))
+        if len(ha) < nFE:
+            ha = np.hstack((ha, np.tile(nominal_ha * ha_change, nFE - len(ha))))
+    else:
+        missing = [name for name in ("qi", "qs", "ha") if name not in disturbance_profile]
+        if missing:
+            raise ValueError(f"disturbance_profile is missing required keys: {missing}")
+        qi = np.asarray(disturbance_profile["qi"], dtype=float).reshape(-1)
+        qs = np.asarray(disturbance_profile["qs"], dtype=float).reshape(-1)
+        ha = np.asarray(disturbance_profile["ha"], dtype=float).reshape(-1)
+        for name, values in (("qi", qi), ("qs", qs), ("ha", ha)):
+            if len(values) != nFE:
+                raise ValueError(
+                    f"disturbance_profile['{name}'] length must equal nFE={nFE}; got {len(values)}"
+                )
+            if not np.all(np.isfinite(values)):
+                raise ValueError(f"disturbance_profile['{name}'] contains non-finite values")
 
     return y_sp, nFE, sub_episodes_changes_dict, time_in_sub_episodes, test_train_dict, warm_start, qi, qs, ha

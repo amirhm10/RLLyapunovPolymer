@@ -96,7 +96,7 @@ u_min = np.array([71.6, 78.0])
 u_max = np.array([870.0, 670.0])
 setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 
-n_episodes = 200
+n_episodes = 300
 n_tests = n_episodes
 # set_points_len = DIRECT_DISTURBANCE_SETPOINT_LEN
 set_points_len = 400

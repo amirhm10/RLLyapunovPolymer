@@ -13,7 +13,7 @@ DIRECT_TWO_SETPOINT_Y_PHYS = np.array(
     dtype=float,
 )
 
-DIRECT_DISTURBANCE_N_TESTS = 200
+DIRECT_DISTURBANCE_N_TESTS = 300
 DIRECT_DISTURBANCE_SETPOINT_LEN = 400
 DIRECT_DISTURBANCE_WARM_START = 0
 DIRECT_DISTURBANCE_SEED = 0
@@ -111,4 +111,3 @@ def direct_four_method_case_specs(
     allowed = {key for key, _ in ordered_cases}
     selected_variants = _normalize_case_variants(variants, allowed=allowed)
     return [dict(case_spec) for key, case_spec in ordered_cases if key in selected_variants]
-

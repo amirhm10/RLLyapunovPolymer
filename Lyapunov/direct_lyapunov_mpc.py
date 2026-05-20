@@ -1389,6 +1389,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
     first_step_contraction_on=True,
     reset_system_on_entry=True,
     solver_options=None,
+    force_final_test=True,
+    disturbance_profile=None,
 ):
     target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
     lyapunov_mode = _as_mode(lyapunov_mode, ("hard", "soft"), "lyapunov_mode")
@@ -1429,6 +1431,8 @@ def run_direct_output_disturbance_lyapunov_mpc(
         qi_change,
         qs_change,
         ha_change,
+        force_final_test=force_final_test,
+        disturbance_profile=disturbance_profile,
     )
 
     n_inputs = LMPC_obj.B.shape[1]
@@ -1649,6 +1653,8 @@ def run_offset_free_mpc_with_direct_diagnostics(
     first_step_contraction_on=True,
     reset_system_on_entry=True,
     solver_options=None,
+    force_final_test=True,
+    disturbance_profile=None,
 ):
     """Run offset-free MPC while recording direct Lyapunov diagnostics only."""
     target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
@@ -1689,6 +1695,8 @@ def run_offset_free_mpc_with_direct_diagnostics(
         qi_change,
         qs_change,
         ha_change,
+        force_final_test=force_final_test,
+        disturbance_profile=disturbance_profile,
     )
 
     n_inputs = MPC_obj.B.shape[1]

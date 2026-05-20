@@ -101,6 +101,7 @@ setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 n_tests = DIRECT_DISTURBANCE_N_TESTS
 set_points_len = DIRECT_DISTURBANCE_SETPOINT_LEN
 TEST_CYCLE = direct_disturbance_test_cycle(n_tests)
+FORCE_FINAL_TEST = False
 warm_start = 0
 WARMUP_EPISODES = 0
 BC_TEACHER_EPISODES = 20
@@ -359,6 +360,7 @@ def run_case(case_spec):
         "fallback_event_penalty": fallback_event_penalty,
         "n_tests": n_tests,
         "set_points_len": set_points_len,
+        "force_final_test": FORCE_FINAL_TEST,
         "disturbance_after_step": disturbance_after_step,
         "training_phase_config": dict(case_training_phase_config),
         "initial_agent_path": None,
@@ -405,6 +407,7 @@ def run_case(case_spec):
         diagnostic_lmpc_obj=LMPC_obj,
         disturbance_after_step=disturbance_after_step,
         training_phase_config=case_training_phase_config,
+        force_final_test=FORCE_FINAL_TEST,
     )
     case_wall_clock_seconds = float(time.perf_counter() - case_timer_start)
     case_steps = int(results_case[5])

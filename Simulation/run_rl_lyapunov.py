@@ -1008,6 +1008,8 @@ def run_rl_train(
     diagnostic_lmpc_obj=None,
     performance_guard_config=None,
     residual_rl_config=None,
+    force_final_test=True,
+    disturbance_profile=None,
 ):
     # warm_start only controls when online TD3 parameter updates begin through
     # the generated train/test schedule. It is not an MPC takeover or control
@@ -1037,6 +1039,8 @@ def run_rl_train(
         qi_change,
         qs_change,
         ha_change,
+        force_final_test=force_final_test,
+        disturbance_profile=disturbance_profile,
     )
 
     n_u = MPC_obj.B.shape[1]
