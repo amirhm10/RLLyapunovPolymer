@@ -410,9 +410,9 @@ $$</p>
 <p>$$
 s_i=\sigma\left(\frac{\bar b_i-|e_{k,i}|}{\tau_{\rm frac}\bar b_i}\right).
 $$</p>
-<p>With <code>gate = &quot;prod&quot;</code>, the joint inside-band weight is:</p>
+<p>With the current active <code>gate = &quot;geom&quot;</code>, the joint inside-band weight is the geometric mean of the per-output scores:</p>
 <p>$$
-w_{\rm in}=\prod_i s_i.
+w_{\rm in}=\left(\prod_{i=1}^{n_y}s_i\right)^{1/n_y}.
 $$</p>
 <p>The weighted quadratic error is:</p>
 <p>$$
@@ -805,9 +805,9 @@ $$</p>
 <p>$$
 s_i = \sigma\left(\frac{\bar b_i-|e_i|}{\tau_{\rm frac}\bar b_i}\right).
 $$</p>
-<p>With <code>gate = &quot;prod&quot;</code>, the joint near-setpoint weight is:</p>
+<p>With the current active <code>gate = &quot;geom&quot;</code>, the joint near-setpoint weight is the geometric mean of the per-output scores:</p>
 <p>$$
-w_{\rm in}=\prod_i s_i.
+w_{\rm in}=\left(\prod_{i=1}^{n_y}s_i\right)^{1/n_y}.
 $$</p>
 <p>The quadratic tracking term changes weight inside the band:</p>
 <p>$$
@@ -888,6 +888,11 @@ $$</p>
   <td>Smoothness of inside-band gate</td>
 </tr>
 <tr>
+  <td><code>gate</code></td>
+  <td style="text-align:right"><code>prod</code></td>
+  <td>Joint inside-band gate for the analyzed run</td>
+</tr>
+<tr>
   <td><code>gamma_out</code></td>
   <td style="text-align:right"><code>1.0</code></td>
   <td>Overflow penalty outside band</td>
@@ -952,6 +957,12 @@ $$</p>
   <td style="text-align:right"><code>2.0</code></td>
   <td style="text-align:right"><code>3.0</code></td>
   <td>Penalize residual in-band offset more strongly</td>
+</tr>
+<tr>
+  <td><code>gate</code></td>
+  <td style="text-align:right"><code>prod</code></td>
+  <td style="text-align:right"><code>geom</code></td>
+  <td>Return to the earlier geometric gate instead of the stricter product gate</td>
 </tr>
 <tr>
   <td><code>lam_in</code></td>
@@ -1130,7 +1141,7 @@ band_floor_phys = [0.003, 0.035]
 tau_frac = 0.5
 gamma_out = 1.0
 gamma_in = 3.0
-gate = &quot;prod&quot;
+gate = &quot;geom&quot;
 lam_in = 3.0
 bonus_kind = &quot;quadratic&quot;
 beta = 1.0

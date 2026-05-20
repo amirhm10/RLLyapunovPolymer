@@ -453,10 +453,10 @@ $$
 s_i=\sigma\left(\frac{\bar b_i-|e_{k,i}|}{\tau_{\rm frac}\bar b_i}\right).
 $$
 
-With `gate = "prod"`, the joint inside-band weight is:
+With the current active `gate = "geom"`, the joint inside-band weight is the geometric mean of the per-output scores:
 
 $$
-w_{\rm in}=\prod_i s_i.
+w_{\rm in}=\left(\prod_{i=1}^{n_y}s_i\right)^{1/n_y}.
 $$
 
 The weighted quadratic error is:
@@ -706,10 +706,10 @@ $$
 s_i = \sigma\left(\frac{\bar b_i-|e_i|}{\tau_{\rm frac}\bar b_i}\right).
 $$
 
-With `gate = "prod"`, the joint near-setpoint weight is:
+With the current active `gate = "geom"`, the joint near-setpoint weight is the geometric mean of the per-output scores:
 
 $$
-w_{\rm in}=\prod_i s_i.
+w_{\rm in}=\left(\prod_{i=1}^{n_y}s_i\right)^{1/n_y}.
 $$
 
 The quadratic tracking term changes weight inside the band:
@@ -785,6 +785,7 @@ $$
 | `k_rel` | `[0.0015, 0.00015]` | Relative output bands |
 | `band_floor_phys` | `[0.003, 0.035]` | Minimum physical bands |
 | `tau_frac` | `0.5` | Smoothness of inside-band gate |
+| `gate` | `prod` | Joint inside-band gate for the analyzed run |
 | `gamma_out` | `1.0` | Overflow penalty outside band |
 | `gamma_in` | `2.0` | Residual penalty inside band |
 | `beta` | `2.0` | Near-zero bonus scale |
@@ -802,6 +803,7 @@ The next reward makes fallback events more visible and makes temperature offset 
 | --- | ---: | ---: | --- |
 | `Qy_diag` | `[8.0, 4.0]` | `[8.0, 6.0]` | Increase temperature importance without exploding eta weight |
 | `gamma_in` | `2.0` | `3.0` | Penalize residual in-band offset more strongly |
+| `gate` | `prod` | `geom` | Return to the earlier geometric gate instead of the stricter product gate |
 | `lam_in` | `2.0` | `3.0` | Make near-band quadratic error less forgiving |
 | `beta` | `2.0` | `1.0` | Reduce the chance that bonus hides small steady offset |
 | `gamma_fallback` | `2.0` | `3.0` | Increase correction-gap cost |
@@ -961,7 +963,7 @@ band_floor_phys = [0.003, 0.035]
 tau_frac = 0.5
 gamma_out = 1.0
 gamma_in = 3.0
-gate = "prod"
+gate = "geom"
 lam_in = 3.0
 bonus_kind = "quadratic"
 beta = 1.0
