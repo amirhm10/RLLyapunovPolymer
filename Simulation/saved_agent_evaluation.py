@@ -1,20 +1,18 @@
-# Saved-agent evaluation for direct Lyapunov safety-gate RL.
-#
-# This script does not train. It loads the latest saved cold-start and
-# pretrained TD3 agents, keeps the direct Lyapunov safety gate active, and
-# compares them against offset-free MPC diagnostics and direct Lyapunov MPC on
-# a fixed five-episode disturbance suite.
+"""Reusable helpers for saved-agent Lyapunov safety-gate evaluation.
+
+The root script owns the experiment setup, parameter values, solver
+construction, and run orchestration. This module only provides callable helper
+functions/classes that can be reused by root entrypoints or future scripts.
+"""
 
 from __future__ import annotations
 
 import csv
 import json
-import os
-import sys
 import time
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from pprint import pprint
+from typing import Any
 
 import numpy as np
 
@@ -25,16 +23,11 @@ try:
 except Exception:
     HAS_MATPLOTLIB = False
 
-import torch
-
 from TD3Agent.agent import TD3Agent
-from TD3Agent.reward_functions import make_reward_fn_relative_QR
-from Simulation.mpc import MpcSolver, compute_observer_gain
 from Simulation.run_rl_lyapunov import run_rl_train
 from Simulation.system_functions import PolymerCSTR
 from Lyapunov.direct_lyapunov_mpc import (
     build_direct_lyapunov_run_bundle,
-    design_direct_lyapunov_mpc_solver,
     make_direct_lyapunov_comparison_record,
     run_direct_output_disturbance_lyapunov_mpc,
     run_offset_free_mpc_with_direct_diagnostics,
@@ -45,246 +38,104 @@ from Lyapunov.safety_debug import (
     make_safety_filter_comparison_record,
     save_safety_filter_debug_artifacts,
 )
-from utils.direct_lyapunov_study import DIRECT_TWO_SETPOINT_Y_PHYS
 from utils.path_helpers import repo_path
 from utils.scaling_helpers import apply_min_max, reverse_min_max
-from utils.td3_helpers import load_and_prepare_system_data
 
 
-AGENT_SOURCE_MODE = "latest"
-COLD_AGENT_PATH = None
-PRETRAIN_AGENT_PATH = None
-EVAL_N_EPISODES = 5
-EVAL_SET_POINTS_LEN = 400
-EVAL_SCENARIO_SUITE = "nominal_qi_qs_ha_all_step"
-DRY_RUN = "--dry-run" in sys.argv
-SAVE_CASE_PLOTS = True
-FORCE_FINAL_TEST = False
-
-predict_h = 9
-cont_h = 3
-rho_lyap = 0.99
-lyap_eps = 1e-3
-lyap_tol = 1e-10
-slack_penalty = 1e6
-plant_mode = "disturb"
-disturbance_after_step = False
-use_target_output_for_tracking = False
-
-u_prev_penalty_weight = 0.1
-xs_prev_penalty_weight = 0.1
-
-Ad = 2.142e17
-Ed = 14897
-Ap = 3.816e10
-Ep = 3557
-At = 4.50e12
-Et = 843
-fi = 0.6
-m_delta_H_r = -6.99e4
-hA = 1.05e6
-rhocp = 1506
-rhoccpc = 4043
-Mm = 104.14
-system_params = np.array([Ad, Ed, Ap, Ep, At, Et, fi, m_delta_H_r, hA, rhocp, rhoccpc, Mm])
-
-CIf = 0.5888
-CMf = 8.6981
-Qi = 108.0
-Qs = 459.0
-Tf = 330.0
-Tcf = 295.0
-V = 3000.0
-Vc = 3312.4
-system_design_params = np.array([CIf, CMf, Qi, Qs, Tf, Tcf, V, Vc])
-
-Qm_ss = 378.0
-Qc_ss = 471.6
-system_steady_state_inputs = np.array([Qc_ss, Qm_ss])
-delta_t = 0.5
-
-steady_states = {"ss_inputs": system_steady_state_inputs.copy()}
-cstr_ss = PolymerCSTR(system_params, system_design_params, system_steady_state_inputs, delta_t, deviation_form=False)
-steady_states["y_ss"] = cstr_ss.y_ss.copy()
-
-u_min = np.array([71.6, 78.0])
-u_max = np.array([870.0, 670.0])
-setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
-
-n_tests = EVAL_N_EPISODES
-set_points_len = EVAL_SET_POINTS_LEN
-TEST_CYCLE = [True] * EVAL_N_EPISODES
-warm_start = 0
-time_in_sub_episodes = int(setpoint_y_phys.shape[0] * set_points_len)
-ACTOR_FREEZE = 0
-
-study_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-study_name = "Compare"
-study_root = Path(repo_path()) / "results" / study_name / study_timestamp
-
-system_data = load_and_prepare_system_data(
-    steady_states=steady_states,
-    setpoint_y=setpoint_y_phys,
-    u_min=u_min,
-    u_max=u_max,
-    system_dict_path=os.path.join("Data", "system_dict"),
-    augmentation_style="rawlings",
-    augmentation_mode="output_disturbance",
-)
-
-A_aug = system_data["A_aug"]
-B_aug = system_data["B_aug"]
-C_aug = system_data["C_aug"]
-data_min = system_data["data_min"]
-data_max = system_data["data_max"]
-min_max_dict = system_data["min_max_dict"]
-
-inputs_number = int(B_aug.shape[1])
-y_sp_scenario = apply_min_max(setpoint_y_phys, data_min[inputs_number:], data_max[inputs_number:]) - apply_min_max(
-    steady_states["y_ss"],
-    data_min[inputs_number:],
-    data_max[inputs_number:],
-)
-
-poles = np.array(
-    [
-        0.44619852,
-        0.33547649,
-        0.36380595,
-        0.70467118,
-        0.3562966,
-        0.42900673,
-        0.4228262,
-        0.96916776,
-        0.91230187,
-    ]
-)
-L = compute_observer_gain(A_aug, C_aug, poles)
-
-set_points_number = int(C_aug.shape[0])
-STATE_DIM = int(A_aug.shape[0]) + set_points_number + inputs_number
-ACTION_DIM = int(B_aug.shape[1])
-ACTOR_LAYER_SIZES = [512, 512, 512, 512, 512]
-CRITIC_LAYER_SIZES = [512, 512, 512, 512, 512]
-BUFFER_CAPACITY = 40000
-ACTOR_LR = 5e-5
-CRITIC_LR = 5e-4
-SMOOTHING_STD = 0.1
-NOISE_CLIP = 0.01
-GAMMA = 0.995
-TAU = 0.005
-MAX_ACTION = 1
-POLICY_DELAY = 2
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BATCH_SIZE = 256
-STD_START = 0.0
-STD_END = 0.01
-STD_DECAY_RATE = 0.99992
-STD_DECAY_MODE = "exp"
-
-Qy_diag = np.array([8.0, 6.0])
-Su_diag = np.array([1.0, 1.0])
-Rdu_diag = np.array([1.0, 1.0])
-k_rel = np.array([0.0015, 0.00015])
-band_floor_phys = np.array([0.003, 0.035])
-gamma_fallback = 3.0
-fallback_event_penalty = 10.0
-reward_config, reward_fn = make_reward_fn_relative_QR(
-    data_min=data_min,
-    data_max=data_max,
-    n_inputs=inputs_number,
-    k_rel=k_rel,
-    band_floor_phys=band_floor_phys,
-    Q_diag=Qy_diag,
-    R_diag=Rdu_diag,
-    tau_frac=0.5,
-    gamma_out=1.0,
-    gamma_in=3.0,
-    beta=1.0,
-    gate="geom",
-    lam_in=3.0,
-    bonus_kind="quadratic",
-    gamma_fallback=gamma_fallback,
-    fallback_event_penalty=fallback_event_penalty,
-    R_fallback_diag=Rdu_diag,
-    maintenance_band_scale=0.5,
-    maintenance_move_weight=0.0,
-    jitter_weight=0.0,
-    dwell_bonus=0.0,
-)
-
-u_ss = apply_min_max(steady_states["ss_inputs"], data_min[:inputs_number], data_max[:inputs_number])
-b_min = apply_min_max(u_min, data_min[:inputs_number], data_max[:inputs_number])
-b_max = apply_min_max(u_max, data_min[:inputs_number], data_max[:inputs_number])
-b1 = (b_min[0] - u_ss[0], b_max[0] - u_ss[0])
-b2 = (b_min[1] - u_ss[1], b_max[1] - u_ss[1])
-bnds = (b1, b2) * cont_h
-IC_opt_template = np.zeros(inputs_number * cont_h)
-
-u_min_scaled = apply_min_max(u_min, data_min[:inputs_number], data_max[:inputs_number])
-u_max_scaled = apply_min_max(u_max, data_min[:inputs_number], data_max[:inputs_number])
-u_dev_min = u_min_scaled - u_ss
-u_dev_max = u_max_scaled - u_ss
-
-LMPC_obj = design_direct_lyapunov_mpc_solver(
-    A_aug=A_aug,
-    B_aug=B_aug,
-    C_aug=C_aug,
-    Qy_diag=Qy_diag,
-    NP=predict_h,
-    NC=cont_h,
-    Su_diag=Su_diag,
-    u_min=u_dev_min,
-    u_max=u_dev_max,
-    Rdu_diag=Rdu_diag,
-    terminal_set_on=True,
-    terminal_alpha_scale=1.0,
-)
-MPC_obj_offset_free = MpcSolver(
-    A_aug,
-    B_aug,
-    C_aug,
-    Q_out=Qy_diag,
-    R_in=Rdu_diag,
-    NP=predict_h,
-    NC=cont_h,
-)
-
-nominal_qs = 459.0
-nominal_qi = 108.0
-nominal_hA = 1.05e6
-qi_change = 0.95
-qs_change = 1.05
-ha_change = 0.92
-
-direct_target_config = {
-    "u_ref_weight": float(u_prev_penalty_weight),
-    "x_ref_weight": float(xs_prev_penalty_weight),
-}
+@dataclass
+class TD3AgentConfig:
+    state_dim: int
+    action_dim: int
+    actor_hidden: list[int]
+    critic_hidden: list[int]
+    gamma: float
+    actor_lr: float
+    critic_lr: float
+    batch_size: int
+    policy_delay: int
+    target_policy_smoothing_noise_std: float
+    noise_clip: float
+    max_action: float
+    tau: float
+    std_start: float
+    std_end: float
+    std_decay_rate: float
+    std_decay_mode: str
+    buffer_size: int
+    device: Any
+    actor_freeze: int
 
 
-def make_td3_agent() -> TD3Agent:
+@dataclass
+class SavedAgentEvalContext:
+    study_name: str
+    study_root: Path
+    scenario_suite: str
+    n_tests: int
+    set_points_len: int
+    test_cycle: list[bool]
+    warm_start: int
+    time_in_sub_episodes: int
+    force_final_test: bool
+    save_case_plots: bool
+    td3_agent_config: TD3AgentConfig
+    system_params: np.ndarray
+    system_design_params: np.ndarray
+    system_steady_state_inputs: np.ndarray
+    delta_t: float
+    steady_states: dict
+    min_max_dict: dict
+    data_min: np.ndarray
+    data_max: np.ndarray
+    inputs_number: int
+    y_sp_scenario: np.ndarray
+    L: np.ndarray
+    LMPC_obj: Any
+    MPC_obj_offset_free: Any
+    reward_fn: Any
+    reward_config: dict
+    gamma: float
+    rho_lyap: float
+    lyap_eps: float
+    lyap_tol: float
+    slack_penalty: float
+    fallback_event_penalty: float
+    plant_mode: str
+    disturbance_after_step: bool
+    use_target_output_for_tracking: bool
+    IC_opt_template: np.ndarray
+    bnds: tuple
+    direct_target_config: dict
+    nominal_qi: float
+    nominal_qs: float
+    nominal_hA: float
+    qi_change: float
+    qs_change: float
+    ha_change: float
+
+
+def build_td3_agent(config: TD3AgentConfig) -> TD3Agent:
     return TD3Agent(
-        state_dim=STATE_DIM,
-        action_dim=ACTION_DIM,
-        actor_hidden=ACTOR_LAYER_SIZES,
-        critic_hidden=CRITIC_LAYER_SIZES,
-        gamma=GAMMA,
-        actor_lr=ACTOR_LR,
-        critic_lr=CRITIC_LR,
-        batch_size=BATCH_SIZE,
-        policy_delay=POLICY_DELAY,
-        target_policy_smoothing_noise_std=SMOOTHING_STD,
-        noise_clip=NOISE_CLIP,
-        max_action=MAX_ACTION,
-        tau=TAU,
-        std_start=STD_START,
-        std_end=STD_END,
-        std_decay_rate=STD_DECAY_RATE,
-        std_decay_mode=STD_DECAY_MODE,
-        buffer_size=BUFFER_CAPACITY,
-        device=DEVICE,
-        actor_freeze=ACTOR_FREEZE,
+        state_dim=config.state_dim,
+        action_dim=config.action_dim,
+        actor_hidden=config.actor_hidden,
+        critic_hidden=config.critic_hidden,
+        gamma=config.gamma,
+        actor_lr=config.actor_lr,
+        critic_lr=config.critic_lr,
+        batch_size=config.batch_size,
+        policy_delay=config.policy_delay,
+        target_policy_smoothing_noise_std=config.target_policy_smoothing_noise_std,
+        noise_clip=config.noise_clip,
+        max_action=config.max_action,
+        tau=config.tau,
+        std_start=config.std_start,
+        std_end=config.std_end,
+        std_decay_rate=config.std_decay_rate,
+        std_decay_mode=config.std_decay_mode,
+        buffer_size=config.buffer_size,
+        device=config.device,
+        actor_freeze=config.actor_freeze,
     )
 
 
@@ -299,34 +150,45 @@ def latest_trained_agent_path(study: str) -> Path:
     return max(candidates, key=lambda path: (path.stat().st_mtime, str(path)))
 
 
-def resolve_agent_paths() -> tuple[Path, Path]:
-    if AGENT_SOURCE_MODE != "latest":
-        if COLD_AGENT_PATH is None or PRETRAIN_AGENT_PATH is None:
-            raise ValueError("Manual agent mode requires both COLD_AGENT_PATH and PRETRAIN_AGENT_PATH.")
-        return Path(COLD_AGENT_PATH), Path(PRETRAIN_AGENT_PATH)
+def resolve_agent_paths(
+    *,
+    agent_source_mode: str,
+    cold_agent_path: str | Path | None,
+    pretrain_agent_path: str | Path | None,
+) -> tuple[Path, Path]:
+    if agent_source_mode != "latest":
+        if cold_agent_path is None or pretrain_agent_path is None:
+            raise ValueError("Manual agent mode requires both cold and pretrained agent paths.")
+        return Path(cold_agent_path), Path(pretrain_agent_path)
 
-    cold_path = Path(COLD_AGENT_PATH) if COLD_AGENT_PATH else latest_trained_agent_path("ColdStart")
-    pretrain_path = Path(PRETRAIN_AGENT_PATH) if PRETRAIN_AGENT_PATH else latest_trained_agent_path("Pretrain")
+    cold_path = Path(cold_agent_path) if cold_agent_path else latest_trained_agent_path("ColdStart")
+    pretrain_path = Path(pretrain_agent_path) if pretrain_agent_path else latest_trained_agent_path("Pretrain")
     return cold_path, pretrain_path
 
 
-def load_agent(path: Path) -> TD3Agent:
-    agent = make_td3_agent()
+def load_agent(path: Path, config: TD3AgentConfig) -> TD3Agent:
+    agent = build_td3_agent(config)
     agent.load(str(path))
     return agent
 
 
-def build_eval_disturbance_profile() -> tuple[list[dict], dict[str, np.ndarray]]:
-    episode_steps = time_in_sub_episodes
+def build_eval_disturbance_profile(
+    *,
+    n_eval_episodes: int,
+    episode_steps: int,
+    nominal_qi: float,
+    nominal_qs: float,
+    nominal_ha: float,
+) -> tuple[list[dict], dict[str, np.ndarray]]:
     scenarios = [
-        {"name": "nominal", "qi": nominal_qi, "qs": nominal_qs, "ha": nominal_hA},
-        {"name": "qi_step", "qi": nominal_qi * 0.95, "qs": nominal_qs, "ha": nominal_hA},
-        {"name": "qs_step", "qi": nominal_qi, "qs": nominal_qs * 1.05, "ha": nominal_hA},
-        {"name": "ha_step", "qi": nominal_qi, "qs": nominal_qs, "ha": nominal_hA * 0.92},
-        {"name": "all_step", "qi": nominal_qi * 0.95, "qs": nominal_qs * 1.05, "ha": nominal_hA * 0.92},
+        {"name": "nominal", "qi": nominal_qi, "qs": nominal_qs, "ha": nominal_ha},
+        {"name": "qi_step", "qi": nominal_qi * 0.95, "qs": nominal_qs, "ha": nominal_ha},
+        {"name": "qs_step", "qi": nominal_qi, "qs": nominal_qs * 1.05, "ha": nominal_ha},
+        {"name": "ha_step", "qi": nominal_qi, "qs": nominal_qs, "ha": nominal_ha * 0.92},
+        {"name": "all_step", "qi": nominal_qi * 0.95, "qs": nominal_qs * 1.05, "ha": nominal_ha * 0.92},
     ]
-    if len(scenarios) != EVAL_N_EPISODES:
-        raise ValueError(f"EVAL_N_EPISODES={EVAL_N_EPISODES} must match scenario count {len(scenarios)}")
+    if len(scenarios) != int(n_eval_episodes):
+        raise ValueError(f"n_eval_episodes={n_eval_episodes} must match scenario count {len(scenarios)}")
 
     profile = {
         "qi": np.concatenate([np.full(episode_steps, item["qi"], dtype=float) for item in scenarios]),
@@ -336,17 +198,17 @@ def build_eval_disturbance_profile() -> tuple[list[dict], dict[str, np.ndarray]]
     return scenarios, profile
 
 
-def make_system() -> PolymerCSTR:
+def make_system(ctx: SavedAgentEvalContext) -> PolymerCSTR:
     return PolymerCSTR(
-        system_params,
-        system_design_params,
-        system_steady_state_inputs,
-        delta_t,
+        ctx.system_params,
+        ctx.system_design_params,
+        ctx.system_steady_state_inputs,
+        ctx.delta_t,
         deviation_form=False,
     )
 
 
-def jsonable(value):
+def jsonable(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, (np.floating, np.integer)):
@@ -375,40 +237,40 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def y_sp_phys_from_bundle(bundle: dict) -> np.ndarray:
+def y_sp_phys_from_bundle(ctx: SavedAgentEvalContext, bundle: dict) -> np.ndarray:
     y_sp = np.asarray(bundle.get("y_sp_steps", bundle.get("y_sp")), dtype=float)
-    y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[inputs_number:], data_max[inputs_number:])
+    y_ss_scaled = apply_min_max(
+        ctx.steady_states["y_ss"],
+        ctx.data_min[ctx.inputs_number:],
+        ctx.data_max[ctx.inputs_number:],
+    )
     y_sp_scaled = y_sp + y_ss_scaled
-    return reverse_min_max(y_sp_scaled, data_min[inputs_number:], data_max[inputs_number:])
+    return reverse_min_max(y_sp_scaled, ctx.data_min[ctx.inputs_number:], ctx.data_max[ctx.inputs_number:])
 
 
-def aligned_step_outputs(bundle: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Return post-step outputs aligned with the per-control-step setpoint array."""
+def aligned_step_outputs(ctx: SavedAgentEvalContext, bundle: dict) -> tuple[np.ndarray, np.ndarray]:
     y_system = np.asarray(bundle["y_system"], dtype=float)
-    y_sp_phys = y_sp_phys_from_bundle(bundle)
+    y_sp_phys = y_sp_phys_from_bundle(ctx, bundle)
     n_sp = int(y_sp_phys.shape[0])
-    if y_system.shape[0] == n_sp + 1:
-        y_aligned = y_system[1:]
-    else:
-        y_aligned = y_system[:n_sp]
+    y_aligned = y_system[1:] if y_system.shape[0] == n_sp + 1 else y_system[:n_sp]
     n = min(y_aligned.shape[0], y_sp_phys.shape[0])
     return y_aligned[:n], y_sp_phys[:n]
 
 
-def output_error_metrics(bundle: dict) -> dict:
-    y_system, y_sp_phys = aligned_step_outputs(bundle)
+def output_error_metrics(ctx: SavedAgentEvalContext, bundle: dict) -> dict:
+    y_system, y_sp_phys = aligned_step_outputs(ctx, bundle)
     n = min(y_system.shape[0], y_sp_phys.shape[0])
     err = y_system[:n] - y_sp_phys[:n]
     rmse = np.sqrt(np.nanmean(err ** 2, axis=0))
 
-    episode_tail = min(50, time_in_sub_episodes)
+    episode_tail = min(50, ctx.time_in_sub_episodes)
     tail_chunks = []
-    for start in range(0, n, time_in_sub_episodes):
-        stop = min(start + time_in_sub_episodes, n)
+    for start in range(0, n, ctx.time_in_sub_episodes):
+        stop = min(start + ctx.time_in_sub_episodes, n)
         if stop > start:
             tail_chunks.append(err[max(start, stop - episode_tail):stop])
     tail_err = np.vstack(tail_chunks) if tail_chunks else err[-episode_tail:]
-    final_err = err[min(n - 1, time_in_sub_episodes - 1)::time_in_sub_episodes]
+    final_err = err[min(n - 1, ctx.time_in_sub_episodes - 1)::ctx.time_in_sub_episodes]
     if final_err.size == 0:
         final_err = err[-1:]
 
@@ -425,13 +287,13 @@ def output_error_metrics(bundle: dict) -> dict:
     }
 
 
-def counts_by_episode(flags: np.ndarray) -> list[float]:
+def counts_by_episode(ctx: SavedAgentEvalContext, flags: np.ndarray) -> list[float]:
     values = np.asarray(flags, dtype=float).reshape(-1)
     counts = []
-    for start in range(0, values.size, time_in_sub_episodes):
-        stop = min(start + time_in_sub_episodes, values.size)
+    for start in range(0, values.size, ctx.time_in_sub_episodes):
+        stop = min(start + ctx.time_in_sub_episodes, values.size)
         counts.append(float(np.nansum(values[start:stop])))
-    return counts[:EVAL_N_EPISODES]
+    return counts[:ctx.n_tests]
 
 
 def actual_fallback_flags(bundle: dict) -> np.ndarray:
@@ -462,18 +324,25 @@ def would_be_activation_flags(bundle: dict) -> np.ndarray:
     return flags
 
 
-def make_unified_record(case_name: str, controller_type: str, bundle: dict, record: dict, debug_dir: Path | str) -> dict:
-    metrics = output_error_metrics(bundle)
-    fallback_counts = counts_by_episode(actual_fallback_flags(bundle))
-    intervention_counts = counts_by_episode(intervention_flags(bundle))
-    would_be_counts = counts_by_episode(would_be_activation_flags(bundle))
+def make_unified_record(
+    ctx: SavedAgentEvalContext,
+    case_name: str,
+    controller_type: str,
+    bundle: dict,
+    record: dict,
+    debug_dir: Path | str,
+) -> dict:
+    metrics = output_error_metrics(ctx, bundle)
+    fallback_counts = counts_by_episode(ctx, actual_fallback_flags(bundle))
+    intervention_counts = counts_by_episode(ctx, intervention_flags(bundle))
+    would_be_counts = counts_by_episode(ctx, would_be_activation_flags(bundle))
     n_steps = int(record.get("n_steps") or bundle.get("nFE") or 0)
 
     unified = {
         "case_name": case_name,
         "controller_type": controller_type,
-        "scenario_suite": EVAL_SCENARIO_SUITE,
-        "n_eval_episodes": EVAL_N_EPISODES,
+        "scenario_suite": ctx.scenario_suite,
+        "n_eval_episodes": ctx.n_tests,
         "n_steps": n_steps,
         "reward_mean": record.get("reward_mean"),
         "reward_sum": record.get("reward_sum"),
@@ -511,19 +380,19 @@ def plot_bar(records: list[dict], key: str, title: str, ylabel: str, output_path
     plt.close(fig)
 
 
-def plot_tracking(bundles: dict[str, dict], output_path: Path) -> None:
+def plot_tracking(ctx: SavedAgentEvalContext, bundles: dict[str, dict], output_path: Path) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
     output_names = ["eta", "T"]
     first_bundle = next(iter(bundles.values()))
-    _, y_sp_phys = aligned_step_outputs(first_bundle)
+    _, y_sp_phys = aligned_step_outputs(ctx, first_bundle)
     t = np.arange(y_sp_phys.shape[0])
     for idx, ax in enumerate(axes):
         ax.plot(t, y_sp_phys[:, idx], color="black", linewidth=2.0, linestyle="--", label="setpoint")
         for case_name, bundle in bundles.items():
-            y, y_sp_case = aligned_step_outputs(bundle)
+            y, y_sp_case = aligned_step_outputs(ctx, bundle)
             n = min(y.shape[0], y_sp_case.shape[0])
             ax.plot(np.arange(n), y[:n, idx], linewidth=1.2, label=case_name)
-        for boundary in range(time_in_sub_episodes, EVAL_N_EPISODES * time_in_sub_episodes, time_in_sub_episodes):
+        for boundary in range(ctx.time_in_sub_episodes, ctx.n_tests * ctx.time_in_sub_episodes, ctx.time_in_sub_episodes):
             ax.axvline(boundary, color="0.75", linewidth=0.8)
         ax.set_ylabel(output_names[idx])
         ax.grid(alpha=0.25)
@@ -535,14 +404,14 @@ def plot_tracking(bundles: dict[str, dict], output_path: Path) -> None:
     plt.close(fig)
 
 
-def plot_inputs(bundles: dict[str, dict], output_path: Path) -> None:
+def plot_inputs(ctx: SavedAgentEvalContext, bundles: dict[str, dict], output_path: Path) -> None:
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
     input_names = ["Qc", "Qm"]
     for idx, ax in enumerate(axes):
         for case_name, bundle in bundles.items():
             u = np.asarray(bundle["u_applied_phys"], dtype=float)
             ax.plot(np.arange(u.shape[0]), u[:, idx], linewidth=1.2, label=case_name)
-        for boundary in range(time_in_sub_episodes, EVAL_N_EPISODES * time_in_sub_episodes, time_in_sub_episodes):
+        for boundary in range(ctx.time_in_sub_episodes, ctx.n_tests * ctx.time_in_sub_episodes, ctx.time_in_sub_episodes):
             ax.axvline(boundary, color="0.75", linewidth=0.8)
         ax.set_ylabel(input_names[idx])
         ax.grid(alpha=0.25)
@@ -554,14 +423,14 @@ def plot_inputs(bundles: dict[str, dict], output_path: Path) -> None:
     plt.close(fig)
 
 
-def plot_episode_counts(bundles: dict[str, dict], output_path: Path) -> None:
-    labels = [f"E{idx + 1}" for idx in range(EVAL_N_EPISODES)]
-    x = np.arange(EVAL_N_EPISODES)
+def plot_episode_counts(ctx: SavedAgentEvalContext, bundles: dict[str, dict], output_path: Path) -> None:
+    labels = [f"E{idx + 1}" for idx in range(ctx.n_tests)]
+    x = np.arange(ctx.n_tests)
     width = 0.8 / max(len(bundles), 1)
     fig, ax = plt.subplots(figsize=(11, 5))
     for idx, (case_name, bundle) in enumerate(bundles.items()):
         flags = would_be_activation_flags(bundle) if case_name == "mpc_only" else actual_fallback_flags(bundle)
-        counts = counts_by_episode(flags)
+        counts = counts_by_episode(ctx, flags)
         offset = (idx - (len(bundles) - 1) / 2) * width
         ax.bar(x + offset, counts, width=width, label=case_name)
     ax.set_xticks(x)
@@ -575,7 +444,12 @@ def plot_episode_counts(bundles: dict[str, dict], output_path: Path) -> None:
     plt.close(fig)
 
 
-def make_comparison_plots(records: list[dict], bundles: dict[str, dict], figures_dir: Path) -> list[str]:
+def make_comparison_plots(
+    ctx: SavedAgentEvalContext,
+    records: list[dict],
+    bundles: dict[str, dict],
+    figures_dir: Path,
+) -> list[str]:
     if not HAS_MATPLOTLIB:
         print("matplotlib is not available; skipping comparison plots.")
         return []
@@ -592,368 +466,269 @@ def make_comparison_plots(records: list[dict], bundles: dict[str, dict], figures
         plot_bar(records, key, title, ylabel, path)
         plot_paths.append(str(path))
     path = figures_dir / "comparison_output_tracking.png"
-    plot_tracking(bundles, path)
+    plot_tracking(ctx, bundles, path)
     plot_paths.append(str(path))
     path = figures_dir / "comparison_input_trajectories.png"
-    plot_inputs(bundles, path)
+    plot_inputs(ctx, bundles, path)
     plot_paths.append(str(path))
     path = figures_dir / "comparison_fallback_intervention_counts.png"
-    plot_episode_counts(bundles, path)
+    plot_episode_counts(ctx, bundles, path)
     plot_paths.append(str(path))
     return plot_paths
 
 
-def run_rl_saved_agent_case(case_name: str, agent_path: Path, scenarios: list[dict], profile: dict[str, np.ndarray]):
+def _timing_metadata(start_time: float, n_steps: int, episode_len: int) -> dict:
+    wall_clock_seconds = float(time.perf_counter() - start_time)
+    n_episodes = int(np.ceil(n_steps / float(episode_len))) if episode_len > 0 else 0
+    return {
+        "wall_clock_seconds": wall_clock_seconds,
+        "wall_clock_seconds_per_episode": None if n_episodes <= 0 else wall_clock_seconds / float(n_episodes),
+        "wall_clock_seconds_per_step": None if n_steps <= 0 else wall_clock_seconds / float(n_steps),
+        "wall_clock_steps_per_second": None if wall_clock_seconds <= 0.0 else n_steps / wall_clock_seconds,
+        "wall_clock_n_steps": int(n_steps),
+        "wall_clock_n_episodes": int(n_episodes),
+    }
+
+
+def run_rl_saved_agent_case(
+    ctx: SavedAgentEvalContext,
+    *,
+    case_name: str,
+    agent_path: Path,
+    scenarios: list[dict],
+    profile: dict[str, np.ndarray],
+):
     case_config = {
-        "study_name": study_name,
+        "study_name": ctx.study_name,
         "case_name": case_name,
         "controller_mode": "saved_rl_direct_safety_gate",
         "agent_path": str(agent_path),
-        "scenario_suite": EVAL_SCENARIO_SUITE,
+        "scenario_suite": ctx.scenario_suite,
         "scenarios": scenarios,
-        "n_tests": n_tests,
-        "set_points_len": set_points_len,
-        "test_cycle": TEST_CYCLE,
-        "force_final_test": FORCE_FINAL_TEST,
+        "n_tests": ctx.n_tests,
+        "set_points_len": ctx.set_points_len,
+        "test_cycle": ctx.test_cycle,
+        "force_final_test": ctx.force_final_test,
         "training_phase_config": None,
-        "reward_config": reward_config,
-        "gamma": GAMMA,
-        "rho_lyap": rho_lyap,
-        "lyap_eps": lyap_eps,
-        "fallback_event_penalty": fallback_event_penalty,
-        "direct_target_config": dict(direct_target_config),
+        "reward_config": ctx.reward_config,
+        "gamma": ctx.gamma,
+        "rho_lyap": ctx.rho_lyap,
+        "lyap_eps": ctx.lyap_eps,
+        "fallback_event_penalty": ctx.fallback_event_penalty,
+        "direct_target_config": dict(ctx.direct_target_config),
     }
-    agent = load_agent(agent_path)
-    cstr_case = make_system()
+    agent = load_agent(agent_path, ctx.td3_agent_config)
+    cstr_case = make_system(ctx)
     timer_start = time.perf_counter()
     results_case = run_rl_train(
         system=cstr_case,
-        y_sp_scenario=y_sp_scenario,
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-        steady_states=steady_states,
-        min_max_dict=min_max_dict,
+        y_sp_scenario=ctx.y_sp_scenario,
+        n_tests=ctx.n_tests,
+        set_points_len=ctx.set_points_len,
+        steady_states=ctx.steady_states,
+        min_max_dict=ctx.min_max_dict,
         agent=agent,
-        MPC_obj=LMPC_obj,
-        L=L,
-        data_min=data_min,
-        data_max=data_max,
-        warm_start=warm_start,
-        test_cycle=TEST_CYCLE,
-        nominal_qi=nominal_qi,
-        nominal_qs=nominal_qs,
-        nominal_ha=nominal_hA,
-        qi_change=qi_change,
-        qs_change=qs_change,
-        ha_change=ha_change,
-        reward_fn=reward_fn,
-        mode=plant_mode,
-        rho_lyap=rho_lyap,
-        lyap_eps=lyap_eps,
-        lyap_tol=lyap_tol,
+        MPC_obj=ctx.LMPC_obj,
+        L=ctx.L,
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        warm_start=ctx.warm_start,
+        test_cycle=ctx.test_cycle,
+        nominal_qi=ctx.nominal_qi,
+        nominal_qs=ctx.nominal_qs,
+        nominal_ha=ctx.nominal_hA,
+        qi_change=ctx.qi_change,
+        qs_change=ctx.qs_change,
+        ha_change=ctx.ha_change,
+        reward_fn=ctx.reward_fn,
+        mode=ctx.plant_mode,
+        rho_lyap=ctx.rho_lyap,
+        lyap_eps=ctx.lyap_eps,
+        lyap_tol=ctx.lyap_tol,
         seed=0,
         use_lyap=True,
-        IC_opt=IC_opt_template.copy(),
-        bnds=bnds,
+        IC_opt=ctx.IC_opt_template.copy(),
+        bnds=ctx.bnds,
         cons=(),
         reuse_mpc_solution_as_ic=False,
         reset_system_on_entry=True,
         projection_backend="direct_accept_or_fallback",
         first_step_contraction_on=True,
         direct_target_mode="bounded",
-        direct_target_config=direct_target_config,
+        direct_target_config=ctx.direct_target_config,
         direct_tracking_use_target_output=False,
-        diagnostic_lmpc_obj=LMPC_obj,
-        disturbance_after_step=disturbance_after_step,
+        diagnostic_lmpc_obj=ctx.LMPC_obj,
+        disturbance_after_step=ctx.disturbance_after_step,
         training_phase_config=None,
-        force_final_test=FORCE_FINAL_TEST,
+        force_final_test=ctx.force_final_test,
         disturbance_profile=profile,
     )
-    wall_clock_seconds = float(time.perf_counter() - timer_start)
-    n_steps = int(results_case[5])
-    episode_len = int(results_case[6])
-    n_episodes = int(np.ceil(n_steps / float(episode_len))) if episode_len > 0 else 0
-    timing = {
-        "wall_clock_seconds": wall_clock_seconds,
-        "wall_clock_seconds_per_episode": None if n_episodes <= 0 else wall_clock_seconds / float(n_episodes),
-        "wall_clock_seconds_per_step": None if n_steps <= 0 else wall_clock_seconds / float(n_steps),
-        "wall_clock_steps_per_second": None if wall_clock_seconds <= 0.0 else n_steps / wall_clock_seconds,
-        "wall_clock_n_steps": n_steps,
-        "wall_clock_n_episodes": n_episodes,
-    }
+    timing = _timing_metadata(timer_start, int(results_case[5]), int(results_case[6]))
     case_config.update(timing)
     bundle = build_safety_filter_run_bundle(
         source=case_name,
         results=results_case,
-        steady_states=steady_states,
+        steady_states=ctx.steady_states,
         config=case_config,
-        min_max_dict=min_max_dict,
-        data_min=data_min,
-        data_max=data_max,
-        extra={"reward_config": reward_config, "timing": timing, "scenarios": scenarios},
+        min_max_dict=ctx.min_max_dict,
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        extra={"reward_config": ctx.reward_config, "timing": timing, "scenarios": scenarios},
     )
     debug_dir = save_safety_filter_debug_artifacts(
         bundle,
-        directory=str(study_root),
+        directory=str(ctx.study_root),
         prefix_name=case_name,
-        save_plots=SAVE_CASE_PLOTS,
+        save_plots=ctx.save_case_plots,
     )
     record = make_safety_filter_comparison_record(case_name, bundle, debug_dir)
     record.update(timing)
     return bundle, Path(debug_dir), record
 
 
-def run_mpc_only_case(scenarios: list[dict], profile: dict[str, np.ndarray]):
+def run_mpc_only_case(ctx: SavedAgentEvalContext, *, scenarios: list[dict], profile: dict[str, np.ndarray]):
     case_name = "mpc_only"
     case_config = {
-        "study_name": study_name,
+        "study_name": ctx.study_name,
         "case_name": case_name,
         "controller_mode": "offset_free_mpc_with_direct_diagnostics",
-        "scenario_suite": EVAL_SCENARIO_SUITE,
+        "scenario_suite": ctx.scenario_suite,
         "scenarios": scenarios,
-        "n_tests": n_tests,
-        "set_points_len": set_points_len,
-        "force_final_test": FORCE_FINAL_TEST,
-        "direct_target_config": dict(direct_target_config),
+        "n_tests": ctx.n_tests,
+        "set_points_len": ctx.set_points_len,
+        "force_final_test": ctx.force_final_test,
+        "direct_target_config": dict(ctx.direct_target_config),
     }
-    cstr_case = make_system()
+    cstr_case = make_system(ctx)
     timer_start = time.perf_counter()
     results_case = run_offset_free_mpc_with_direct_diagnostics(
         system=cstr_case,
-        MPC_obj=MPC_obj_offset_free,
-        diagnostic_LMPC_obj=LMPC_obj,
-        y_sp_scenario=y_sp_scenario,
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-        steady_states=steady_states,
-        IC_opt=IC_opt_template.copy(),
-        bnds=bnds,
-        L=L,
-        data_min=data_min,
-        data_max=data_max,
-        test_cycle=TEST_CYCLE,
-        reward_fn=reward_fn,
-        nominal_qi=nominal_qi,
-        nominal_qs=nominal_qs,
-        nominal_ha=nominal_hA,
-        qi_change=qi_change,
-        qs_change=qs_change,
-        ha_change=ha_change,
+        MPC_obj=ctx.MPC_obj_offset_free,
+        diagnostic_LMPC_obj=ctx.LMPC_obj,
+        y_sp_scenario=ctx.y_sp_scenario,
+        n_tests=ctx.n_tests,
+        set_points_len=ctx.set_points_len,
+        steady_states=ctx.steady_states,
+        IC_opt=ctx.IC_opt_template.copy(),
+        bnds=ctx.bnds,
+        L=ctx.L,
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        test_cycle=ctx.test_cycle,
+        reward_fn=ctx.reward_fn,
+        nominal_qi=ctx.nominal_qi,
+        nominal_qs=ctx.nominal_qs,
+        nominal_ha=ctx.nominal_hA,
+        qi_change=ctx.qi_change,
+        qs_change=ctx.qs_change,
+        ha_change=ctx.ha_change,
         target_mode="bounded",
-        target_config=direct_target_config,
+        target_config=ctx.direct_target_config,
         target_H=None,
-        mode=plant_mode,
-        disturbance_after_step=disturbance_after_step,
-        use_target_output_for_tracking=use_target_output_for_tracking,
-        rho_lyap=rho_lyap,
-        lyap_eps=lyap_eps,
+        mode=ctx.plant_mode,
+        disturbance_after_step=ctx.disturbance_after_step,
+        use_target_output_for_tracking=ctx.use_target_output_for_tracking,
+        rho_lyap=ctx.rho_lyap,
+        lyap_eps=ctx.lyap_eps,
         first_step_contraction_on=True,
         reset_system_on_entry=True,
         solver_options={"warm_start": True},
-        force_final_test=FORCE_FINAL_TEST,
+        force_final_test=ctx.force_final_test,
         disturbance_profile=profile,
     )
-    wall_clock_seconds = float(time.perf_counter() - timer_start)
-    n_steps = int(results_case["nFE"])
-    episode_len = int(results_case["time_in_sub_episodes"])
-    n_episodes = int(np.ceil(n_steps / float(episode_len))) if episode_len > 0 else 0
-    timing = {
-        "wall_clock_seconds": wall_clock_seconds,
-        "wall_clock_seconds_per_episode": None if n_episodes <= 0 else wall_clock_seconds / float(n_episodes),
-        "wall_clock_seconds_per_step": None if n_steps <= 0 else wall_clock_seconds / float(n_steps),
-        "wall_clock_steps_per_second": None if wall_clock_seconds <= 0.0 else n_steps / wall_clock_seconds,
-        "wall_clock_n_steps": n_steps,
-        "wall_clock_n_episodes": n_episodes,
-    }
+    timing = _timing_metadata(timer_start, int(results_case["nFE"]), int(results_case["time_in_sub_episodes"]))
     case_config.update(timing)
     bundle = build_direct_lyapunov_run_bundle(
         source=case_name,
         results=results_case,
-        steady_states=steady_states,
+        steady_states=ctx.steady_states,
         config=case_config,
-        data_min=data_min,
-        data_max=data_max,
-        extra={"reward_config": reward_config, "min_max_dict": min_max_dict, "timing": timing, "scenarios": scenarios},
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        extra={"reward_config": ctx.reward_config, "min_max_dict": ctx.min_max_dict, "timing": timing, "scenarios": scenarios},
     )
     debug_dir = save_direct_lyapunov_debug_artifacts(
         bundle,
-        directory=str(study_root),
+        directory=str(ctx.study_root),
         prefix_name=case_name,
-        save_plots=SAVE_CASE_PLOTS,
+        save_plots=ctx.save_case_plots,
     )
     record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
     record.update(timing)
     return bundle, Path(debug_dir), record
 
 
-def run_direct_lmpc_case(scenarios: list[dict], profile: dict[str, np.ndarray]):
+def run_direct_lmpc_case(ctx: SavedAgentEvalContext, *, scenarios: list[dict], profile: dict[str, np.ndarray]):
     case_name = "direct_lmpc"
     case_config = {
-        "study_name": study_name,
+        "study_name": ctx.study_name,
         "case_name": case_name,
         "controller_mode": "direct_lyapunov_mpc",
-        "scenario_suite": EVAL_SCENARIO_SUITE,
+        "scenario_suite": ctx.scenario_suite,
         "scenarios": scenarios,
-        "n_tests": n_tests,
-        "set_points_len": set_points_len,
-        "force_final_test": FORCE_FINAL_TEST,
-        "direct_target_config": dict(direct_target_config),
+        "n_tests": ctx.n_tests,
+        "set_points_len": ctx.set_points_len,
+        "force_final_test": ctx.force_final_test,
+        "direct_target_config": dict(ctx.direct_target_config),
     }
-    cstr_case = make_system()
+    cstr_case = make_system(ctx)
     timer_start = time.perf_counter()
     results_case = run_direct_output_disturbance_lyapunov_mpc(
         system=cstr_case,
-        LMPC_obj=LMPC_obj,
-        y_sp_scenario=y_sp_scenario,
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-        steady_states=steady_states,
-        IC_opt=IC_opt_template.copy(),
-        bnds=bnds,
-        L=L,
-        data_min=data_min,
-        data_max=data_max,
-        test_cycle=TEST_CYCLE,
-        reward_fn=reward_fn,
-        nominal_qi=nominal_qi,
-        nominal_qs=nominal_qs,
-        nominal_ha=nominal_hA,
-        qi_change=qi_change,
-        qs_change=qs_change,
-        ha_change=ha_change,
+        LMPC_obj=ctx.LMPC_obj,
+        y_sp_scenario=ctx.y_sp_scenario,
+        n_tests=ctx.n_tests,
+        set_points_len=ctx.set_points_len,
+        steady_states=ctx.steady_states,
+        IC_opt=ctx.IC_opt_template.copy(),
+        bnds=ctx.bnds,
+        L=ctx.L,
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        test_cycle=ctx.test_cycle,
+        reward_fn=ctx.reward_fn,
+        nominal_qi=ctx.nominal_qi,
+        nominal_qs=ctx.nominal_qs,
+        nominal_ha=ctx.nominal_hA,
+        qi_change=ctx.qi_change,
+        qs_change=ctx.qs_change,
+        ha_change=ctx.ha_change,
         target_mode="bounded",
         lyapunov_mode="hard",
-        target_config=direct_target_config,
+        target_config=ctx.direct_target_config,
         target_H=None,
-        mode=plant_mode,
-        disturbance_after_step=disturbance_after_step,
-        use_target_output_for_tracking=use_target_output_for_tracking,
+        mode=ctx.plant_mode,
+        disturbance_after_step=ctx.disturbance_after_step,
+        use_target_output_for_tracking=ctx.use_target_output_for_tracking,
         skip_terminal_if_alpha_small=True,
         alpha_terminal_min=1e-8,
         use_target_on_solver_fail=False,
-        rho_lyap=rho_lyap,
-        lyap_eps=lyap_eps,
-        slack_penalty=slack_penalty,
+        rho_lyap=ctx.rho_lyap,
+        lyap_eps=ctx.lyap_eps,
+        slack_penalty=ctx.slack_penalty,
         first_step_contraction_on=True,
         reset_system_on_entry=True,
         solver_options={"warm_start": True},
-        force_final_test=FORCE_FINAL_TEST,
+        force_final_test=ctx.force_final_test,
         disturbance_profile=profile,
     )
-    wall_clock_seconds = float(time.perf_counter() - timer_start)
-    n_steps = int(results_case["nFE"])
-    episode_len = int(results_case["time_in_sub_episodes"])
-    n_episodes = int(np.ceil(n_steps / float(episode_len))) if episode_len > 0 else 0
-    timing = {
-        "wall_clock_seconds": wall_clock_seconds,
-        "wall_clock_seconds_per_episode": None if n_episodes <= 0 else wall_clock_seconds / float(n_episodes),
-        "wall_clock_seconds_per_step": None if n_steps <= 0 else wall_clock_seconds / float(n_steps),
-        "wall_clock_steps_per_second": None if wall_clock_seconds <= 0.0 else n_steps / wall_clock_seconds,
-        "wall_clock_n_steps": n_steps,
-        "wall_clock_n_episodes": n_episodes,
-    }
+    timing = _timing_metadata(timer_start, int(results_case["nFE"]), int(results_case["time_in_sub_episodes"]))
     case_config.update(timing)
     bundle = build_direct_lyapunov_run_bundle(
         source=case_name,
         results=results_case,
-        steady_states=steady_states,
+        steady_states=ctx.steady_states,
         config=case_config,
-        data_min=data_min,
-        data_max=data_max,
-        extra={"reward_config": reward_config, "min_max_dict": min_max_dict, "timing": timing, "scenarios": scenarios},
+        data_min=ctx.data_min,
+        data_max=ctx.data_max,
+        extra={"reward_config": ctx.reward_config, "min_max_dict": ctx.min_max_dict, "timing": timing, "scenarios": scenarios},
     )
     debug_dir = save_direct_lyapunov_debug_artifacts(
         bundle,
-        directory=str(study_root),
+        directory=str(ctx.study_root),
         prefix_name=case_name,
-        save_plots=SAVE_CASE_PLOTS,
+        save_plots=ctx.save_case_plots,
     )
     record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
     record.update(timing)
     return bundle, Path(debug_dir), record
-
-
-def main() -> None:
-    cold_agent_path, pretrain_agent_path = resolve_agent_paths()
-    scenarios, disturbance_profile = build_eval_disturbance_profile()
-    planned = {
-        "study_root": study_root,
-        "cold_agent_path": cold_agent_path,
-        "pretrain_agent_path": pretrain_agent_path,
-        "scenario_suite": EVAL_SCENARIO_SUITE,
-        "scenarios": scenarios,
-        "n_eval_episodes": EVAL_N_EPISODES,
-        "set_points_len": EVAL_SET_POINTS_LEN,
-        "time_in_sub_episodes": time_in_sub_episodes,
-        "n_steps": int(len(disturbance_profile["qi"])),
-        "controllers": ["cold_saved_rl", "pretrained_saved_rl", "mpc_only", "direct_lmpc"],
-    }
-    if DRY_RUN:
-        print("Saved-agent evaluation dry run:")
-        pprint(jsonable(planned))
-        return
-
-    study_root.mkdir(parents=True, exist_ok=True)
-    print(f"Saving saved-agent evaluation artifacts under: {study_root}")
-    print("Using agents:")
-    print(f"  cold: {cold_agent_path}")
-    print(f"  pretrained: {pretrain_agent_path}")
-
-    bundles = {}
-    records = []
-    summary_records = []
-
-    for case_name, path in (
-        ("cold_saved_rl", cold_agent_path),
-        ("pretrained_saved_rl", pretrain_agent_path),
-    ):
-        print(f"Running {case_name}")
-        bundle, debug_dir, record = run_rl_saved_agent_case(case_name, path, scenarios, disturbance_profile)
-        bundles[case_name] = bundle
-        records.append(record)
-        summary_records.append(make_unified_record(case_name, "saved_rl_safety_gate", bundle, record, debug_dir))
-        pprint(summary_records[-1])
-
-    print("Running mpc_only")
-    bundle, debug_dir, record = run_mpc_only_case(scenarios, disturbance_profile)
-    bundles["mpc_only"] = bundle
-    records.append(record)
-    summary_records.append(make_unified_record("mpc_only", "offset_free_mpc_diagnostic", bundle, record, debug_dir))
-    pprint(summary_records[-1])
-
-    print("Running direct_lmpc")
-    bundle, debug_dir, record = run_direct_lmpc_case(scenarios, disturbance_profile)
-    bundles["direct_lmpc"] = bundle
-    records.append(record)
-    summary_records.append(make_unified_record("direct_lmpc", "direct_lyapunov_mpc", bundle, record, debug_dir))
-    pprint(summary_records[-1])
-
-    comparison_csv = study_root / "comparison_table.csv"
-    write_csv(comparison_csv, summary_records)
-
-    raw_records_csv = study_root / "raw_comparison_records.csv"
-    write_csv(raw_records_csv, records)
-
-    scenarios_csv = study_root / "scenario_table.csv"
-    write_csv(scenarios_csv, scenarios)
-
-    figures_dir = study_root / "figures"
-    plot_paths = make_comparison_plots(summary_records, bundles, figures_dir)
-
-    summary = {
-        **planned,
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
-        "comparison_table": comparison_csv,
-        "raw_comparison_records": raw_records_csv,
-        "scenario_table": scenarios_csv,
-        "plot_paths": plot_paths,
-    }
-    with (study_root / "evaluation_summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(jsonable(summary), handle, indent=2)
-
-    print("Saved-agent evaluation complete.")
-    print(f"Comparison table: {comparison_csv}")
-
-
-if __name__ == "__main__":
-    main()
