@@ -119,7 +119,7 @@ training_phase_config = {
     "bc_actor_updates_per_step": 4,
     "bc_exploration_std": 0.2,
     "full_rl_exploration_std_start": 0.2,
-    "full_rl_exploration_std_end": 0.1,
+    "full_rl_exploration_std_end": 0.01,
     "full_rl_exploration_decay_mode": "linear",
     "bc_teacher_policy": "direct_lyapunov_mpc",
     "bc_behavior_source": "policy_with_lmpc_teacher_demo",
@@ -188,7 +188,7 @@ POLICY_DELAY = 2
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 256
 STD_START = 0.0
-STD_END = 0.0
+STD_END = 0.01
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 

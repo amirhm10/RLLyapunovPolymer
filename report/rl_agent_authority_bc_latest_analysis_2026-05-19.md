@@ -977,7 +977,7 @@ Do not suggest only "increase fallback penalty from 0.5" as a new idea. That has
 
 ### Exploration, Policy Noise, And Discount Already Changed
 
-- Cold start now uses BC exploration `0.2`, full-RL exploration decaying linearly from `0.2` to `0.1`, and TD3 target policy smoothing noise `0.1`.
+- Cold start now uses BC exploration `0.2`, full-RL exploration decaying linearly from `0.2` to `0.01`, and TD3 target policy smoothing noise `0.1`.
 - Pretrained now uses BC exploration `0.02`, full-RL exploration decaying linearly from `0.02` to `0.01`, and TD3 target policy smoothing noise `0.01`.
 - BC exploration is active through `bc_behavior_noise = "gaussian"`. It does not use a smaller special BC noise floor.
 - The TD3 discount factor is now `GAMMA = 0.995`. This is different from the Lyapunov contraction factor, which remains `rho_lyap = 0.99`.
@@ -1021,6 +1021,6 @@ with $\rho = 0.99$ and $\epsilon = 10^{-3}$. A larger $\epsilon$ relaxes strict 
 - Do not re-suggest converting active notebooks to scripts, cleaning root entrypoints, saving trained agents, or adding wall-clock timing; those are already done.
 - Do not re-suggest plotting MPC-only fallback as zero; the report now uses would-be gate activation for that diagnostic.
 - Do not re-suggest making BC execute the LMPC teacher directly; the current design intentionally keeps the RL actor in authority.
-- Do not re-suggest pretrained exploration `0.02 -> 0.01` or cold-start exploration `0.2 -> 0.1`; these are already active, including during BC.
+- Do not re-suggest pretrained exploration `0.02 -> 0.01` or cold-start exploration `0.2 -> 0.01`; these are already active, including during BC.
 - Do not re-suggest maintenance or jitter penalties during the current high-exploration diagnostic run; they are intentionally disabled for now.
 - Do not treat `lyap_eps = 1e-3` as proof that the method is MPC-only. It is a relaxed Lyapunov gate and should be judged together with activation, fallback, and correction-gap logs.

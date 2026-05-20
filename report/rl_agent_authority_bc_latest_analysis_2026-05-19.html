@@ -1144,7 +1144,7 @@ dwell_bonus = 0.0
 <p>Do not suggest only &quot;increase fallback penalty from 0.5&quot; as a new idea. That has already been implemented through a larger correction-gap multiplier and a larger fixed event cost. The useful next check is whether the new <code>gamma_fallback = 3.0</code> and <code>fallback_event_penalty = 2.0</code> reduce activation without damaging tracking.</p>
 <h3>Exploration, Policy Noise, And Discount Already Changed</h3>
 <ul>
-<li>Cold start now uses BC exploration <code>0.2</code>, full-RL exploration decaying linearly from <code>0.2</code> to <code>0.1</code>, and TD3 target policy smoothing noise <code>0.1</code>.</li>
+<li>Cold start now uses BC exploration <code>0.2</code>, full-RL exploration decaying linearly from <code>0.2</code> to <code>0.01</code>, and TD3 target policy smoothing noise <code>0.1</code>.</li>
 <li>Pretrained now uses BC exploration <code>0.02</code>, full-RL exploration decaying linearly from <code>0.02</code> to <code>0.01</code>, and TD3 target policy smoothing noise <code>0.01</code>.</li>
 <li>BC exploration is active through <code>bc_behavior_noise = &quot;gaussian&quot;</code>. It does not use a smaller special BC noise floor.</li>
 <li>The TD3 discount factor is now <code>GAMMA = 0.995</code>. This is different from the Lyapunov contraction factor, which remains <code>rho_lyap = 0.99</code>.</li>
@@ -1184,7 +1184,7 @@ $$</p>
 <li>Do not re-suggest converting active notebooks to scripts, cleaning root entrypoints, saving trained agents, or adding wall-clock timing; those are already done.</li>
 <li>Do not re-suggest plotting MPC-only fallback as zero; the report now uses would-be gate activation for that diagnostic.</li>
 <li>Do not re-suggest making BC execute the LMPC teacher directly; the current design intentionally keeps the RL actor in authority.</li>
-<li>Do not re-suggest pretrained exploration <code>0.02 -&gt; 0.01</code> or cold-start exploration <code>0.2 -&gt; 0.1</code>; these are already active, including during BC.</li>
+<li>Do not re-suggest pretrained exploration <code>0.02 -&gt; 0.01</code> or cold-start exploration <code>0.2 -&gt; 0.01</code>; these are already active, including during BC.</li>
 <li>Do not re-suggest maintenance or jitter penalties during the current high-exploration diagnostic run; they are intentionally disabled for now.</li>
 <li>Do not treat <code>lyap_eps = 1e-3</code> as proof that the method is MPC-only. It is a relaxed Lyapunov gate and should be judged together with activation, fallback, and correction-gap logs.</li>
 </ul>
