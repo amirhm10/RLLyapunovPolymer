@@ -48,7 +48,7 @@ from utils.td3_helpers import load_and_prepare_system_data
 predict_h = 9
 cont_h = 3
 rho_lyap = 0.99
-lyap_eps = 1e-3
+lyap_eps = 1e-2
 slack_penalty = 1e6
 use_target_on_solver_fail = False
 plant_mode = "disturb"
