@@ -1,275 +1,247 @@
 ---
 name: slide-maker
-description: Use this skill when the user asks to create, revise, audit, polish, or scientifically improve slides, Beamer presentations, talks, conference presentations, thesis slides, defense slides, research update slides, or presentation figures. Trigger especially for tasks mentioning slides, Beamer, LaTeX slides, presentation, talk, figures, plots, flowcharts, results, journal comparison, paper figures, or PhD-level research storytelling.
+description: Use this skill when the user asks to create, revise, audit, polish, or scientifically improve slides, Beamer presentations, talks, conference presentations, thesis slides, defense slides, research update slides, result slides, paper-to-slide summaries, or presentation figures. Trigger especially for slides, Beamer, LaTeX slides, presentation, talk, figures, plots, diagrams, flowcharts, results, journal comparison, paper figures, RL, MPC, Lyapunov, pH, polymer, distillation, CSTR, C2 splitter, or PhD-level research storytelling.
 ---
 
-# Slide Maker
+# Slide Maker Skill
 
-## Overview
+Use this skill for academic research slides in the RL/MPC/process-control repositories. The goal is not only to make slides look nicer. The goal is to turn verified research evidence into a clear PhD-level oral story.
 
-Create or improve academic research slides by reading the repository first, testing each claim against evidence, and then shaping the deck into a strong oral research story. In this repository, prioritize scientific judgment over decoration and push back on slide wording that overclaims what the results actually show.
+For result-based slides, use the `research-result-loop` mindset first: inspect the repository, identify the data and reports, reconstruct the method, check the claims, create or audit figures, then write the slide.
 
-## Start With Repository Evidence
+## Core identity
 
-Inspect the repository before writing or editing slides. In this project, check these files and folders first unless the user points elsewhere:
+This is a research-to-Beamer skill.
 
-- `MACC2026/macc2026_poster_slides.tex`
-- `MACC2026/macc2026_3m_three_column_slide.tex`
-- `MACC2026/research_summary_2026_draft.tex`
-- `main.tex`
-- `revised.tex`
-- `Response to Reviewers.tex`
-- `ref_lib.bib`
-- `acs-main.bib`
-- `MACC2026/research_summary_2026_draft.bib`
-- `Figures/`
-- `MACC2026/Figures/`
+Prioritize:
 
-Infer and reuse the local research context:
+- scientific correctness
+- claim-versus-evidence discipline
+- readable figures
+- clear mathematical notation
+- reproducible result slides
+- simple academic English
+- the user's existing Beamer style
 
-- The central theme is practical reinforcement learning for chemical process control with MPC kept in the loop.
-- The main case studies are the styrene polymerization reactor and the Aspen Dynamics `C_2` splitter.
-- The recurring method families are MPC-pretrained TD3, offset-aware reward shaping, mixed replay, RL-assisted MPC, and Lyapunov-filtered safe RL.
-- The recurring baselines and labels include OF-MPC, `RL_1`, `RL_2`, residual correction, weight tuning, horizon tuning, and model multipliers.
-- The existing slide style in `MACC2026/` uses `Copenhagen`, a maroon structure color, muted blue/green/red accents, compact blocks, and `\graphicspath{{./}{Figures/}{MACC2026/Figures/}}`.
+Do not prioritize decoration over evidence. Push back on slide text that overclaims what the data show.
 
-Preserve local notation whenever it already exists, especially symbols like `\eta`, `T`, `x_{24,\mathrm{C_2H_6}}`, `T_{85}`, `Q`, `R`, `N_p`, and `N_c`.
+## Case-study mindset
 
-If the task is ambiguous, make the best scientifically reasonable assumption, continue, and record the assumption in the final summary. In this repo, default to a research update or conference-style technical audience unless the artifacts clearly indicate a defense, class talk, or journal response.
+Treat these as related RL/process-control case studies:
 
-## Follow This Workflow
+- polymer CSTR control
+- RL-assisted MPC with horizon, weight, model/matrix, residual, TD3, SAC, DQN, or dueling DQN agents
+- direct Lyapunov MPC, safety gates, projection filters, fallback controllers, and target selectors
+- distillation or C2 splitter control, including Aspen Dynamics workflows
+- pH control or pH neutralization RL. Treat pH as another RL/process-control system. Slides should discuss pH dynamics, acid/base or buffer modeling, sensor reliability, flow-rate actions, reward design, constraints, setpoint tracking, and safety when relevant.
 
-### 1. Understand the scientific context first
+## Start with repository evidence
 
-- Map existing Beamer decks, TeX files, BibTeX files, reports, images, notebooks, result folders, and plotting scripts.
-- Identify the main method being presented.
-- Identify the case study or system being discussed.
-- Infer the intended audience from filenames, nearby documents, slide density, and tone.
-- Identify the current theme, color palette, figure conventions, and notation.
-- Do not stop for clarification unless multiple interpretations would materially change the science or create overwrite risk.
+Before creating or editing slides, inspect what exists:
 
-### 2. Start from the scientific story
+- Beamer decks: `StatsControl2026/`, `MACC2026/`, root `*.tex`, and other slide folders
+- reports: `report/`, `reports/`, `change-reports/`
+- figures: `figures/`, `Figures/`, `report/figures/`, `MACC2026/Figures/`, `StatsControl2026/figures/`
+- results and data: `Results/`, `Result/`, `Data/`, `data/`, `outputs/`, `runs/`, `experiments/`
+- notebooks and scripts used to generate figures
+- papers: `papers/`, `Papers/`, `literature/`, `references/`, `pdfs/`, `PDFs/`, and local `.bib` files
 
-Build the deck around the argument, not the decoration.
+If a location does not exist, do not invent it. Use what is actually in the repository.
 
-- Give every slide one clear message.
-- Prefer conclusion-style slide titles over topic-only titles.
-- Use a logical flow: motivation, gap, method, formulation, implementation, results, interpretation, limitations, next steps.
-- Avoid overcrowded frames.
-- Prefer figures, schematics, and short comparisons over dense paragraphs.
-- Use equations only when they help the audience understand the method or a result.
-- Use simple academic English.
-- Reuse the user's writing style when it is already clear and technically sound.
-- Avoid semicolons in prose.
-- Put mathematics in LaTeX math mode.
+## Preserve the user's slide style
 
-For PhD-style research storytelling in this repo, usually tell one of these arcs:
+When a local style exists, preserve it. In the current Stats and Control 2026 style, use these cues:
 
-1. Why linear or fixed MPC becomes insufficient in nonlinear or drifting operation.
-2. What practical RL modification is added without discarding MPC.
-3. How the controller is implemented on the polymer reactor or Aspen Dynamics `C_2` splitter.
-4. What evidence shows improvement over OF-MPC or an earlier RL baseline.
-5. What still remains limited, noisy, or unfinished.
+- Beamer 16:9
+- `Copenhagen` theme
+- maroon structure color
+- muted blue, green, and red project colors
+- compact blocks
+- short scientific captions
+- TikZ diagrams for method logic
+- `takeawaybox` or an equivalent final message box
+- project narrative: Project 1, Project 2, Project 3 when relevant
 
-### 3. Reason scientifically on every technical slide
+Do not change the global theme unless the user explicitly asks.
 
-Do not merely make slides prettier. For each technical slide, identify:
+## Slide logic: claim, evidence, takeaway
 
-- the claim
-- the evidence
-- what the figure, table, or equation is supposed to prove
-- what limitation or uncertainty still remains
+For each technical slide, identify:
 
-Check whether the result actually supports the stated conclusion. If results are weak, noisy, contradictory, or incomplete, present them honestly and add the most useful next experiment.
+1. Claim: what the slide title says
+2. Evidence: figure, equation, table, or diagram supporting the claim
+3. Takeaway: what the audience should conclude
 
-For RL and MPC slides, explicitly check:
+Prefer conclusion-style titles over topic-only titles.
 
-- What is the baseline
-- What is the proposed method
-- What is held constant across comparisons
-- What metric is optimized
-- Whether reward improvement agrees with tracking improvement
-- Whether gains come from RL itself, reward shaping, mixed replay, residual action, model update, or another change
-- Whether constraints, offset-free behavior, disturbance handling, and input movement are treated fairly
-- Whether the plots support the final claim
+Weak title:
 
-If the evidence is not strong enough, tighten the claim instead of overstating the result.
+`Project 3 Results`
 
-### 4. Create or improve figures when the evidence needs it
+Better title:
 
-Actively look for opportunities to improve figures instead of only reusing old ones. Inspect notebooks, CSV files, NumPy files, pickle files, MATLAB files, PDFs, images, and existing plotting scripts when they are present.
+`The Lyapunov gate rejects actions mainly when the target is too far from the reachable region`
 
-Useful figure types include:
+Then support it with evidence such as rejection frequency, target mismatch, or contraction residual plots.
 
-- tracking plots with outputs, setpoints, and tolerance bands
-- manipulated-input trajectories with bounds
-- reward curves and smoothed reward curves
-- IAE, ISE, RMSE, final offset, settling time, and constraint-violation summaries
-- OF-MPC vs `RL_1` vs `RL_2` comparisons
-- ablation plots
-- algorithm flowcharts
-- closed-loop block diagrams
-- timelines for pretraining, warm start, online fine-tuning, and evaluation
-- conceptual diagrams for replay-buffer design, reward shaping, residual policies, model re-identification, and Lyapunov filtering
+## Recommended story structures
 
-Follow these figure rules:
+For a research update, use:
 
-- Do not create misleading figures.
-- Do not hide poor performance.
-- Do not compare methods unless the setup is fair.
-- Keep labels, legends, and units readable from a slide.
-- Give every figure a short, proper caption that states what the audience should notice.
-- When you create a figure yourself, do not label it as "Created figure" on the slide. Write a normal scientific caption instead.
-- Use line styles and markers that still work in grayscale.
-- Note deviation coordinates, scaling, or normalization when needed.
-- Keep labels consistent across the deck.
-- Save generated figures in a local, reproducible place such as `Figures/`, `MACC2026/Figures/`, `slides/figures/`, or a task-specific figure folder near the deck.
-- Keep the source script or notebook reproducible.
+1. motivation
+2. limitation of fixed MPC or naive RL
+3. proposed RL/MPC role
+4. mathematical formulation
+5. implementation details
+6. main results
+7. interpretation
+8. limitations
+9. next experiment
 
-In this repo, prefer to preserve local conventions such as red dashed setpoint lines, clear separation of reward plots from tracking plots, and naming that distinguishes nominal, fluctuation, ramp, and last-episode evaluations.
+For short talks, compress aggressively:
 
-### 5. Add flowcharts or diagrams when the method is hard to parse from text
+- 3 to 5 minutes: title, problem, method, one main result, takeaway
+- 10 to 15 minutes: 8 to 12 main slides plus backup
+- committee or defense update: 12 to 20 main slides plus backup
 
-When the method is algorithmic, create a clean flowchart or block diagram if it improves comprehension. Common diagrams in this repo include:
+Do not copy a report paragraph into slides. Convert it into a spoken argument.
 
-- OF-MPC data generation -> behavior cloning -> online TD3 fine-tuning
+## Result-to-slide workflow
+
+When slides depend on results:
+
+1. Find the exact result files and reports.
+2. Identify the baseline and proposed method.
+3. Check what was held constant.
+4. Compute or extract metrics when possible.
+5. Use existing figures only after checking they match the claim.
+6. Create new figures when existing figures are missing, unreadable, or not targeted to the slide claim.
+7. State whether the plotted result is single-run, last episode, mean over seeds, or mean plus spread.
+8. Separate training reward from evaluation tracking.
+9. Avoid claiming improvement if the comparison is not fair.
+
+Useful slide figures include:
+
+- tracking plots with setpoints and tolerance bands
+- manipulated inputs with bounds
+- reward curves with smoothing and seed spread
+- final-episode evaluation plots
+- IAE, ISE, RMSE, final offset, overshoot, and settling summaries
+- fallback rate, safety-gate acceptance, projection size, and Lyapunov residual plots
+- target-selector plots comparing raw setpoint, admissible target, actual output, and `u_s`
+- pH plots showing measured pH, reliable sensor channels, acid/base/water flow rates, setpoints, and prediction error
+
+## Method-slide workflow
+
+When the method is hard to explain with text, create a diagram.
+
+Useful diagrams include:
+
+- OF-MPC data generation, behavior cloning, and online TD3 fine-tuning
+- RL-assisted MPC supervisor around a fixed MPC optimizer
+- horizon, weight, model/matrix, and residual agent roles
 - offset-free observer and MPC loop
-- RL-assisted MPC architecture
-- residual policy wrapped around MPC
-- Lyapunov or safety filter with fallback logic
-- mixed replay with prioritized, recent, and uniform sampling
-- reward-shaping logic near the setpoint
-- model re-identification + MPC + RL update loop
+- direct Lyapunov target and safety gate
+- RL propose, gate certify, MPC fallback
+- replay-buffer design and mixed sampling
+- pH mixing and sensor-feedback loop
 
-Use TikZ when the deck is already LaTeX-heavy or when text fidelity matters. Otherwise use Python to create clean SVG, PDF, or PNG figures with large fonts. If starting from scratch and no better theme exists, reuse `assets/repo_beamer_palette.tex` for a local color and panel baseline.
+Use TikZ when exact labels and LaTeX notation matter. Use Python-generated PDF, SVG, or PNG when data or geometry is easier to manage outside LaTeX.
 
-### 6. Connect the deck to papers carefully
+## Figure quality rules
 
-Read the relevant paper sections before citing them. Prefer citations already present in the local `.bib` files. When comparing to papers:
+Before placing a figure on a slide, check:
 
-- explain what is similar
-- explain what is different
-- explain what the contribution is
-- distinguish background from direct comparison evidence
+- Does it support the slide claim?
+- Are axes, units, setpoints, bounds, and legends readable?
+- Are fonts large enough for projection?
+- Are line styles distinguishable in grayscale?
+- Is the crop tight enough?
+- Are labels consistent with the manuscript or report?
+- Is the figure generated from the correct data file?
+- Is a zoomed tail plot needed to show offset or settling?
 
-Never invent citations. Never claim that a paper supports a statement unless that support has been verified from the paper or from reliable metadata.
+Do not hide poor performance. If results are mixed, present them as mixed and explain the next experiment.
 
-Do not copy copyrighted plots from papers unless permission is clear. Prefer one of these:
+## Paper and citation workflow
 
-- cite the paper and summarize the point in your own words
-- redraw a simplified conceptual version
-- create a comparison table
-- create a placeholder slide stating what external figure is still needed and why
+Use papers carefully.
 
-### 7. Edit Beamer and LaTeX responsibly
+Search in this order:
+
+1. local paper folders if present
+2. local BibTeX files
+3. user-provided PDFs or reports
+4. verified online sources when web access is available
+
+When citing a paper, explain what role it plays:
+
+- MPC baseline or industrial MPC motivation
+- RL process-control motivation
+- safe RL
+- offline RL
+- residual RL
+- value-augmented MPC
+- reward-shaping issues
+- pH neutralization or buffer-modeling context
+
+Do not invent citations. Do not claim a paper supports something unless the source was checked.
+
+## Beamer editing rules
 
 When editing an existing deck:
 
-- preserve the existing theme unless there is a clear reason to change it
-- keep the existing color scheme, title style, block style, and bibliography style
-- keep the source maintainable
-- avoid manual spacing hacks when a cleaner structure exists
-- use macros for repeated notation
-- use small but readable captions
-- keep figure widths consistent
-- avoid overfull boxes when possible
-- visually inspect the compiled slide pages and make sure text, figures, legends, and diagrams actually fit on the slide without crowding, clipping, or awkward whitespace
+- preserve the theme, colors, notation, and bibliography style
+- keep each slide to one main message
+- reduce word-heavy frames
+- keep equations only when they help the oral explanation
+- move dense derivations to backup slides
+- use macros for repeated notation where practical
+- avoid broad rewrites unless requested
+- avoid fragile spacing hacks unless needed for layout
+- compile after significant edits when possible
+- inspect the rendered PDF pages, not only the TeX source
 
-When creating a new deck in this repo:
+If helper scripts exist, use them when helpful:
 
-- start from a professional academic structure
-- include title, motivation, gap, method, results, interpretation, limitations, next steps, and backup slides
-- include bibliography support using the local bibliography style already used nearby
-- use placeholders only when evidence is unavailable
-- put long derivations, hyperparameters, extra plots, and ablations in backup slides
-- visually inspect the resulting pages and iterate until the layout looks presentation-ready, not only source-valid
+- `scripts/audit_beamer.py` for missing images, heavy frames, placeholders, and long lines
+- `scripts/collect_slide_assets.py` for finding slide inputs
+- `scripts/check_figures.py` for figure dimensions and naming issues
+- PDF-to-image conversion or visual inspection tools when available
 
-Compile the deck when possible with the engine already used in the project. If changes introduce compile errors, fix them. If an issue remains unresolved, report it clearly.
+If these scripts do not exist in the current repository, proceed manually and do not pretend they were run.
 
-### 8. Use audit mode for existing slides
+## Visual review workflow
 
-When asked to review or improve existing slides, audit:
+For serious slide edits:
 
-- story flow
-- slide titles
-- visual density
-- figure readability
-- mathematical consistency
-- notation consistency
-- claims versus evidence
-- citation quality
-- whether each slide has one clear message
-- whether the overall deck looks like PhD-level research work
+1. Compile the deck if possible.
+2. Convert or inspect the PDF pages visually when possible.
+3. Check for clipping, tiny fonts, overcrowding, missing figures, bad crops, and unreadable legends.
+4. Iterate until the slide is presentation-ready.
 
-Lead with the most important scientific and communication issues first. Use `scripts/audit_beamer.py` for a quick local pass, then do a manual scientific review.
+If compilation or visual inspection is not possible, report that clearly.
 
-### 9. Use result-to-slide mode when the user gives results first
+## Output summary for slide tasks
 
-When asked to make slides from results:
+At the end of a slide task, report:
 
-- find the relevant result files
-- identify the experiment setup
-- identify baselines and variants
-- compute or extract useful metrics when possible
-- create clean plots where useful
-- write slide conclusions from evidence
-- add one or more interpretation slides
-- add limitations and next-experiment slides
+1. Files inspected
+2. Slide story or method used
+3. Figures created, reused, or audited
+4. Files changed
+5. Compilation or validation performed
+6. Remaining issues
+7. Best next improvement
 
-Avoid making the result look stronger than it is.
+## Preservation rules
 
-### 10. Use report-to-slide mode when the user gives a paper or report first
-
-When asked to turn a report into slides:
-
-- read the report first
-- extract the main narrative, equations, figures, results, and claims
-- compress paragraphs into slide-level messages
-- keep detailed derivations in backup slides
-- preserve citations
-- produce a deck that can be spoken aloud, not a copied report
-
-In this repo, `main.tex`, `revised.tex`, and `MACC2026/research_summary_2026_draft.tex` are the first places to mine for narrative and notation.
-
-### 11. End each task with a clear summary
-
-At the end of a slide task, summarize:
-
-- what files were created or changed
-- what figures were created or updated
-- what assumptions were made
-- what was compiled or tested
-- any unresolved issues
-- the most useful next improvements
-
-### 12. Protect the repo and the science
-
-- Do not delete existing slides, figures, notebooks, or reports unless explicitly asked.
-- Do not overwrite important files when creating a clearly named new version is safer.
-- Do not modify research code unless figure generation or analysis truly requires it.
-- Keep generated scripts reproducible.
-- Prefer adding new files over risky edits.
-- Never fabricate results, citations, or paper claims.
-
-## Continuation Rule For This Repo
-
-When the user starts an ongoing slide task in this repository, continue using this skill implicitly across follow-up turns until the user clearly changes topic. Do not require the user to restate `slide-maker` on every slide-related message in the same working thread.
-
-## Use the Bundled Helpers
-
-Read the relevant reference file only when it helps the current task:
-
-- `references/slide_quality_checklist.md`
-- `references/phd_research_story_structure.md`
-- `references/beamer_style_checklist.md`
-- `references/figure_quality_checklist.md`
-- `references/paper_comparison_checklist.md`
-- `references/rl_mpc_slide_checklist.md`
-
-Use the local scripts when they save time:
-
-- `scripts/audit_beamer.py` checks for missing images, word-heavy frames, overfull-prone lines, and placeholder text.
-- `scripts/collect_slide_assets.py` inventories likely slide inputs such as TeX, BibTeX, figures, PDFs, notebooks, and result files.
-- `scripts/check_figures.py` checks figure existence, basic dimensions, and naming quirks.
-
-Use these helpers to support scientific slide work, not to replace judgment.
+- Do not delete old slides, figures, notebooks, reports, or raw data unless explicitly asked.
+- Prefer creating a new version over overwriting important work.
+- Do not fabricate results, citations, or paper claims.
+- Do not make the slides stronger than the evidence.
+- Keep edits minimal, traceable, and consistent with the user's style.
+- Use clear academic English.
+- Use LaTeX for equations.
+- Avoid hard-to-copy special symbols in prose.
+- Do not use semicolons in prose.
