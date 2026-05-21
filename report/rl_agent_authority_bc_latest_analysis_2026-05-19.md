@@ -2,13 +2,13 @@
 
 ## Objective
 
-This report analyzes the latest rerun after increasing the fixed fallback event penalty from `2.0` to `10.0` in the two safety-gate RL scripts. The direct Lyapunov MPC comparison is kept from the latest available direct run, and the matched MPC-only diagnostics remain visible because they explain how often the Lyapunov gate would have activated without intervention.
+This report analyzes the latest `300`-episode rerun of the three active non-evaluation entrypoints. The two safety-gate RL scripts no longer force a final evaluation episode, so all `300` RL episodes are training episodes. The direct Lyapunov MPC comparison is now from the matched `300`-episode direct run. MPC-only diagnostics remain visible because they explain how often the Lyapunov gate would have activated without intervention.
 
 Analyzed folders:
 
-- Cold start: `results/ColdStart/20260520_134418`
-- Pretrained: `results/Pretrain/20260520_134418`
-- Direct LMPC: `results/directLyap/20260520_005354`
+- Cold start: `results/ColdStart/20260520_165642`
+- Pretrained: `results/Pretrain/20260520_165645`
+- Direct LMPC: `results/directLyap/20260520_165653`
 
 Active scripts for future reruns:
 
@@ -590,123 +590,108 @@ $$
 
 This separation matters because a controller can have good raw tracking but poor safety-gate authority, or good final offset but poor transient behavior.
 
-## Full-Horizon Results
+## 300-Episode Full-Horizon Results
 
-![Performance and runtime](figures/2026-05-20_fixed_event_10_latest_analysis/performance_runtime_summary.png)
+All three latest non-evaluation runs use `300` episodes, `400` steps per setpoint block, two setpoint blocks per episode, and therefore `240000` control steps per case.
+
+![Performance and runtime](figures/2026-05-20_300_episode_latest_analysis/performance_runtime_summary.png)
 
 | Case | Reward mean | eta RMSE | T RMSE | Mean RMSE | ms per step |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Cold RL | -14.493 | 0.215 | 0.470 | 0.343 | 14.13 |
-| Cold MPC-only | -12.962 | 0.212 | 0.442 | 0.327 | 12.28 |
-| Pretrained RL | -5.944 | 0.131 | 0.264 | 0.198 | 14.85 |
-| Pretrained MPC-only | -3.457 | 0.123 | 0.226 | 0.175 | 12.28 |
-| Direct LMPC | -4.331 | 0.191 | 0.565 | 0.378 | 32.06 |
-| Direct MPC-only | -4.331 | 0.191 | 0.565 | 0.378 | 5.61 |
+| Cold RL | -12.215 | 0.189 | 0.409 | 0.299 | 13.50 |
+| Cold MPC-only | -10.803 | 0.186 | 0.388 | 0.287 | 12.28 |
+| Pretrained RL | -5.873 | 0.127 | 0.252 | 0.190 | 14.14 |
+| Pretrained MPC-only | -3.311 | 0.120 | 0.218 | 0.169 | 11.55 |
+| Direct LMPC | -4.336 | 0.191 | 0.565 | 0.378 | 28.03 |
+| Direct MPC-only | -4.333 | 0.191 | 0.565 | 0.378 | 4.84 |
 
-Main reading: increasing the fixed event penalty to `10.0` did not improve raw tracking. Pretrained RL remains the better learned controller on full-horizon reward and raw-setpoint RMSE, but it still does not beat its corresponding MPC-only diagnostic. Cold-start RL is still worse than cold MPC-only over the full horizon. The direct LMPC rows are unchanged from the latest available direct run.
+Main reading: pretrained RL is still the best learned controller on full-horizon reward and raw-setpoint RMSE, but it still does not beat the corresponding MPC-only diagnostic. Cold-start RL improved relative to the prior `200`-episode analysis, but it still trails cold MPC-only on full-horizon tracking and reward. Direct LMPC has the weakest full-horizon raw-setpoint RMSE and remains much slower than the safety-gated RL cases.
 
-The best raw-tracking result is still the pretrained-script MPC-only diagnostic. The larger fixed event penalty made fallback frequency slightly more expensive, but it did not turn the safety-gated RL policy into a controller that dominates the offset-free MPC baseline.
-
-## Fixed Event Penalty Effect
-
-The new run isolates one change: `fallback_event_penalty` increased from `2.0` to `10.0`, while `gamma_fallback = 3.0` and the remaining reward weights stayed fixed.
-
-![Fixed event penalty effect](figures/2026-05-20_fixed_event_10_latest_analysis/fixed_event_penalty_effect.png)
-
-| RL case | Event penalty | Fallback rate | Mean RMSE | Reward mean | Fixed event mean |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Cold RL | 2.0 | 1.25% | 0.332 | -13.891 | 0.027 |
-| Cold RL | 10.0 | 1.17% | 0.343 | -14.493 | 0.126 |
-| Pretrained RL | 2.0 | 3.34% | 0.196 | -5.809 | 0.068 |
-| Pretrained RL | 10.0 | 3.18% | 0.198 | -5.944 | 0.327 |
-
-This is a useful negative result. The higher fixed event penalty reduced fallback frequency slightly for both RL agents, but the reduction was small and came with slightly worse full-horizon RMSE and lower augmented reward. The policy did not learn a qualitatively more gate-compatible strategy from this scalar change alone.
+The best raw-tracking row remains the pretrained-script MPC-only diagnostic. That is not the final controller we want, but it is scientifically useful because it shows that better raw tracking still conflicts with the current Lyapunov contraction diagnostic.
 
 ## RL Authority And Learning Phases
 
-Cold-start RL still uses the safety gate less often than pretrained RL. That part remains consistent. What the new run adds is that the higher event penalty trims fallback counts slightly without closing the performance gap.
+The longer run keeps the same qualitative split: cold-start RL is more gate-compatible, while pretrained RL tracks better and uses the safety layer more often.
 
-![RL authority diagnostics](figures/2026-05-20_fixed_event_10_latest_analysis/rl_authority_diagnostics.png)
+![RL authority diagnostics](figures/2026-05-20_300_episode_latest_analysis/rl_authority_diagnostics.png)
 
-| RL case | Actual intervention rate | Fallback rate | Accepted rate | Penalty mean | Action gap mean |
+| RL case | Actual intervention | Fallback rate | Accepted rate | Penalty mean | Gap penalty mean |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Cold RL | 1.26% | 1.17% | 98.74% | 0.774 | 0.036 |
-| Pretrained RL | 3.27% | 3.18% | 96.73% | 1.537 | 0.077 |
+| Cold RL | 1.38% | 1.29% | 98.62% | 0.836 | 0.707 |
+| Pretrained RL | 3.63% | 3.52% | 96.37% | 1.652 | 1.300 |
 
-Pretrained RL still asks the gate to intervene more often and receives the larger fallback penalty, but it still tracks much better than cold start. The pretrained policy prior remains helpful for tracking, even though it is less naturally compatible with the Lyapunov gate.
+The fixed event contribution is `10.0` times the fallback rate, so the remaining gap penalty is the total fallback penalty minus that fixed event contribution. Pretrained RL pays roughly twice the fallback penalty of cold RL, yet still produces much better full-horizon tracking. This means the pretrained policy prior remains useful, even though it is less compatible with the current safety gate.
 
-![Episode reward and fallback trends](figures/2026-05-20_fixed_event_10_latest_analysis/rl_episode_reward_fallback_trends.png)
-
-The phase breakdown still shows the same mechanism: cold-start BC is very costly under high exploration, then online learning recovers. The higher event penalty did not fix that early transient.
+![Episode reward and fallback trends](figures/2026-05-20_300_episode_latest_analysis/rl_episode_reward_fallback_trends.png)
 
 | Case | Phase | Mean reward | Fallback count | Intervention count | Mean episode RMSE |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Cold RL | BC 1-20 | -78.206 | 110 | 160 | 0.906 |
-| Cold RL | Handoff 21-25 | -9.183 | 21 | 22 | 0.279 |
-| Cold RL | Online 26-200 | -7.363 | 1740 | 1832 | 0.191 |
-| Pretrained RL | BC 1-20 | -9.449 | 140 | 144 | 0.316 |
-| Pretrained RL | Handoff 21-25 | -4.844 | 46 | 51 | 0.217 |
-| Pretrained RL | Online 26-200 | -5.575 | 4901 | 5034 | 0.177 |
+| Cold RL | BC 1-20 | -77.961 | 116 | 172 | 0.901 |
+| Cold RL | Handoff 21-25 | -8.835 | 19 | 23 | 0.248 |
+| Cold RL | Online 26-300 | -7.495 | 2958 | 3114 | 0.189 |
+| Pretrained RL | BC 1-20 | -9.933 | 127 | 131 | 0.322 |
+| Pretrained RL | Handoff 21-25 | -4.700 | 73 | 75 | 0.200 |
+| Pretrained RL | Online 26-300 | -5.599 | 8245 | 8510 | 0.175 |
 
-Cold start is more gate-compatible, but not better overall. Pretrained RL still has the better online RMSE, even after the higher event penalty.
+The cold-start damage is still concentrated in the BC phase, where the untrained actor explores aggressively. However, the additional `100` episodes matter: over the last `50` episodes, cold RL and pretrained RL have nearly the same mean episode RMSE, about `0.173`, while cold RL uses fewer fallback interventions. The full-horizon gap remains because the cold run carries the early BC penalty.
 
-![Activation and contraction counts](figures/2026-05-20_fixed_event_10_latest_analysis/activation_contraction_episode_counts.png)
+![Activation and contraction counts](figures/2026-05-20_300_episode_latest_analysis/activation_contraction_episode_counts.png)
 
-## Tail Offset
+## Tail Offset And Last Episode Tracking
 
-The final 100 steps of the final episode are used as a compact steady-offset check. Lower values mean closer approach to the final setpoint.
+The final `100` steps of the final episode are used as a compact steady-offset check. Lower values mean closer approach to the final setpoint.
 
-![Tail offset comparison](figures/2026-05-20_fixed_event_10_latest_analysis/tail_offset_comparison.png)
+![Tail offset comparison](figures/2026-05-20_300_episode_latest_analysis/tail_offset_comparison.png)
 
 | Case | Tail eta abs mean | Tail T abs mean | Final eta abs | Final T abs |
 | --- | ---: | ---: | ---: | ---: |
-| Cold RL | 0.0032 | 0.0092 | 0.0032 | 0.0092 |
-| Cold MPC-only | 0.0113 | 0.0297 | 0.0113 | 0.0297 |
-| Pretrained RL | 0.0084 | 0.0446 | 0.0012 | 0.0006 |
-| Pretrained MPC-only | 0.0093 | 0.0079 | 0.0093 | 0.0079 |
-| Direct LMPC | 0.0030 | 0.0164 | 0.0015 | 0.0082 |
-| Direct MPC-only | 0.0030 | 0.0164 | 0.0015 | 0.0082 |
+| Cold RL | 0.0281 | 0.1350 | 0.0619 | 0.0825 |
+| Cold MPC-only | 0.0072 | 0.0172 | 0.0061 | 0.0029 |
+| Pretrained RL | 0.0081 | 0.0277 | 0.0170 | 0.0029 |
+| Pretrained MPC-only | 0.0107 | 0.0197 | 0.0116 | 0.0310 |
+| Direct LMPC | 0.0030 | 0.0164 | 0.0015 | 0.0081 |
+| Direct MPC-only | 0.0030 | 0.0164 | 0.0015 | 0.0081 |
 
-Pretrained RL has a nearly zero final sample error, but its 100-step tail temperature error remains high. This means it reaches the final setpoint late or oscillates inside the tail window. Cold-start RL has better tail eta offset, but not better full-horizon tracking. The reward still does not align full-horizon tracking, final sample offset, and tail-window offset perfectly.
+Direct LMPC looks much better in the final tail window than in full-horizon RMSE. That means the direct controller can settle near the final setpoint, but it spends enough of the episode tracking a modified or slow target that full-horizon raw-setpoint RMSE remains poor. Cold RL is the opposite in this run: it improves over the full horizon but has a poor final tail window.
 
-![Last episode tracking](figures/2026-05-20_fixed_event_10_latest_analysis/last_episode_tracking_primary_methods.png)
+![Last episode tracking](figures/2026-05-20_300_episode_latest_analysis/last_episode_tracking_primary_methods.png)
 
 ## MPC-only Would-Be Gate Activation
 
 For MPC-only cases, actual fallback is zero by construction. The useful diagnostic is therefore how often the Lyapunov contraction condition would have failed if the gate had been active.
 
-![MPC-only would-be activation](figures/2026-05-20_fixed_event_10_latest_analysis/mpc_only_would_be_activation.png)
+![MPC-only would-be activation](figures/2026-05-20_300_episode_latest_analysis/mpc_only_would_be_activation.png)
 
 | MPC-only case | Would-be activation rate | Actual fallback rate |
 | --- | ---: | ---: |
-| Cold MPC-only | 10.44% | 0.00% |
-| Pretrained MPC-only | 27.84% | 0.00% |
+| Cold MPC-only | 10.48% | 0.00% |
+| Pretrained MPC-only | 28.89% | 0.00% |
 | Direct MPC-only | 2.75% | not used |
 
-The pretrained-script MPC-only diagnostic still has the best raw tracking and the highest would-be gate activation rate. This remains the cleanest evidence of the target-selector tension: good raw tracking can violate the current Lyapunov contraction test more often.
+The pretrained-script MPC-only diagnostic still has the best raw tracking and the highest would-be gate activation rate. This remains the clearest evidence of the target-selector tension: a policy can track the raw setpoint well while violating the current first-step Lyapunov contraction test more often.
 
 ## Runtime Claim
 
-Wall-clock timing still supports the claim that safety-gated RL is faster than direct LMPC. Cold RL and pretrained RL run at about 14.1 ms and 14.8 ms per control step. Direct LMPC, from the latest available direct run, runs at about 32.1 ms per step. Thus the RL safety-gate cases are about 2.2 times faster than direct LMPC in this comparison.
+Wall-clock timing still supports the claim that safety-gated RL is faster than direct LMPC. Cold RL runs at `13.50` ms per control step, pretrained RL runs at `14.14` ms per step, and direct LMPC runs at `28.03` ms per step. In this matched `300`-episode comparison, safety-gated RL is therefore about `2.0x` faster than direct LMPC.
 
-The direct MPC-only diagnostic is still much faster at about 5.6 ms per step. The RL-script MPC-only diagnostics are around 12.3 ms per step because they carry diagnostic and study-loop overhead. The fair claim is still not "RL is fastest"; it is "safety-gated RL is faster than direct LMPC, while plain MPC-only remains faster than both."
+The direct MPC-only diagnostic is still much faster at `4.84` ms per step. The fair claim is not "RL is fastest"; it is "safety-gated RL is faster than direct LMPC, while plain MPC-only remains faster than both."
 
 ## Reward Function Diagnosis
 
-With `fallback_event_penalty = 10.0`, the fixed event term is now clearly visible. The correction-gap term still dominates, especially for pretrained RL, but event frequency is no longer negligible.
+With `fallback_event_penalty = 10.0`, the fixed event term remains visible, but the correction-gap term still dominates the fallback penalty.
 
-![Reward penalty scale](figures/2026-05-20_fixed_event_10_latest_analysis/reward_penalty_scale.png)
+![Reward penalty scale](figures/2026-05-20_300_episode_latest_analysis/reward_penalty_scale.png)
 
-| RL case | Reward mean | Base mean | Fallback penalty mean | Fixed event mean | Correction mean | Penalty share |
+| RL case | Reward mean | Base mean | Penalty mean | Fixed event mean | Correction mean | Penalty share |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cold RL | -14.493 | -13.719 | 0.774 | 0.126 | 0.648 | 5.6% |
-| Pretrained RL | -5.944 | -4.407 | 1.537 | 0.327 | 1.210 | 34.9% |
+| Cold RL | -12.215 | -11.379 | 0.836 | 0.129 | 0.707 | 7.3% |
+| Pretrained RL | -5.873 | -4.221 | 1.652 | 0.352 | 1.300 | 39.1% |
 
-For pretrained RL, the fallback penalty is about one third of the base reward magnitude. That is large enough to be learned from. The fact that fallback dependence only dropped modestly suggests the remaining issue is not only penalty visibility. The policy may need a different learning signal, curriculum, target definition, or action parameterization to become gate-compatible without losing tracking.
+For pretrained RL, the fallback penalty is about `39%` of the base reward magnitude. That is large enough to matter, but it still does not eliminate gate dependence. The remaining issue is probably not simply "make fallback more expensive." The policy may need a learning signal that makes gate-compatible actions easier to discover, or a target selector that makes the contraction test less misaligned with raw tracking.
 
-![Reward base and fallback trends](figures/2026-05-20_fixed_event_10_latest_analysis/reward_base_fallback_episode_trends.png)
+![Reward base and fallback trends](figures/2026-05-20_300_episode_latest_analysis/reward_base_fallback_episode_trends.png)
 
-The current analyzed RL reward setup is:
+The analyzed RL reward setup is:
 
 ```text
 Qy_diag = [8.0, 6.0]
@@ -733,28 +718,27 @@ TD3 GAMMA = 0.995
 
 The target diagnostics still point to the same unresolved issue: the direct target can be acceptable to the Lyapunov machinery while still being a poor raw-setpoint tracking center.
 
-![Target diagnostics](figures/2026-05-20_fixed_event_10_latest_analysis/target_diagnostics_summary.png)
+![Target diagnostics](figures/2026-05-20_300_episode_latest_analysis/target_diagnostics_summary.png)
 
-| Case | Target residual max | Mean input-target gap | Mean state-target gap | Target rate max |
-| --- | ---: | ---: | ---: | ---: |
-| Cold RL | 16.56 | 0.501 | 0.478 | 5.39 |
-| Cold MPC-only | 15.79 | 10.486 | 1.444 | 6.17 |
-| Pretrained RL | 12.15 | 0.856 | 0.307 | 5.21 |
-| Pretrained MPC-only | 10.62 | 7.672 | 0.800 | 6.17 |
-| Direct LMPC | 6.26 | 0.901 | 0.018 | 2.40 |
-| Direct MPC-only | 6.10 | 8.065 | 0.089 | 6.17 |
+| Case | Target residual max | Mean input-target gap | Mean state-target gap |
+| --- | ---: | ---: | ---: |
+| Cold RL | 16.46 | 0.512 | 0.488 |
+| Cold MPC-only | 15.79 | 10.269 | 1.483 |
+| Pretrained RL | 12.45 | 0.872 | 0.313 |
+| Pretrained MPC-only | 11.99 | 7.269 | 0.826 |
+| Direct LMPC | 6.38 | 0.899 | 0.018 |
+| Direct MPC-only | 6.10 | 8.066 | 0.089 |
 
 The direct no-RL cases have lower target residuals than the RL-script cases, but their raw-setpoint RMSE is still high. The RL-script MPC-only rows can track better while showing much higher would-be Lyapunov activation. This is exactly the target-selector tension: a target can be easier for Lyapunov contraction but worse for raw tracking, or better for raw tracking but less compatible with the contraction test.
 
 ## Updated Findings
 
-- Pretrained RL is now the best learned controller for full-horizon reward and RMSE.
-- Cold-start RL is not better overall. It is better mainly in safety-gate authority and tail eta offset.
-- The cold-start BC phase is the main damage source: high exploration with an untrained actor creates very poor early episodes before online training recovers.
+- Pretrained RL remains the best learned controller over the full `300`-episode horizon.
+- Cold-start RL improves with the longer run and catches up late, but the early BC phase still dominates its full-horizon penalty.
 - MPC-only still beats the corresponding safety-gated RL case in both cold and pretrained studies on full-horizon reward and RMSE.
-- Raising the fixed fallback event penalty from `2.0` to `10.0` slightly reduced fallback rates, but it did not improve tracking and it worsened the augmented reward.
-- The higher fixed event penalty is meaningful, especially for pretrained RL, but it still did not eliminate gate dependence.
-- Direct LMPC remains slower than safety-gated RL and still has poor full-horizon raw-setpoint RMSE.
+- Pretrained MPC-only remains the best raw-tracking diagnostic and also has the highest would-be Lyapunov activation rate.
+- Direct LMPC settles well in the final tail window, but it still has poor full-horizon raw-setpoint RMSE and about `2x` the per-step runtime of safety-gated RL.
+- The fixed fallback event penalty is meaningful, especially for pretrained RL, but the `300`-episode run still does not remove gate dependence.
 - The target-selector problem remains central: better Lyapunov compatibility and better raw-setpoint tracking are still pulling in different directions.
 
 ## Project History And Already-Tried Changes
@@ -763,10 +747,10 @@ This final section is the project-level handoff note. It is intentionally broade
 
 ### Active Entrypoints And Current Scope
 
-- The active root scripts are `DirectLyapunovMPC.py`, `DirectLyapunovSafetyGateRL_ColdStart.py`, and `DirectLyapunovSafetyGateRL_Pretrained.py`.
+- The active non-evaluation root scripts are `DirectLyapunovMPC.py`, `DirectLyapunovSafetyGateRL_ColdStart.py`, and `DirectLyapunovSafetyGateRL_Pretrained.py`; saved-agent testing uses `DirectLyapunovSavedAgentEvaluation.py`.
 - Root notebooks were converted or archived. New work should edit Python scripts unless a notebook is explicitly requested.
 - Top-level result folders are now `results/directLyap/...`, `results/ColdStart/...`, and `results/Pretrain/...`.
-- The current direct/RL disturbance study uses two setpoints, `n_episodes = 200`, `set_points_len = 400`, `rho_lyap = 0.99`, and `lyap_eps = 1e-3`.
+- The current direct/RL disturbance study uses two setpoints, `n_episodes = 300`, `set_points_len = 400`, `rho_lyap = 0.99`, and `lyap_eps = 1e-3`.
 - All three active scripts keep `u_prev_penalty_weight = 0.1`, `xs_prev_penalty_weight = 0.1`, and `case_variants = ("mixed",)`.
 - The active direct/RL direct-tracking calls use `use_target_output_for_tracking = False`, so the online tracking objective follows raw $y_{\rm sp}$ while the direct target still supplies the Lyapunov center.
 
@@ -943,14 +927,14 @@ with $\rho = 0.99$ and $\epsilon = 10^{-3}$. A larger $\epsilon$ relaxes strict 
 
 ### Results Already Observed
 
-- In the latest analyzed run, pretrained RL had better full-horizon reward and RMSE than cold-start RL.
-- Cold-start RL was not better overall. It was better mainly in safety-gate authority and final-tail eta offset.
+- In the latest `300`-episode analyzed run, pretrained RL had better full-horizon reward and RMSE than cold-start RL.
+- Cold-start RL improved with the longer run and caught up late, but the early BC phase still made its full-horizon result worse than pretrained RL.
 - Cold-start BC remained fragile because high exploration with an initially untrained actor created very poor early episodes before online learning recovered.
 - The corresponding MPC-only diagnostic still beat each safety-gated RL case on full-horizon reward and RMSE.
-- Increasing `fallback_event_penalty` from `2.0` to `10.0` slightly reduced fallback rates but did not improve tracking.
-- The stronger fallback penalty is now meaningful, but it did not eliminate pretrained gate dependence.
-- Direct LMPC had reasonable final-tail offset, but worse full-horizon raw-setpoint RMSE and slower runtime than safety-gated RL.
-- The RL safety-gate cases were about `2.2x` faster than direct LMPC in seconds per control step in the latest comparison.
+- Increasing `fallback_event_penalty` from `2.0` to `10.0` was already tested; the new `300`-episode run keeps that setting and still does not eliminate gate dependence.
+- The stronger fallback penalty is meaningful, but pretrained RL still uses the gate more often than cold-start RL.
+- Direct LMPC had good final-tail offset, but worse full-horizon raw-setpoint RMSE and slower runtime than safety-gated RL.
+- The RL safety-gate cases were about `2.0x` faster than direct LMPC in seconds per control step in the latest matched `300`-episode comparison.
 - Direct MPC-only was much faster, but it is a diagnostic baseline, not the same controller as direct LMPC or safety-gated RL.
 - Earlier and current direct-target diagnosis showed a key failure mode: the Lyapunov controller can contract around a poor or modified admissible target while raw-setpoint tracking looks worse than MPC-only.
 
