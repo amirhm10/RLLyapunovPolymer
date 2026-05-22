@@ -177,6 +177,10 @@ _DIRECT_STEP_VECTOR_DETAIL_COLUMNS = {
     "target_u_ref_weight",
     "target_x_ref",
     "target_x_ref_weight",
+    "r_cmd",
+    "r_cmd_minus_y_sp",
+    "y_s_minus_r_cmd",
+    "command_move",
     "u_apply",
     "u_prev_dev",
     "u_s",
@@ -223,6 +227,10 @@ _DIRECT_COMPACT_STEP_COLUMNS = [
     "target_bounded_solution_used",
     "target_us_u_ref_inf",
     "target_xs_x_ref_inf",
+    "governor_active",
+    "governor_probe_margin",
+    "input_headroom_min",
+    "command_move_inf",
     "solver_status",
     "solver_name",
     "solver_nit",
@@ -1035,12 +1043,15 @@ def prepare_direct_output_disturbance_step(
     target_config: Optional[Dict[str, Any]] = None,
     target_H: Optional[np.ndarray] = None,
     x_target_prev_success: Optional[np.ndarray] = None,
+    r_cmd_prev_success: Optional[np.ndarray] = None,
     step_idx: Optional[int] = None,
     y_prev_scaled: Optional[np.ndarray] = None,
     plant_mode: Optional[str] = None,
     disturbance_after_step: Optional[bool] = None,
     use_target_output_for_tracking: bool = False,
     slack_penalty: float = DEFAULT_DIRECT_SOFT_SLACK_PENALTY,
+    rho_lyap: Optional[float] = None,
+    lyap_eps: Optional[float] = None,
 ) -> Dict[str, Any]:
     n_inputs = LMPC_obj.B.shape[1]
     n_outputs = LMPC_obj.C.shape[0]
@@ -1058,20 +1069,42 @@ def prepare_direct_output_disturbance_step(
     if y_prev_scaled is not None:
         innovation = np.asarray(y_prev_scaled, dtype=float).reshape(-1) - yhat_now
 
-    target_info = solve_output_disturbance_target(
-        LMPC_obj.A,
-        LMPC_obj.B,
-        LMPC_obj.C,
-        x0_aug,
-        y_sp_k,
-        target_mode=target_mode,
-        u_min=u_dev_min,
-        u_max=u_dev_max,
-        config=_target_config_dict(target_config),
-        H=target_H,
-        u_ref=u_prev_dev,
-        x_ref=x_target_prev_success,
-    )
+    target_mode_normalized = str(target_mode).strip().lower()
+    if target_mode_normalized == "governed_reference":
+        from Lyapunov.governed_reference_target import solve_governed_reference_target
+
+        target_info = solve_governed_reference_target(
+            LMPC_obj.A,
+            LMPC_obj.B,
+            LMPC_obj.C,
+            x0_aug,
+            y_sp_k,
+            u_min=u_dev_min,
+            u_max=u_dev_max,
+            config=_target_config_dict(target_config),
+            H=target_H,
+            u_ref=u_prev_dev,
+            x_ref=x_target_prev_success,
+            r_prev=r_cmd_prev_success,
+            P_x=getattr(LMPC_obj, "P_x", None),
+            rho_lyap=rho_lyap,
+            eps_lyap=lyap_eps,
+        )
+    else:
+        target_info = solve_output_disturbance_target(
+            LMPC_obj.A,
+            LMPC_obj.B,
+            LMPC_obj.C,
+            x0_aug,
+            y_sp_k,
+            target_mode=target_mode,
+            u_min=u_dev_min,
+            u_max=u_dev_max,
+            config=_target_config_dict(target_config),
+            H=target_H,
+            u_ref=u_prev_dev,
+            x_ref=x_target_prev_success,
+        )
     target_info = {} if target_info is None else dict(target_info)
     target_info.update(
         {
@@ -1093,6 +1126,9 @@ def prepare_direct_output_disturbance_step(
     x_target_next = x_target_prev_success
     if target_info.get("success", False) and target_info.get("x_s") is not None:
         x_target_next = np.asarray(target_info.get("x_s"), float).reshape(n_x).copy()
+    r_cmd_next = r_cmd_prev_success
+    if target_info.get("success", False) and target_info.get("r_cmd") is not None:
+        r_cmd_next = np.asarray(target_info.get("r_cmd"), float).reshape(n_outputs).copy()
 
     step_info = {
         "step": int(step_idx) if step_idx is not None else -1,
@@ -1163,6 +1199,31 @@ def prepare_direct_output_disturbance_step(
         "target_x_ref_active": target_info.get("x_ref_active"),
         "target_x_ref_penalty": target_info.get("x_ref_penalty"),
         "target_xs_x_ref_inf": target_info.get("xs_x_ref_inf"),
+        "r_cmd": None
+        if target_info.get("r_cmd") is None
+        else np.asarray(target_info.get("r_cmd"), float).copy(),
+        "r_cmd_minus_y_sp": None
+        if target_info.get("r_cmd_minus_y_sp") is None
+        else np.asarray(target_info.get("r_cmd_minus_y_sp"), float).copy(),
+        "y_s_minus_r_cmd": None
+        if target_info.get("y_s_minus_r_cmd") is None
+        else np.asarray(target_info.get("y_s_minus_r_cmd"), float).copy(),
+        "governor_active": target_info.get("governor_active"),
+        "governor_status": target_info.get("governor_status"),
+        "governor_solver": target_info.get("governor_solver"),
+        "governor_objective_value": target_info.get("governor_objective_value"),
+        "governor_probe_available": target_info.get("governor_probe_available"),
+        "governor_probe_success": target_info.get("governor_probe_success"),
+        "governor_probe_margin": target_info.get("governor_probe_margin"),
+        "governor_probe_min_value": target_info.get("governor_probe_min_value"),
+        "governor_probe_bound": target_info.get("governor_probe_bound"),
+        "governor_probe_status": target_info.get("governor_probe_status"),
+        "input_headroom_min": target_info.get("input_headroom_min"),
+        "input_headroom_frac": target_info.get("input_headroom_frac"),
+        "command_move": None
+        if target_info.get("command_move") is None
+        else np.asarray(target_info.get("command_move"), float).copy(),
+        "command_move_inf": target_info.get("command_move_inf"),
         "target_bounded_active_lower_mask": None
         if target_info.get("bounded_active_lower_mask") is None
         else np.asarray(target_info.get("bounded_active_lower_mask"), bool).copy(),
@@ -1182,6 +1243,7 @@ def prepare_direct_output_disturbance_step(
         "target_info": target_info,
         "step_info": step_info,
         "x_target_prev_success_next": x_target_next,
+        "r_cmd_prev_success_next": r_cmd_next,
         "yhat_now": yhat_now,
         "innovation": innovation,
     }
@@ -1392,7 +1454,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
     force_final_test=True,
     disturbance_profile=None,
 ):
-    target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
+    target_mode = _as_mode(target_mode, ("unbounded", "bounded", "governed_reference"), "target_mode")
     lyapunov_mode = _as_mode(lyapunov_mode, ("hard", "soft"), "lyapunov_mode")
     mode = _as_mode(mode, ("nominal", "disturb"), "mode")
     disturbance_after_step = bool(disturbance_after_step)
@@ -1457,6 +1519,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
     direct_info_storage = []
     target_info_storage = []
     x_target_prev_success = None
+    r_cmd_prev_success = None
 
     IC_opt = np.asarray(IC_opt, float).copy()
     for step_idx in range(nFE):
@@ -1476,16 +1539,20 @@ def run_direct_output_disturbance_lyapunov_mpc(
             target_config=target_config,
             target_H=target_H,
             x_target_prev_success=x_target_prev_success,
+            r_cmd_prev_success=r_cmd_prev_success,
             step_idx=step_idx,
             y_prev_scaled=y_prev_scaled,
             plant_mode=mode,
             disturbance_after_step=disturbance_after_step,
             use_target_output_for_tracking=use_target_output_for_tracking,
             slack_penalty=slack_penalty,
+            rho_lyap=rho_lyap,
+            lyap_eps=lyap_eps,
         )
         target_info = step_context["target_info"]
         target_info_storage.append(target_info)
         x_target_prev_success = step_context["x_target_prev_success_next"]
+        r_cmd_prev_success = step_context.get("r_cmd_prev_success_next", r_cmd_prev_success)
         step_info = step_context["step_info"]
         yhat_now = step_context["yhat_now"]
         innovation = step_context["innovation"]
@@ -1657,7 +1724,7 @@ def run_offset_free_mpc_with_direct_diagnostics(
     disturbance_profile=None,
 ):
     """Run offset-free MPC while recording direct Lyapunov diagnostics only."""
-    target_mode = _as_mode(target_mode, ("unbounded", "bounded"), "target_mode")
+    target_mode = _as_mode(target_mode, ("unbounded", "bounded", "governed_reference"), "target_mode")
     mode = _as_mode(mode, ("nominal", "disturb"), "mode")
     disturbance_after_step = bool(disturbance_after_step)
     nominal_qi_value = _as_scalar_float(nominal_qi, "nominal_qi")
@@ -1724,6 +1791,7 @@ def run_offset_free_mpc_with_direct_diagnostics(
     direct_info_storage = []
     target_info_storage = []
     x_target_prev_success = None
+    r_cmd_prev_success = None
     IC_opt = np.asarray(IC_opt, float).copy()
 
     for step_idx in range(nFE):
@@ -1746,15 +1814,19 @@ def run_offset_free_mpc_with_direct_diagnostics(
             target_config=target_config,
             target_H=target_H,
             x_target_prev_success=x_target_prev_success,
+            r_cmd_prev_success=r_cmd_prev_success,
             step_idx=step_idx,
             y_prev_scaled=y_prev_scaled,
             plant_mode=mode,
             disturbance_after_step=disturbance_after_step,
             use_target_output_for_tracking=use_target_output_for_tracking,
+            rho_lyap=rho_lyap,
+            lyap_eps=lyap_eps,
         )
         target_info = step_context["target_info"]
         target_info_storage.append(target_info)
         x_target_prev_success = step_context["x_target_prev_success_next"]
+        r_cmd_prev_success = step_context.get("r_cmd_prev_success_next", r_cmd_prev_success)
         step_info = step_context["step_info"]
 
         u_dev_apply, teacher_info = solve_offset_free_mpc_candidate(
@@ -2007,6 +2079,23 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "target_x_ref_active": info.get("target_x_ref_active"),
             "target_x_ref_penalty": info.get("target_x_ref_penalty"),
             "target_xs_x_ref_inf": info.get("target_xs_x_ref_inf"),
+            "r_cmd": json.dumps(_jsonable(info.get("r_cmd"))),
+            "r_cmd_minus_y_sp": json.dumps(_jsonable(info.get("r_cmd_minus_y_sp"))),
+            "y_s_minus_r_cmd": json.dumps(_jsonable(info.get("y_s_minus_r_cmd"))),
+            "governor_active": info.get("governor_active"),
+            "governor_status": info.get("governor_status"),
+            "governor_solver": info.get("governor_solver"),
+            "governor_objective_value": info.get("governor_objective_value"),
+            "governor_probe_available": info.get("governor_probe_available"),
+            "governor_probe_success": info.get("governor_probe_success"),
+            "governor_probe_margin": info.get("governor_probe_margin"),
+            "governor_probe_min_value": info.get("governor_probe_min_value"),
+            "governor_probe_bound": info.get("governor_probe_bound"),
+            "governor_probe_status": info.get("governor_probe_status"),
+            "input_headroom_min": info.get("input_headroom_min"),
+            "input_headroom_frac": info.get("input_headroom_frac"),
+            "command_move": json.dumps(_jsonable(info.get("command_move"))),
+            "command_move_inf": info.get("command_move_inf"),
             "target_bounded_active_lower_count": None
             if info.get("target_bounded_active_lower_mask") is None
             else int(np.sum(np.asarray(info.get("target_bounded_active_lower_mask"), dtype=bool))),
@@ -2126,6 +2215,18 @@ def summarize_direct_lyapunov_bundle(bundle):
         "target_xs_x_ref_inf_mean": _safe_nanmean(bundle.get("target_xs_x_ref_inf", [])),
         "target_xs_x_ref_inf_max": _safe_nanmax(bundle.get("target_xs_x_ref_inf", [])),
         "target_x_ref_active_steps": int(np.nansum(bundle.get("target_x_ref_active_flags", []))),
+        "governor_active_rate": _safe_nanmean(bundle.get("governor_active_flags", [])),
+        "governor_active_steps": int(np.nansum(np.nan_to_num(bundle.get("governor_active_flags", []), nan=0.0))),
+        "governor_probe_success_rate": _safe_nanmean(bundle.get("governor_probe_success_flags", [])),
+        "governor_probe_margin_mean": _safe_nanmean(bundle.get("governor_probe_margin", [])),
+        "governor_probe_margin_max": _safe_nanmax(bundle.get("governor_probe_margin", [])),
+        "input_headroom_min_min": _safe_nanmin(bundle.get("input_headroom_min", [])),
+        "command_move_inf_mean": _safe_nanmean(bundle.get("command_move_inf", [])),
+        "command_move_inf_max": _safe_nanmax(bundle.get("command_move_inf", [])),
+        "r_cmd_reference_error_inf_mean": _safe_nanmean(bundle.get("r_cmd_reference_error_inf", [])),
+        "r_cmd_reference_error_inf_max": _safe_nanmax(bundle.get("r_cmd_reference_error_inf", [])),
+        "target_command_error_inf_mean": _safe_nanmean(bundle.get("target_command_error_inf", [])),
+        "target_command_error_inf_max": _safe_nanmax(bundle.get("target_command_error_inf", [])),
         "target_cond_M_max": float(np.nanmax(bundle["target_cond_M"])) if bundle["target_cond_M"].size else None,
         "bounded_solution_used_steps": int(np.sum(np.nan_to_num(bundle["target_bounded_solution_used_flags"], nan=0.0) > 0.5)),
         "bounded_active_lower_count_max": float(np.nanmax(bundle["target_bounded_active_lower_count"])) if bundle["target_bounded_active_lower_count"].size else None,
@@ -2167,6 +2268,14 @@ def _safe_nanmax(values: Any) -> Optional[float]:
     if finite.size == 0:
         return None
     return float(np.max(finite))
+
+
+def _safe_nanmin(values: Any) -> Optional[float]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.min(finite))
 
 
 def _physical_setpoint_steps(bundle) -> np.ndarray:
@@ -2314,6 +2423,18 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "target_xs_x_ref_inf_mean": summary.get("target_xs_x_ref_inf_mean"),
         "target_xs_x_ref_inf_max": summary.get("target_xs_x_ref_inf_max"),
         "target_x_ref_active_steps": summary.get("target_x_ref_active_steps"),
+        "governor_active_rate": summary.get("governor_active_rate"),
+        "governor_active_steps": summary.get("governor_active_steps"),
+        "governor_probe_success_rate": summary.get("governor_probe_success_rate"),
+        "governor_probe_margin_mean": summary.get("governor_probe_margin_mean"),
+        "governor_probe_margin_max": summary.get("governor_probe_margin_max"),
+        "input_headroom_min_min": summary.get("input_headroom_min_min"),
+        "command_move_inf_mean": summary.get("command_move_inf_mean"),
+        "command_move_inf_max": summary.get("command_move_inf_max"),
+        "r_cmd_reference_error_inf_mean": summary.get("r_cmd_reference_error_inf_mean"),
+        "r_cmd_reference_error_inf_max": summary.get("r_cmd_reference_error_inf_max"),
+        "target_command_error_inf_mean": summary.get("target_command_error_inf_mean"),
+        "target_command_error_inf_max": summary.get("target_command_error_inf_max"),
         "target_cond_M_max": summary.get("target_cond_M_max"),
         "bounded_solution_used_steps": summary.get("bounded_solution_used_steps"),
         "bounded_active_lower_count_max": summary.get("bounded_active_lower_count_max"),
@@ -2684,8 +2805,11 @@ def build_direct_lyapunov_run_bundle(
         "target_u_ref_weight_store": _stack_vectors(direct_info_storage, "target_u_ref_weight", n_u),
         "target_x_ref_store": _stack_vectors(direct_info_storage, "target_x_ref", n_x),
         "target_x_ref_weight_store": _stack_vectors(direct_info_storage, "target_x_ref_weight", n_x),
+        "r_cmd_store": _stack_vectors(direct_info_storage, "r_cmd", n_y),
+        "r_cmd_minus_y_sp_store": _stack_vectors(direct_info_storage, "r_cmd_minus_y_sp", n_y),
         "y_target_store": _stack_vectors(direct_info_storage, "y_s", n_y),
         "y_tracking_store": _stack_vectors(direct_info_storage, "y_target", n_y),
+        "y_s_minus_r_cmd_store": _stack_vectors(direct_info_storage, "y_s_minus_r_cmd", n_y),
         "y_s_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_s_minus_y_sp", n_y),
         "y_target_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_target_minus_y_sp", n_y),
         "y_minus_y_sp_store": _stack_vectors(direct_info_storage, "y_minus_y_sp", n_y),
@@ -2727,6 +2851,23 @@ def build_direct_lyapunov_run_bundle(
         "target_x_ref_penalty": np.array([info.get("target_x_ref_penalty", np.nan) for info in direct_info_storage], dtype=float),
         "target_xs_x_ref_inf": np.array([info.get("target_xs_x_ref_inf", np.nan) for info in direct_info_storage], dtype=float),
         "target_x_ref_active_flags": np.array([1.0 if bool(info.get("target_x_ref_active", False)) else 0.0 for info in direct_info_storage], dtype=float),
+        "governor_active_flags": np.array(
+            [
+                np.nan if info.get("governor_active") is None else (1.0 if bool(info.get("governor_active")) else 0.0)
+                for info in direct_info_storage
+            ],
+            dtype=float,
+        ),
+        "governor_probe_success_flags": np.array(
+            [
+                np.nan if info.get("governor_probe_success") is None else (1.0 if bool(info.get("governor_probe_success")) else 0.0)
+                for info in direct_info_storage
+            ],
+            dtype=float,
+        ),
+        "governor_probe_margin": np.array([info.get("governor_probe_margin", np.nan) for info in direct_info_storage], dtype=float),
+        "input_headroom_min": np.array([info.get("input_headroom_min", np.nan) for info in direct_info_storage], dtype=float),
+        "command_move_inf": np.array([info.get("command_move_inf", np.nan) for info in direct_info_storage], dtype=float),
         "target_bounded_active_lower_count": np.array(
             [
                 np.nan if info.get("target_bounded_active_lower_mask") is None
@@ -2775,6 +2916,8 @@ def build_direct_lyapunov_run_bundle(
         dtype=float,
     )
     bundle["target_reference_error_inf"] = _row_inf_norms(bundle["y_s_minus_y_sp_store"])
+    bundle["r_cmd_reference_error_inf"] = _row_inf_norms(bundle["r_cmd_minus_y_sp_store"])
+    bundle["target_command_error_inf"] = _row_inf_norms(bundle["y_s_minus_r_cmd_store"])
     bundle["tracking_reference_error_inf"] = _row_inf_norms(bundle["y_target_minus_y_sp_store"])
     bundle["output_reference_error_inf"] = _row_inf_norms(bundle["y_minus_y_sp_store"])
     bundle["output_tracking_error_inf"] = _row_inf_norms(bundle["y_minus_y_target_store"])
@@ -2798,6 +2941,11 @@ def build_direct_lyapunov_run_bundle(
             data_min[:n_u],
             data_max[:n_u],
         )
+        bundle["r_cmd_phys_store"] = reverse_min_max(
+            bundle["r_cmd_store"] + y_ss_scaled.reshape(1, -1),
+            data_min[n_u:],
+            data_max[n_u:],
+        )
         bundle["y_target_phys_store"] = reverse_min_max(
             bundle["y_target_store"] + y_ss_scaled.reshape(1, -1),
             data_min[n_u:],
@@ -2808,6 +2956,8 @@ def build_direct_lyapunov_run_bundle(
             data_min[n_u:],
             data_max[n_u:],
         )
+        bundle["r_cmd_minus_y_sp_phys_store"] = bundle["r_cmd_minus_y_sp_store"] * y_scale.reshape(1, -1)
+        bundle["y_s_minus_r_cmd_phys_store"] = bundle["y_s_minus_r_cmd_store"] * y_scale.reshape(1, -1)
         bundle["y_s_minus_y_sp_phys_store"] = bundle["y_s_minus_y_sp_store"] * y_scale.reshape(1, -1)
         bundle["y_target_minus_y_sp_phys_store"] = bundle["y_target_minus_y_sp_store"] * y_scale.reshape(1, -1)
         bundle["y_minus_y_sp_phys_store"] = bundle["y_minus_y_sp_store"] * y_scale.reshape(1, -1)
@@ -2831,8 +2981,11 @@ def build_direct_lyapunov_run_bundle(
             bundle["u_bounds_phys"] = None
     else:
         bundle["u_target_phys_store"] = np.full_like(bundle["u_target_dev_store"], np.nan)
+        bundle["r_cmd_phys_store"] = np.full_like(bundle["r_cmd_store"], np.nan)
         bundle["y_target_phys_store"] = np.full_like(bundle["y_target_store"], np.nan)
         bundle["y_tracking_phys_store"] = np.full_like(bundle["y_tracking_store"], np.nan)
+        bundle["r_cmd_minus_y_sp_phys_store"] = np.full_like(bundle["r_cmd_minus_y_sp_store"], np.nan)
+        bundle["y_s_minus_r_cmd_phys_store"] = np.full_like(bundle["y_s_minus_r_cmd_store"], np.nan)
         bundle["y_s_minus_y_sp_phys_store"] = np.full_like(bundle["y_s_minus_y_sp_store"], np.nan)
         bundle["y_target_minus_y_sp_phys_store"] = np.full_like(bundle["y_target_minus_y_sp_store"], np.nan)
         bundle["y_minus_y_sp_phys_store"] = np.full_like(bundle["y_minus_y_sp_store"], np.nan)
@@ -2884,6 +3037,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     y_system = np.asarray(bundle["y_system"], dtype=float)
     y_sp_steps = np.asarray(bundle["y_sp_steps"], dtype=float)
     y_sp_plot, y_unit_label = _output_deviation_steps_to_plot_units(bundle, y_sp_steps)
+    r_cmd_plot, _ = _bundle_output_plot_array(bundle, "r_cmd_phys_store", "r_cmd_store")
     y_target_plot, _ = _bundle_output_plot_array(bundle, "y_target_phys_store", "y_target_store")
     y_tracking_plot, _ = _bundle_output_plot_array(bundle, "y_tracking_phys_store", "y_tracking_store")
     u_applied_phys = np.asarray(bundle["u_applied_phys"], dtype=float)
@@ -2902,6 +3056,10 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     target_bounded_active_lower = np.asarray(bundle["target_bounded_active_lower_count"], dtype=float)
     target_bounded_active_upper = np.asarray(bundle["target_bounded_active_upper_count"], dtype=float)
     rewards = np.asarray(bundle.get("rewards", []), dtype=float)
+    governor_active = np.asarray(bundle.get("governor_active_flags", []), dtype=float)
+    governor_probe_margin = np.asarray(bundle.get("governor_probe_margin", []), dtype=float)
+    command_move_inf = np.asarray(bundle.get("command_move_inf", []), dtype=float)
+    input_headroom_min = np.asarray(bundle.get("input_headroom_min", []), dtype=float)
 
     nFE = int(bundle["nFE"])
     n_y = y_system.shape[1]
@@ -3033,6 +3191,53 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
         plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
         plt.savefig(os.path.join(output_dir, "05_target_diagnostics.png"), dpi=300, bbox_inches="tight")
         plt.close(fig)
+
+        if np.any(np.isfinite(r_cmd_plot)):
+            r_cmd_minus_y_sp = np.asarray(
+                bundle.get("r_cmd_minus_y_sp_phys_store", bundle.get("r_cmd_minus_y_sp_store", [])),
+                dtype=float,
+            )
+            y_s_minus_r_cmd = np.asarray(
+                bundle.get("y_s_minus_r_cmd_phys_store", bundle.get("y_s_minus_r_cmd_store", [])),
+                dtype=float,
+            )
+            fig, axes = plt.subplots(4, 1, figsize=(11, 12), sharex=True)
+            fig.suptitle(
+                f"{title_prefix}: Governed Reference Diagnostics",
+                fontsize=14,
+                fontweight="bold",
+            )
+            for idx in range(n_y):
+                axes[0].plot(t_y, y_system[:, idx], linewidth=1.8, label=f"y[{idx}]")
+                axes[0].step(t_u, y_sp_plot[:, idx], where="post", linewidth=1.4, linestyle="--", label=f"y_sp[{idx}]")
+                axes[0].step(t_u, r_cmd_plot[:, idx], where="post", linewidth=1.4, linestyle="-.", label=f"r_cmd[{idx}]")
+                axes[0].step(t_u, y_target_plot[:, idx], where="post", linewidth=1.1, linestyle=":", label=f"y_s[{idx}]")
+            axes[0].set_ylabel(f"outputs\n{y_unit_label}")
+            axes[0].legend(loc="best", ncol=2)
+            for idx in range(min(n_y, r_cmd_minus_y_sp.shape[1] if r_cmd_minus_y_sp.ndim == 2 else 0)):
+                axes[1].plot(t_u, r_cmd_minus_y_sp[:, idx], linewidth=1.5, label=f"r_cmd-y_sp[{idx}]")
+            axes[1].axhline(0.0, color="black", linewidth=1.0, linestyle="--")
+            axes[1].set_ylabel("command gap")
+            axes[1].legend(loc="best")
+            for idx in range(min(n_y, y_s_minus_r_cmd.shape[1] if y_s_minus_r_cmd.ndim == 2 else 0)):
+                axes[2].plot(t_u, y_s_minus_r_cmd[:, idx], linewidth=1.5, label=f"y_s-r_cmd[{idx}]")
+            axes[2].axhline(0.0, color="black", linewidth=1.0, linestyle="--")
+            axes[2].set_ylabel("target gap")
+            axes[2].legend(loc="best")
+            axes[3].step(t_u, np.nan_to_num(governor_active, nan=0.0), where="post", linewidth=1.4, label="governor_active")
+            axes[3].plot(t_u, command_move_inf, linewidth=1.4, label="||r_k-r_{k-1}||_inf")
+            axes[3].plot(t_u, input_headroom_min, linewidth=1.2, linestyle="--", label="input_headroom_min")
+            if governor_probe_margin.size:
+                axes[3].plot(t_u, governor_probe_margin, linewidth=1.1, linestyle=":", label="probe_margin")
+            axes[3].axhline(0.0, color="black", linewidth=1.0, linestyle="--")
+            axes[3].set_ylabel("governor")
+            axes[3].set_xlabel("step")
+            axes[3].legend(loc="best")
+            for ax in axes:
+                ax.grid(True, linestyle="--", alpha=0.35)
+            plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+            plt.savefig(os.path.join(output_dir, "06_governed_reference_diagnostics.png"), dpi=300, bbox_inches="tight")
+            plt.close(fig)
 
         tail = min(max(25, nFE // 5), nFE)
         if tail > 0:
