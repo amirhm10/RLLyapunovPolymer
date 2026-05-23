@@ -17,10 +17,60 @@ DIRECT_DISTURBANCE_N_TESTS = 300
 DIRECT_DISTURBANCE_SETPOINT_LEN = 400
 DIRECT_DISTURBANCE_WARM_START = 0
 DIRECT_DISTURBANCE_SEED = 0
+GOVERNED_REFERENCE_TARGET_MODE = "governed_reference"
 
 
 def direct_disturbance_test_cycle(n_tests: int = DIRECT_DISTURBANCE_N_TESTS) -> List[bool]:
     return [False] * max(int(n_tests), 1)
+
+
+def make_governed_reference_target_config(
+    Qy_diag: Any | None = None,
+    *,
+    lambda_cmd_move: float = 1.0,
+    u_ref_weight: float = 0.1,
+    x_ref_weight: float = 0.1,
+    input_headroom_frac: float = 0.03,
+    one_step_probe: bool = True,
+) -> Dict[str, Any]:
+    """Default governed-reference target configuration for active LyapMPC runs."""
+    cfg: Dict[str, Any] = {
+        "governed_reference_enabled": True,
+        "lambda_cmd_move": float(lambda_cmd_move),
+        "Qr_diag": None,
+        "W_r_diag": None,
+        "u_ref_weight": float(u_ref_weight),
+        "x_ref_weight": float(x_ref_weight),
+        "input_headroom_frac": float(input_headroom_frac),
+        "one_step_probe": bool(one_step_probe),
+    }
+    if Qy_diag is not None:
+        qy = np.asarray(Qy_diag, dtype=float).copy()
+        cfg["Qr_diag"] = qy.copy()
+        cfg["W_r_diag"] = qy.copy()
+    return cfg
+
+
+def governed_reference_case_spec(
+    Qy_diag: Any | None = None,
+    *,
+    case_name: str,
+    controller_mode: str = "direct_lyapunov_mpc",
+    lyapunov_mode: str = "hard",
+    label: str | None = None,
+    **config_overrides: Any,
+) -> Dict[str, Any]:
+    target_config = make_governed_reference_target_config(Qy_diag, **config_overrides)
+    spec: Dict[str, Any] = {
+        "case_name": str(case_name),
+        "target_mode": GOVERNED_REFERENCE_TARGET_MODE,
+        "lyapunov_mode": str(lyapunov_mode),
+        "target_config": target_config,
+        "controller_mode": str(controller_mode),
+    }
+    if label is not None:
+        spec["label"] = str(label)
+    return spec
 
 
 def _weight_token(value: float) -> str:

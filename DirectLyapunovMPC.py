@@ -39,7 +39,7 @@ from utils.direct_lyapunov_study import (
     # DIRECT_DISTURBANCE_SETPOINT_LEN,
     DIRECT_TWO_SETPOINT_Y_PHYS,
     direct_disturbance_test_cycle,
-    direct_four_method_case_specs,
+    governed_reference_case_spec,
 )
 from utils.scaling_helpers import apply_min_max
 from utils.td3_helpers import load_and_prepare_system_data
@@ -48,7 +48,7 @@ from utils.td3_helpers import load_and_prepare_system_data
 predict_h = 9
 cont_h = 3
 rho_lyap = 0.99
-lyap_eps = 1e-2
+lyap_eps = 1e-6
 slack_penalty = 1e6
 use_target_on_solver_fail = False
 plant_mode = "disturb"
@@ -96,7 +96,7 @@ u_min = np.array([71.6, 78.0])
 u_max = np.array([870.0, 670.0])
 setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 
-n_episodes = 300
+n_episodes = 2
 n_tests = n_episodes
 # set_points_len = DIRECT_DISTURBANCE_SETPOINT_LEN
 set_points_len = 400
@@ -211,23 +211,17 @@ qi_change = 0.95
 qs_change = 1.05
 ha_change = 0.92
 
-# Change these two weights when testing target anchoring/smoothing.
-# The effective values are printed in case_specs below before the run starts.
+# Governed-reference is the active target selector default.
+# The MPC stage objective still tracks the raw setpoint, not y_s.
 u_prev_penalty_weight = 0.1
 xs_prev_penalty_weight = 0.1
-case_variants = ("mixed",)  # or "mixed" for a single scenario
-
-# Change 2 only: use the lexicographic bounded target solve.
-# Keep all other new mechanisms disabled so the run isolates this one method change.
-change2_only_target_config = {
-    # "solve_strategy": "lexicographic",
-    # "lexicographic_primary_tol_abs": 1.0e-10,
-    # "lexicographic_primary_tol_rel": 1.0e-8,
-    # "lexicographic_maxiter": 200,
-    # "lexicographic_ftol": 1.0e-10,
-    # "disturbance_model_mode": "output",
-    # "target_quality": {"enabled": True},
-}
+governed_reference_target_config = governed_reference_case_spec(
+    Qy_diag,
+    case_name="lyap_governed_reference",
+    label="Governed-reference LyapMPC",
+    u_ref_weight=u_prev_penalty_weight,
+    x_ref_weight=xs_prev_penalty_weight,
+)["target_config"]
 
 active_config = {
     "predict_h": predict_h,
@@ -243,44 +237,34 @@ active_config = {
     "study_name": study_name,
     "u_prev_penalty_weight": u_prev_penalty_weight,
     "xs_prev_penalty_weight": xs_prev_penalty_weight,
-    "case_variants": tuple(case_variants),
     "setpoint_y_phys": setpoint_y_phys.tolist(),
-    "change2_only_target_config": dict(change2_only_target_config),
+    "governed_reference_target_config": dict(governed_reference_target_config),
 }
-case_specs = list(direct_four_method_case_specs(
-    anchor_weight=u_prev_penalty_weight,
-    smoothness_weight=xs_prev_penalty_weight,
-    variants=case_variants,
-))
+case_specs = [
+    governed_reference_case_spec(
+        Qy_diag,
+        case_name="lyap_governed_reference",
+        label="Governed-reference LyapMPC",
+        u_ref_weight=u_prev_penalty_weight,
+        x_ref_weight=xs_prev_penalty_weight,
+    ),
+    governed_reference_case_spec(
+        Qy_diag,
+        case_name="mpc_only",
+        controller_mode="mpc_only",
+        lyapunov_mode="diagnostic_only",
+        label="Offset-free MPC with governed-reference diagnostics",
+        u_ref_weight=u_prev_penalty_weight,
+        x_ref_weight=xs_prev_penalty_weight,
+    ),
+]
 
-
-def _case_weight_token(value):
-    text = f"{float(value):.6f}".rstrip("0").rstrip(".")
-    if text in {"", "-0"}:
-        text = "0"
-    return text.replace("-", "m").replace(".", "p")
-
-
-u_prev_token = _case_weight_token(u_prev_penalty_weight)
-xs_prev_token = _case_weight_token(xs_prev_penalty_weight)
+print("Effective no-RL direct case specs. Governed-reference target selector is the default.")
 for spec in case_specs:
-    spec["case_name"] = f"lyap_mix_u{u_prev_token}_x{xs_prev_token}_lex"
-    spec["target_config"] = {
-        **spec.get("target_config", {}),
-        **change2_only_target_config,
-    }
-case_specs.append(
-    {
-        "case_name": "mpc_only",
-        "target_mode": "bounded",
-        "target_config": {},
-        "controller_mode": "mpc_only",
-    }
-)
-
-print("Effective no-RL direct case specs. Change 2 only is enabled for Lyapunov cases.")
-for spec in case_specs:
-    print(f"  {spec['case_name']}: controller={spec.get('controller_mode', 'direct_lyapunov_mpc')}, target_config={spec.get('target_config', {})}")
+    print(
+        f"  {spec['case_name']}: controller={spec.get('controller_mode', 'direct_lyapunov_mpc')}, "
+        f"target_mode={spec['target_mode']}, target_config={spec.get('target_config', {})}"
+    )
 
 # %%
 def run_case(case_spec):

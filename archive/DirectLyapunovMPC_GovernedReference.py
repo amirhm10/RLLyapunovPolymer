@@ -11,11 +11,23 @@
 # %%
 from utils.path_helpers import repo_path
 import os
+import sys
 import time
 from datetime import datetime
 from pprint import pprint
 
 import numpy as np
+
+try:
+    import cvxpy as _cvxpy  # noqa: F401
+except Exception as exc:
+    raise RuntimeError(
+        "DirectLyapunovMPC_GovernedReference.py requires CVXPY for the "
+        "governed-reference target solves.\n"
+        f"Active Python interpreter: {sys.executable}\n"
+        "Use the rl-env interpreter instead:\n"
+        r"  C:\Users\hamediaa\.conda\envs\rl-env\python.exe DirectLyapunovMPC_GovernedReference.py"
+    ) from exc
 
 try:
     import pandas as pd
@@ -53,12 +65,12 @@ from utils.td3_helpers import load_and_prepare_system_data
 predict_h = 9
 cont_h = 3
 rho_lyap = 0.99
-lyap_eps = 1e-2
+lyap_eps = 1e-6
 slack_penalty = 1e6
 use_target_on_solver_fail = False
 plant_mode = "disturb"
 disturbance_after_step = False
-use_target_output_for_tracking = False
+use_target_output_for_tracking = True
 save_case_bundles = True
 save_case_plots = True
 
@@ -100,7 +112,7 @@ u_min = np.array([71.6, 78.0])
 u_max = np.array([870.0, 670.0])
 setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 
-n_episodes = 300
+n_episodes = 2
 n_tests = n_episodes
 set_points_len = 400
 TEST_CYCLE = direct_disturbance_test_cycle(n_tests)
@@ -222,8 +234,8 @@ governed_reference_target_config = {
     "lambda_cmd_move": 1.0,
     "Qr_diag": Qy_diag.copy(),
     "W_r_diag": Qy_diag.copy(),
-    "u_ref_weight": 0.1,
-    "x_ref_weight": 0.1,
+    "u_ref_weight": 0.,
+    "x_ref_weight": 0.,
     "input_headroom_frac": 0.03,
     "one_step_probe": True,
 }

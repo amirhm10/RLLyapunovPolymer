@@ -42,7 +42,7 @@ from utils.direct_lyapunov_study import (
     DIRECT_DISTURBANCE_SETPOINT_LEN,
     DIRECT_TWO_SETPOINT_Y_PHYS,
     direct_disturbance_test_cycle,
-    direct_four_method_case_specs,
+    governed_reference_case_spec,
 )
 from utils.scaling_helpers import apply_min_max
 from utils.td3_helpers import load_and_prepare_system_data
@@ -56,10 +56,9 @@ slack_penalty = 1e6
 plant_mode = "disturb"
 disturbance_after_step = False
 
-# Visible direct target regularization weights for RL case sweeps
+# Visible governed-reference target regularization weights for RL runs.
 u_prev_penalty_weight = 0.1
 xs_prev_penalty_weight = 0.1
-case_variants = ("mixed",)  # or "mixed" for a single scenario
 
 Ad = 2.142e17
 Ed = 14897
@@ -269,19 +268,25 @@ qi_change = 0.95
 qs_change = 1.05
 ha_change = 0.92
 
-case_specs = list(direct_four_method_case_specs(
-    anchor_weight=u_prev_penalty_weight,
-    smoothness_weight=xs_prev_penalty_weight,
-    variants=case_variants,
-))
-case_specs.append(
-    {
-        "case_name": "mpc_only",
-        "target_mode": "bounded",
-        "target_config": {},
-        "controller_mode": "mpc_only",
-    }
-)
+case_specs = [
+    governed_reference_case_spec(
+        Qy_diag,
+        case_name="rl_gate_governed_reference",
+        controller_mode="direct_safety_gate",
+        label="Cold-start RL with governed-reference safety gate",
+        u_ref_weight=u_prev_penalty_weight,
+        x_ref_weight=xs_prev_penalty_weight,
+    ),
+    governed_reference_case_spec(
+        Qy_diag,
+        case_name="mpc_only",
+        controller_mode="mpc_only",
+        lyapunov_mode="diagnostic_only",
+        label="Offset-free MPC with governed-reference diagnostics",
+        u_ref_weight=u_prev_penalty_weight,
+        x_ref_weight=xs_prev_penalty_weight,
+    ),
+]
 
 
 def make_td3_agent():
@@ -353,7 +358,6 @@ def run_case(case_spec):
         "target_config": case_target_config,
         "u_prev_penalty_weight": u_prev_penalty_weight,
         "xs_prev_penalty_weight": xs_prev_penalty_weight,
-        "case_variants": tuple(case_variants),
         "rho_lyap": rho_lyap,
         "lyap_eps": lyap_eps,
         "gamma_fallback": gamma_fallback,
