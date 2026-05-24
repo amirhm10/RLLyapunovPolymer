@@ -84,6 +84,7 @@ _WINDOWS_PATH_SOFT_LIMIT = 240
 _EXPORT_PROFILES = {"debug", "compact"}
 _DIRECT_COMPARISON_FILENAME_MAP = {
     "comparison_reward_mean.png": "cmp_reward.png",
+    "comparison_reward_no_penalty_mean.png": "cmp_reward_no_penalty.png",
     "comparison_output_rmse.png": "cmp_out_rmse.png",
     "comparison_solver_contraction_rates.png": "cmp_solver_contr.png",
     "comparison_slack.png": "cmp_slack.png",
@@ -244,6 +245,9 @@ _DIRECT_COMPACT_STEP_COLUMNS = [
     "slack_lyap",
     "relaxed_contraction_satisfied",
     "reward",
+    "reward_base",
+    "reward_no_penalty",
+    "reward_augmented",
     "use_target_output_for_tracking",
 ]
 
@@ -276,6 +280,9 @@ def _direct_npz_arrays(arrays: Dict[str, Any], export_profile: str = "debug") ->
         "y_sp",
         "y_sp_steps",
         "rewards",
+        "reward_base",
+        "reward_no_penalty",
+        "reward_augmented",
         "u_target_phys_store",
         "u_target_dev_store",
         "y_target_store",
@@ -1624,6 +1631,9 @@ def run_direct_output_disturbance_lyapunov_mpc(
                 "observer_correction": observer_correction.copy(),
                 "xhat_next": xhatdhat[:, step_idx + 1].copy(),
                 "reward": float(reward),
+                "reward_base": float(reward),
+                "reward_no_penalty": float(reward),
+                "reward_augmented": float(reward),
                 "delta_y": delta_y.copy(),
                 "y_minus_y_sp": delta_y.copy(),
                 "y_minus_y_target": None if delta_y_target is None else delta_y_target.copy(),
@@ -1957,6 +1967,9 @@ def run_offset_free_mpc_with_direct_diagnostics(
                 "observer_correction": observer_correction.copy(),
                 "xhat_next": xhatdhat[:, step_idx + 1].copy(),
                 "reward": float(reward),
+                "reward_base": float(reward),
+                "reward_no_penalty": float(reward),
+                "reward_augmented": float(reward),
                 "delta_y": delta_y.copy(),
                 "y_minus_y_sp": delta_y.copy(),
                 "y_minus_y_target": y_minus_y_target.copy(),
@@ -2127,6 +2140,9 @@ def make_direct_lyapunov_step_records(step_info_storage):
             "relaxed_contraction_satisfied": info.get("relaxed_contraction_satisfied"),
             "relaxed_contraction_violation": info.get("relaxed_contraction_violation"),
             "reward": info.get("reward"),
+            "reward_base": info.get("reward_base", info.get("reward")),
+            "reward_no_penalty": info.get("reward_no_penalty", info.get("reward_base", info.get("reward"))),
+            "reward_augmented": info.get("reward_augmented", info.get("reward")),
             "use_target_output_for_tracking": info.get("use_target_output_for_tracking"),
             "u_apply": json.dumps(_jsonable(info.get("u_apply"))),
             "u_prev_dev": json.dumps(_jsonable(info.get("u_prev_dev"))),
@@ -2150,6 +2166,9 @@ def make_direct_lyapunov_step_records(step_info_storage):
 def summarize_direct_lyapunov_bundle(bundle):
     step_info_storage = list(bundle["direct_info_storage"])
     rewards = np.asarray(bundle["rewards"], dtype=float)
+    reward_base = np.asarray(bundle.get("reward_base", rewards), dtype=float)
+    reward_no_penalty = np.asarray(bundle.get("reward_no_penalty", reward_base), dtype=float)
+    reward_augmented = np.asarray(bundle.get("reward_augmented", rewards), dtype=float)
     slack = np.asarray(bundle["slack_lyap"], dtype=float)
     target_success = np.asarray(bundle["target_success_flags"], dtype=float)
     solver_success = np.asarray(bundle["solver_success_flags"], dtype=float)
@@ -2176,6 +2195,12 @@ def summarize_direct_lyapunov_bundle(bundle):
         "final_ha": bundle.get("final_ha"),
         "reward_mean": float(np.mean(rewards)) if rewards.size else None,
         "reward_sum": float(np.sum(rewards)) if rewards.size else None,
+        "reward_base_mean": float(np.nanmean(reward_base)) if reward_base.size else None,
+        "reward_base_sum": float(np.nansum(reward_base)) if reward_base.size else None,
+        "reward_no_penalty_mean": float(np.nanmean(reward_no_penalty)) if reward_no_penalty.size else None,
+        "reward_no_penalty_sum": float(np.nansum(reward_no_penalty)) if reward_no_penalty.size else None,
+        "reward_augmented_mean": float(np.nanmean(reward_augmented)) if reward_augmented.size else None,
+        "reward_augmented_sum": float(np.nansum(reward_augmented)) if reward_augmented.size else None,
         "target_success_rate": float(np.mean(target_success)) if target_success.size else None,
         "solver_success_rate": float(np.mean(solver_success)) if solver_success.size else None,
         "diagnostic_unsafe_rate": _safe_nanmean(bundle.get("diagnostic_unsafe_flags", [])),
@@ -2386,6 +2411,12 @@ def make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir=None):
         "n_steps": summary.get("n_steps", bundle.get("nFE")),
         "reward_mean": summary.get("reward_mean"),
         "reward_sum": summary.get("reward_sum"),
+        "reward_base_mean": summary.get("reward_base_mean"),
+        "reward_base_sum": summary.get("reward_base_sum"),
+        "reward_no_penalty_mean": summary.get("reward_no_penalty_mean"),
+        "reward_no_penalty_sum": summary.get("reward_no_penalty_sum"),
+        "reward_augmented_mean": summary.get("reward_augmented_mean"),
+        "reward_augmented_sum": summary.get("reward_augmented_sum"),
         "solver_success_rate": summary.get("solver_success_rate"),
         "diagnostic_unsafe_rate": summary.get("diagnostic_unsafe_rate"),
         "diagnostic_unstable_rate": summary.get("diagnostic_unstable_rate"),
@@ -2672,6 +2703,15 @@ def save_direct_lyapunov_comparison_artifacts(
             "Direct Lyapunov Four-Scenario Reward",
             _comparison_plot_path(plot_dir, "comparison_reward_mean.png"),
         )
+        if records and any(record.get("reward_no_penalty_mean") is not None for record in records):
+            plot_paths["reward_no_penalty_mean"] = _save_comparison_bar(
+                records,
+                ["reward_no_penalty_mean"],
+                ["reward without penalty mean"],
+                "reward_no_penalty_mean",
+                "Direct Lyapunov Reward Without Fallback Penalty",
+                _comparison_plot_path(plot_dir, "comparison_reward_no_penalty_mean.png"),
+            )
         output_rmse_keys = [
             key for key in records[0].keys()
             if key.startswith("output") and key.endswith("_rmse")
@@ -2771,6 +2811,9 @@ def build_direct_lyapunov_run_bundle(
         "time_in_sub_episodes": int(results["time_in_sub_episodes"]),
         "avg_rewards": list(results["avg_rewards"]),
         "rewards": rewards.copy(),
+        "reward_base": rewards.copy(),
+        "reward_no_penalty": rewards.copy(),
+        "reward_augmented": rewards.copy(),
         "y_system": y_system.copy(),
         "u_applied_phys": u_applied_phys.copy(),
         "xhatdhat": xhatdhat.copy(),

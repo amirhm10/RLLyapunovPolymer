@@ -47,8 +47,8 @@ from utils.td3_helpers import load_and_prepare_system_data
 # Direct Lyapunov four-method disturbance study configuration
 predict_h = 9
 cont_h = 3
-rho_lyap = 0.99
-lyap_eps = 1e-6
+rho_lyap = 0.98
+lyap_eps = 1e-9
 slack_penalty = 1e6
 use_target_on_solver_fail = False
 plant_mode = "disturb"
@@ -96,7 +96,7 @@ u_min = np.array([71.6, 78.0])
 u_max = np.array([870.0, 670.0])
 setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 
-n_episodes = 2
+n_episodes = 300
 n_tests = n_episodes
 # set_points_len = DIRECT_DISTURBANCE_SETPOINT_LEN
 set_points_len = 400

@@ -30,6 +30,8 @@ def make_reward_fn_relative_QR(
                          Defaults to R_diag.
     maintenance_*      : optional near-setpoint terms. Defaults preserve the
                          historical reward exactly.
+    return_components  : when used by callers, ``reward_no_penalty`` is the
+                         pre-safety-penalty reward for cross-controller reporting.
     """
 
     data_min = np.asarray(data_min, float)
@@ -165,6 +167,7 @@ def make_reward_fn_relative_QR(
             return {
                 "reward": reward_augmented,
                 "reward_base": reward_base,
+                "reward_no_penalty": reward_base,
                 "fallback_penalty": fallback_penalty,
                 "fallback_correction_penalty": fallback_correction_penalty,
                 "fallback_event_penalty": fallback_event_penalty_applied,

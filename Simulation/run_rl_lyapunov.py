@@ -410,6 +410,7 @@ def _reward_with_optional_fallback_penalty(
     return reward, {
         "reward": reward,
         "reward_base": reward,
+        "reward_no_penalty": reward,
         "fallback_penalty": 0.0,
         "weighted_correction_gap": 0.0,
         "fallback_active": bool(fallback_active),
@@ -422,6 +423,9 @@ def _annotate_reward_info(info, reward_components):
     components = {} if reward_components is None else dict(reward_components)
     info["reward"] = components.get("reward")
     info["reward_base"] = components.get("reward_base", components.get("reward"))
+    info["reward_no_penalty"] = components.get(
+        "reward_no_penalty", components.get("reward_base", components.get("reward"))
+    )
     info["reward_augmented"] = components.get("reward", components.get("reward_base"))
     info["fallback_penalty"] = components.get("fallback_penalty", 0.0)
     info["weighted_correction_gap"] = components.get("weighted_correction_gap", 0.0)

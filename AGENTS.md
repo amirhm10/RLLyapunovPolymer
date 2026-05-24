@@ -95,6 +95,7 @@ Notebook cells often import modules directly, so keep public function names stab
 - `steady_states["ss_inputs"]` and `steady_states["y_ss"]` are the steady-state anchors.
 - `xhatdhat` denotes the augmented observer state: physical state estimate plus disturbance estimate.
 - Setpoint schedules are usually generated with `generate_setpoints_training_rl_gradually(...)`.
+- For governed-reference/direct Lyapunov work, be precise about stability language. The current controller enforces model-based practical first-step Lyapunov contraction around a moving governed steady target `(x_s, u_s, y_s)`, not a global nonlinear asymptotic stability proof to the raw setpoint. Reports, papers, and slides should explicitly account for target movement or phrase the result as practical/recursive Lyapunov contraction.
 
 Before editing controller logic, confirm whether each variable is:
 
@@ -138,10 +139,13 @@ Most control bugs here come from mixing those representations.
 - Keep code/config examples in fenced blocks, but keep mathematical method statements, optimization problems, observer equations, constraints, and reward definitions as rendered math.
 - When a report uses figures, embed them inline in the Markdown report with relative image paths near the relevant discussion. Do not leave figures only as bare file links at the end.
 - For MPC-only cases in safety-gate RL reports, do not plot fallback count as only zero unless the plot is explicitly labeled as actual fallback. Use the diagnostic Lyapunov contraction failure or `diagnostic_unsafe_count` as the MPC-only "would-be fallback if the gate were active" count. Keep actual fallback and would-be fallback clearly separated in labels, legends, and tables.
+- For safety-gate RL comparisons, report both the actual training reward and `reward_no_penalty`. Use `reward_no_penalty` for cross-method control-performance comparisons because RL training reward includes fallback/event penalties that Direct Lyapunov MPC does not use.
 - Before finishing a Markdown report, scan the rendered table shape in plain text: it should remain readable in an IDE preview and on GitHub without horizontal scrolling for the main conclusions.
 
 ## Commit And Change-Report Workflow
 - For any major code, notebook, or controller update, create a Git commit at the end of the task unless the user explicitly says not to commit.
+- After applying a requested code/config/report change, create a local Git commit for the intended files before the final response whenever it is safe to do so. Do not leave intended changes only unstaged or staged.
+- If unrelated dirty worktree changes make a safe commit risky, stage only the intended files or hunks; if that is not possible, explain clearly in the final response why the commit was skipped.
 - Use a descriptive commit message that matches the main technical change. Prefer messages like `Refine Step A selector tuning`, `Add RL paper-style debug export plots`, or `Fix safety-filter target backup logic`.
 - For every major committed change, create or update a matching Markdown report under `change-reports/`.
 - The relevant `change-reports/...md` file should be included in the same commit as the code change so the history stays paired.

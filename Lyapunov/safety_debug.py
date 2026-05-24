@@ -80,6 +80,7 @@ _SAFETY_COMPARISON_FILENAME_MAP = {
     "comparison_inputs_last_episode.png": "cmp_in_last.png",
     "comparison_contraction_margin_last_episode.png": "cmp_lyap_last.png",
     "comparison_reward_mean.png": "cmp_reward.png",
+    "comparison_reward_no_penalty_mean.png": "cmp_reward_no_penalty.png",
     "comparison_average_episode_reward.png": "cmp_avg_ep_reward.png",
     "comparison_output_rmse.png": "cmp_out_rmse.png",
     "comparison_rates.png": "cmp_rates.png",
@@ -170,6 +171,7 @@ _SAFETY_COMPACT_STEP_COLUMNS = [
     "fallback_solver_status",
     "reward",
     "reward_base",
+    "reward_no_penalty",
     "reward_augmented",
     "fallback_penalty",
     "weighted_correction_gap",
@@ -492,6 +494,7 @@ def make_safety_filter_step_records(lyap_info_storage):
             "fallback_mpc_active": bool(correction_mode.startswith("fallback_mpc")),
             "reward": info.get("reward"),
             "reward_base": info.get("reward_base"),
+            "reward_no_penalty": info.get("reward_no_penalty", info.get("reward_base")),
             "reward_augmented": info.get("reward_augmented"),
             "fallback_penalty": info.get("fallback_penalty"),
             "weighted_correction_gap": info.get("weighted_correction_gap"),
@@ -750,7 +753,11 @@ def summarize_safety_filter_bundle(bundle):
         "reward_min": float(np.min(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_max": float(np.max(bundle["rewards"])) if len(bundle["rewards"]) > 0 else None,
         "reward_base_mean": _safe_nanmean(bundle.get("reward_base", [])),
+        "reward_base_sum": _safe_nansum(bundle.get("reward_base", [])),
+        "reward_no_penalty_mean": _safe_nanmean(bundle.get("reward_no_penalty", bundle.get("reward_base", []))),
+        "reward_no_penalty_sum": _safe_nansum(bundle.get("reward_no_penalty", bundle.get("reward_base", []))),
         "reward_augmented_mean": _safe_nanmean(bundle.get("reward_augmented", [])),
+        "reward_augmented_sum": _safe_nansum(bundle.get("reward_augmented", [])),
         "fallback_penalty_mean": _safe_nanmean(bundle.get("fallback_penalty", [])),
         "fallback_penalty_max": _safe_nanmax(bundle.get("fallback_penalty", [])),
         "fallback_penalty_sum": _safe_nansum(bundle.get("fallback_penalty", [])),
@@ -898,6 +905,10 @@ def build_safety_filter_run_bundle(
         "cx_s_store": _stack_vectors(lyap_info_storage, "cx_s", n_y),
         "cd_d_s_store": _stack_vectors(lyap_info_storage, "cd_d_s", n_y),
         "reward_base": np.array([info.get("reward_base", np.nan) for info in lyap_info_storage], dtype=float),
+        "reward_no_penalty": np.array(
+            [info.get("reward_no_penalty", info.get("reward_base", np.nan)) for info in lyap_info_storage],
+            dtype=float,
+        ),
         "reward_augmented": np.array([info.get("reward_augmented", info.get("reward", np.nan)) for info in lyap_info_storage], dtype=float),
         "fallback_penalty": np.array([info.get("fallback_penalty", 0.0) for info in lyap_info_storage], dtype=float),
         "weighted_correction_gap": np.array([info.get("weighted_correction_gap", 0.0) for info in lyap_info_storage], dtype=float),
@@ -1407,6 +1418,10 @@ def make_safety_filter_episode_records(bundle):
     y_sp_phys = _physical_setpoint_steps(bundle)
     y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
     rewards = np.asarray(bundle["rewards"], dtype=float).reshape(-1)
+    reward_no_penalty = np.asarray(
+        bundle.get("reward_no_penalty", bundle.get("reward_base", [])),
+        dtype=float,
+    ).reshape(-1)
     fallback_penalty = np.asarray(bundle.get("fallback_penalty", []), dtype=float).reshape(-1)
     diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
     diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
@@ -1434,6 +1449,8 @@ def make_safety_filter_episode_records(bundle):
             "n_steps": int(stop - start),
             "reward_mean": float(np.mean(rewards[start:stop])) if stop > start else None,
             "reward_sum": float(np.sum(rewards[start:stop])) if stop > start else None,
+            "reward_no_penalty_mean": _safe_nanmean(reward_no_penalty[start:stop]),
+            "reward_no_penalty_sum": _safe_nansum(reward_no_penalty[start:stop]),
             "fallback_penalty_mean": _safe_nanmean(fallback_penalty[start:stop]),
             "fallback_penalty_sum": _safe_nansum(fallback_penalty[start:stop]),
             "diagnostic_unsafe_count": int(np.nansum(diagnostic_unsafe[start:stop] > 0.5)),
@@ -1478,7 +1495,11 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
         "reward_mean": summary.get("reward_mean"),
         "reward_sum": summary.get("reward_sum"),
         "reward_base_mean": summary.get("reward_base_mean"),
+        "reward_base_sum": summary.get("reward_base_sum"),
+        "reward_no_penalty_mean": summary.get("reward_no_penalty_mean"),
+        "reward_no_penalty_sum": summary.get("reward_no_penalty_sum"),
         "reward_augmented_mean": summary.get("reward_augmented_mean"),
+        "reward_augmented_sum": summary.get("reward_augmented_sum"),
         "fallback_penalty_mean": summary.get("fallback_penalty_mean"),
         "fallback_penalty_max": summary.get("fallback_penalty_max"),
         "fallback_penalty_sum": summary.get("fallback_penalty_sum"),
@@ -1510,6 +1531,9 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
         "executed_action_gap_inf_mean": summary.get("executed_action_gap_inf_mean"),
         "executed_action_gap_inf_max": summary.get("executed_action_gap_inf_max"),
         "episode_reward_mean": _safe_nanmean([row.get("reward_mean") for row in episode_records]),
+        "episode_reward_no_penalty_mean": _safe_nanmean(
+            [row.get("reward_no_penalty_mean") for row in episode_records]
+        ),
         "episode_fallback_mean": _safe_nanmean([row.get("fallback_count") for row in episode_records]),
         "episode_gap_inf_max": _safe_nanmax([row.get("max_executed_action_gap_inf") for row in episode_records]),
         "wall_clock_seconds": summary.get("wall_clock_seconds"),
@@ -1561,6 +1585,7 @@ def _safety_npz_arrays(bundle, export_profile="debug"):
         "target_stage_code": bundle["target_stage_code"],
         "executed_action_gap_inf": bundle["executed_action_gap_inf"],
         "reward_base": bundle["reward_base"],
+        "reward_no_penalty": bundle.get("reward_no_penalty", bundle["reward_base"]),
         "reward_augmented": bundle["reward_augmented"],
         "fallback_penalty": bundle["fallback_penalty"],
         "weighted_correction_gap": bundle["weighted_correction_gap"],
@@ -3253,6 +3278,15 @@ def save_safety_filter_comparison_artifacts(
             "RL Safety Gate Reward Comparison",
             _comparison_plot_path(plot_dir, "comparison_reward_mean.png"),
         )
+        if records and any(record.get("reward_no_penalty_mean") is not None for record in records):
+            plot_paths["reward_no_penalty_mean"] = _save_safety_comparison_bar(
+                records,
+                ["reward_no_penalty_mean"],
+                ["reward without penalty mean"],
+                "reward without penalty",
+                "RL Safety Gate Reward Without Fallback Penalty",
+                _comparison_plot_path(plot_dir, "comparison_reward_no_penalty_mean.png"),
+            )
         if records and any(record.get("episode_reward_mean") is not None for record in records):
             plot_paths["average_episode_reward"] = _save_safety_comparison_bar(
                 records,

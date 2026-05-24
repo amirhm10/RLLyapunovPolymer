@@ -49,8 +49,8 @@ from utils.td3_helpers import load_and_prepare_system_data
 
 predict_h = 9
 cont_h = 3
-rho_lyap = 0.99
-lyap_eps = 1e-2
+rho_lyap = 0.98
+lyap_eps = 1e-9
 lyap_tol = 1e-10
 slack_penalty = 1e6
 plant_mode = "disturb"
@@ -192,7 +192,7 @@ STD_END = 0.0
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 
-Qy_diag = np.array([8.0, 6.0])
+Qy_diag = np.array([12.0, 6.0])
 Su_diag = np.array([1.0, 1.0])
 Rdu_diag = np.array([1.0, 1.0])
 k_rel = np.array([0.0015, 0.00015])
