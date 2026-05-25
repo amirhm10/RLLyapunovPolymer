@@ -61,6 +61,19 @@ StatsControl2026/*.snm
 StatsControl2026/*.toc
 StatsControl2026/rl_math_check*.png
 
+# CSChE slide build outputs and preview renders
+csche/*.aux
+csche/*.fdb_latexmk
+csche/*.fls
+csche/*.log
+csche/*.nav
+csche/*.out
+csche/*.pdf
+csche/*.snm
+csche/*.toc
+csche/rendered_pages/
+csche/scripts/__pycache__/
+
 # Local validation caches
 .pycache_tmp/
 .pycache_validation/
