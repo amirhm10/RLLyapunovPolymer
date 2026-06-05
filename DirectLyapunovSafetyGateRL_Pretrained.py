@@ -50,15 +50,15 @@ from utils.td3_helpers import load_and_prepare_system_data
 predict_h = 9
 cont_h = 3
 rho_lyap = 0.98
-lyap_eps = 1e-9
+lyap_eps = 1e-5
 lyap_tol = 1e-10
 slack_penalty = 1e6
 plant_mode = "disturb"
 disturbance_after_step = False
 
-# Visible governed-reference target regularization weights for RL runs.
-u_prev_penalty_weight = 0.1
-xs_prev_penalty_weight = 0.1
+# Governed-reference target regularization weights for RL runs.
+u_prev_penalty_weight = 0.0
+xs_prev_penalty_weight = 0.0
 
 Ad = 2.142e17
 Ed = 14897
@@ -274,15 +274,6 @@ case_specs = [
         case_name="rl_gate_governed_reference",
         controller_mode="direct_safety_gate",
         label="Pretrained RL with governed-reference safety gate",
-        u_ref_weight=u_prev_penalty_weight,
-        x_ref_weight=xs_prev_penalty_weight,
-    ),
-    governed_reference_case_spec(
-        Qy_diag,
-        case_name="mpc_only",
-        controller_mode="mpc_only",
-        lyapunov_mode="diagnostic_only",
-        label="Offset-free MPC with governed-reference diagnostics",
         u_ref_weight=u_prev_penalty_weight,
         x_ref_weight=xs_prev_penalty_weight,
     ),

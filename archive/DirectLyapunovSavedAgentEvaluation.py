@@ -78,7 +78,7 @@ rho_lyap = 0.99
 lyap_eps = 1e-3
 lyap_tol = 1e-10
 slack_penalty = 1e6
-plant_mode = "disturb"
+plant_mode = "nominal"
 disturbance_after_step = False
 use_target_output_for_tracking = False
 
