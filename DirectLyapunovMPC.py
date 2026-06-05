@@ -213,8 +213,8 @@ ha_change = 0.92
 
 # Governed-reference is the active target selector default.
 # The MPC stage objective still tracks the raw setpoint, not y_s.
-u_prev_penalty_weight = 0.1
-xs_prev_penalty_weight = 0.1
+u_prev_penalty_weight = 0.0
+xs_prev_penalty_weight = 0.0
 governed_reference_target_config = governed_reference_case_spec(
     Qy_diag,
     case_name="lyap_governed_reference",
