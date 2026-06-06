@@ -1,0 +1,68 @@
+[
+  {
+    "study": "direct_lmpc",
+    "label": "LMPC",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.3699486996822555,
+    "last50_reward_no_penalty_mean": -4.266507376945404,
+    "last50_reward_mean": -4.266507376945404,
+    "last50_fallback_rate": 0.0,
+    "last50_intervention_rate": 1.0,
+    "last50_diagnostic_unsafe_rate": 0.0
+  },
+  {
+    "study": "direct_lmpc",
+    "label": "MPC-only",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.3703931522800118,
+    "last50_reward_no_penalty_mean": -4.250457261095443,
+    "last50_reward_mean": -4.250457261095443,
+    "last50_fallback_rate": 0.0,
+    "last50_intervention_rate": 0.0,
+    "last50_diagnostic_unsafe_rate": 0.0025
+  },
+  {
+    "study": "cold_start",
+    "label": "RL gate",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.20028487795213137,
+    "last50_reward_no_penalty_mean": -5.746757651689678,
+    "last50_reward_mean": -9.020368654023375,
+    "last50_fallback_rate": 0.056075,
+    "last50_intervention_rate": 0.056075,
+    "last50_diagnostic_unsafe_rate": 0.0
+  },
+  {
+    "study": "cold_start",
+    "label": "No-gate diag",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.18812928200871618,
+    "last50_reward_no_penalty_mean": -4.132480576924541,
+    "last50_reward_mean": -4.132480576924541,
+    "last50_fallback_rate": 0.0,
+    "last50_intervention_rate": 0.0,
+    "last50_diagnostic_unsafe_rate": 0.16157500000000002
+  },
+  {
+    "study": "pretrained",
+    "label": "RL gate",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.19931934203387272,
+    "last50_reward_no_penalty_mean": -5.454529621103326,
+    "last50_reward_mean": -8.784533198056861,
+    "last50_fallback_rate": 0.06365,
+    "last50_intervention_rate": 0.06365,
+    "last50_diagnostic_unsafe_rate": 0.0
+  },
+  {
+    "study": "pretrained",
+    "label": "No-gate diag",
+    "tail_episodes": 50,
+    "last50_episode_rmse_mean": 0.18682368321051268,
+    "last50_reward_no_penalty_mean": -3.95322183843953,
+    "last50_reward_mean": -3.95322183843953,
+    "last50_fallback_rate": 0.0,
+    "last50_intervention_rate": 0.0,
+    "last50_diagnostic_unsafe_rate": 0.14245000000000002
+  }
+]
