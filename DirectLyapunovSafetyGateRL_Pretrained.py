@@ -49,8 +49,8 @@ from utils.td3_helpers import load_and_prepare_system_data
 
 predict_h = 9
 cont_h = 3
-rho_lyap = 0.98
-lyap_eps = 1e-5
+rho_lyap = 0.99
+lyap_eps = 5e-3
 lyap_tol = 1e-10
 slack_penalty = 1e6
 plant_mode = "disturb"
@@ -97,7 +97,8 @@ u_min = np.array([71.6, 78.0])
 u_max = np.array([870.0, 670.0])
 setpoint_y_phys = DIRECT_TWO_SETPOINT_Y_PHYS.copy()
 
-n_tests = DIRECT_DISTURBANCE_N_TESTS
+n_episodes = 300
+n_tests = n_episodes
 set_points_len = DIRECT_DISTURBANCE_SETPOINT_LEN
 TEST_CYCLE = direct_disturbance_test_cycle(n_tests)
 FORCE_FINAL_TEST = True
@@ -274,6 +275,15 @@ case_specs = [
         case_name="rl_gate_governed_reference",
         controller_mode="direct_safety_gate",
         label="Pretrained RL with governed-reference safety gate",
+        u_ref_weight=u_prev_penalty_weight,
+        x_ref_weight=xs_prev_penalty_weight,
+    ),
+    governed_reference_case_spec(
+        Qy_diag,
+        case_name="mpc_only",
+        controller_mode="mpc_only",
+        lyapunov_mode="diagnostic_only",
+        label="Offset-free MPC with governed-reference diagnostics",
         u_ref_weight=u_prev_penalty_weight,
         x_ref_weight=xs_prev_penalty_weight,
     ),
