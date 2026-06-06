@@ -42,6 +42,102 @@ V_{k+1|k} \le \rho V_k + \epsilon,
 \epsilon = 5\times 10^{-3}.
 $$
 
+## Why The Governed Target Calculation Is A Good Choice
+
+The controller does not apply Lyapunov contraction around the raw requested setpoint directly. Instead, it constructs a governed steady target in two stages:
+
+$$
+y_{sp,k}
+\rightarrow
+r_{\mathrm{cmd},k}
+\rightarrow
+(x_{s,k},u_{s,k},d_{s,k},y_{s,k}).
+$$
+
+This is important because a raw setpoint can be temporarily unreachable under input bounds, disturbance bias, or model constraints. If the Lyapunov function were centered on an unreachable target, then zero error would not be a model equilibrium and a stability proof would be artificial.
+
+The governed-reference command first solves a feasible steady command problem using the current output-disturbance estimate $\hat d_k$:
+
+$$
+\begin{aligned}
+\min_{x,u}\quad
+& \|C x + C_d\hat d_k - y_{sp,k}\|_{W_r}^2
+ + \lambda_{\mathrm{cmd}}\|C x + C_d\hat d_k - r_{\mathrm{prev}}\|^2 \\
+\text{s.t.}\quad
+& x = A x + B u + B_d\hat d_k,\\
+& u_{\min}^{\mathrm{tight}}\le u \le u_{\max}^{\mathrm{tight}}.
+\end{aligned}
+$$
+
+The result is the commanded reachable reference:
+
+$$
+r_{\mathrm{cmd},k}=C x_{\mathrm{cmd},k}+C_d\hat d_k.
+$$
+
+The second stage solves the actual target used by LMPC:
+
+$$
+\begin{aligned}
+\min_{x_s,u_s}\quad
+& \|C x_s + C_d\hat d_k - r_{\mathrm{cmd},k}\|_{Q_r}^2
+ + \|u_s-u_{\mathrm{ref}}\|_{R_u}^2
+ + \|x_s-x_{\mathrm{ref}}\|_{Q_x}^2 \\
+\text{s.t.}\quad
+& x_s = A x_s + B u_s + B_d\hat d_k,\\
+& u_{\min}^{\mathrm{tight}}\le u_s \le u_{\max}^{\mathrm{tight}},\\
+& d_s = \hat d_k,\\
+& y_s = C x_s + C_d d_s.
+\end{aligned}
+$$
+
+In the current runners, the previous-input and previous-target regularization weights are zero. Therefore the target is selected mainly as the feasible steady output closest to the governed command, without artificially pulling it toward the previous input or previous state. This is good for the present diagnostic phase because it lets us see the clean feasibility and Lyapunov behavior of the governed target.
+
+The target calculation supports the practical stability proof for three reasons:
+
+- It gives the Lyapunov function a model-consistent center:
+
+  $$
+  V_k=(\hat x_k-x_{s,k})^\top P(\hat x_k-x_{s,k}).
+  $$
+
+- The pair $(x_{s,k},u_{s,k})$ is a steady equilibrium of the offset-free augmented prediction model with $d_s=\hat d_k$.
+
+- Input tightening keeps the target away from exact input-bound contact, which helps the terminal controller and first-step contraction remain feasible.
+
+Therefore the target calculation does not ruin the practical stability proof. It is actually the reason the proof can be stated cleanly around a governed equilibrium. The caveat is that the proof is around $(x_{s,k},u_{s,k},y_{s,k})$, not directly around the raw setpoint $y_{sp,k}$. Any remaining target mismatch $y_{s,k}-y_{sp,k}$ must be reported as tracking/feasibility loss, not hidden inside the Lyapunov claim.
+
+## Does The Target Calculation Need Changes For The Proof?
+
+For the current fixed-epsilon practical-stability claim, no immediate target-selection change is required. The current governed target is acceptable if the run confirms:
+
+- target solve success remains high,
+- target residuals are small,
+- target motion is bounded,
+- input headroom remains positive,
+- disturbance-estimate motion is bounded.
+
+The proof statement should include the target-motion term:
+
+$$
+V_{k+1}
+\le
+\rho V_k
++ \epsilon
++ c_s\|x_{s,k+1}-x_{s,k}\|^2
++ c_d\|\hat d_{k+1}-\hat d_k\|^2
++ c_m\|\Delta_{\mathrm{model},k}\|^2.
+$$
+
+For a future asymptotic or vanishing-epsilon theorem, the target calculation may need one of these additions:
+
+- assume the governed target is unique and converges once the setpoint and disturbance estimate settle,
+- include the measured target movement in the adaptive slack $\epsilon_k$,
+- add a small tie-breaker or rate penalty only if target non-uniqueness creates jumps,
+- enable target-quality thresholds for maximum target residual and target jump before enforcing a hard Lyapunov claim.
+
+The preferred next change is not to add heavy target regularization immediately. The cleaner next step is to keep the current zero regularization, run the fixed `5e-3` 300-episode benchmark, and inspect `target_rate_inf`, target residuals, input headroom, and contraction residuals. If target jumps are rare and bounded, the current target rule is sufficient for the practical proof. If target jumps are large or persistent, then adaptive $\epsilon_k$ should include target movement, or the target selector should get a small continuity tie-breaker.
+
 ## Evidence From The Latest Short Direct Run
 
 The latest complete short direct run inspected was:
