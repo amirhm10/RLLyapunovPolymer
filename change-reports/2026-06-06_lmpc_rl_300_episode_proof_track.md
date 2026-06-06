@@ -40,8 +40,8 @@ The report records the stability-proof discussion:
 - asymptotic convergence requires either `epsilon = 0` or a vanishing sequence `epsilon_k -> 0`
 - moving setpoints and changing disturbances require additive terms for target motion, disturbance-estimate motion, and model mismatch
 - the governed-reference target calculation strengthens the practical proof because it centers the Lyapunov function on a feasible model equilibrium instead of an unreachable raw setpoint
-- the active target-selector mathematics should omit `u_ref` and `x_ref` regularization terms because their weights are zero in the runners
-- no immediate target-selection change is required for the fixed-epsilon practical proof, but the future vanishing-epsilon proof should account for target motion and only add a small continuity tie-breaker if target non-uniqueness causes unexplained jumps
+- the target-selector mathematics is now written only as the feasible governed steady projection used for the proof discussion
+- no immediate target-selection change is required for the fixed-epsilon practical proof, but the future vanishing-epsilon proof should account for measured target motion
 - the next algorithmic step is an adaptive epsilon schedule after the fixed `5e-3` 300-episode benchmark
 
 ## Validation

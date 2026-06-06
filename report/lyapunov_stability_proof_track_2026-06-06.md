@@ -89,16 +89,20 @@ $$
 \end{aligned}
 $$
 
-This is the effective optimization problem in the active runners because the previous-input and previous-target regularization weights are zero:
+This is the target rule used for the proof discussion. The target is the feasible steady output closest to the governed command:
 
-```python
-u_prev_penalty_weight = 0.0
-xs_prev_penalty_weight = 0.0
-```
+$$
+(x_{s,k},u_{s,k})
+\in
+\arg\min_{x_s,u_s}
+\|C x_s + C_d\hat d_k - r_{\mathrm{cmd},k}\|_{Q_r}^2
+$$
 
-The code still passes the previous input and previous successful target as optional references, but their weights are zero, so they do not affect the objective. For the proof discussion, they should be removed from the target-selector mathematics. The target is simply the feasible steady output closest to the governed command, not a compromise with a previous input or previous state.
+over the steady-state and tightened-input feasible set.
 
-This is good for the present diagnostic phase because it separates feasibility from smoothing. If the target moves, that movement is real target-set geometry under the current disturbance estimate and input bounds, not an artifact of regularization.
+This is a clean choice for the proof because the target is not a heuristic point. It is the closest reachable steady output under the current disturbance estimate and constraints.
+
+If the target moves, that movement should be interpreted as real feasible-set geometry under the current disturbance estimate, setpoint, and input bounds.
 
 The target calculation supports the practical stability proof for three reasons:
 
@@ -136,14 +140,15 @@ V_{k+1}
 + c_m\|\Delta_{\mathrm{model},k}\|^2.
 $$
 
-For a future asymptotic or vanishing-epsilon theorem, the target calculation may need one of these additions:
+Using this bare governed target does not change the practical Lyapunov proof. The proof needs the target to be a feasible steady equilibrium of the prediction model. It does not require the target objective to contain any extra shaping terms.
+
+For a future asymptotic or vanishing-epsilon theorem, the target calculation needs these assumptions or diagnostics:
 
 - assume the governed target is unique and converges once the setpoint and disturbance estimate settle,
 - include the measured target movement in the adaptive slack $\epsilon_k$,
-- add a small tie-breaker only if target non-uniqueness creates jumps that are not explained by setpoint or disturbance-estimate motion,
 - enable target-quality thresholds for maximum target residual and target jump before enforcing a hard Lyapunov claim.
 
-The preferred next change is not to reintroduce target regularization. The cleaner next step is to keep the current zero-regularization target selector, run the fixed `5e-3` 300-episode benchmark, and inspect `target_rate_inf`, target residuals, input headroom, and contraction residuals. If target jumps are rare and bounded, the current target rule is sufficient for the practical proof. If target jumps are large or persistent, then adaptive $\epsilon_k$ should include target movement. A small continuity tie-breaker should only be considered if the data show non-unique target solutions jumping without a physical reason.
+The cleaner next step is to keep this target selector, run the fixed `5e-3` 300-episode benchmark, and inspect `target_rate_inf`, target residuals, input headroom, and contraction residuals. If target jumps are rare and bounded, the current target rule is sufficient for the practical proof. If target jumps are large or persistent, then adaptive $\epsilon_k$ should include target movement explicitly.
 
 ## Evidence From The Latest Short Direct Run
 
