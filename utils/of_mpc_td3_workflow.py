@@ -56,16 +56,6 @@ COMPARISON_SETPOINT_Y_PHYS = np.array(
 U_MIN_PHYS = np.array([71.6, 78.0], dtype=float)
 U_MAX_PHYS = np.array([870.0, 670.0], dtype=float)
 
-DEFAULT_MPC_SAMPLES = 4_900_000
-DEFAULT_STEADY_SAMPLES = 100_000
-DEFAULT_CHUNK_SIZE = 100_000
-DEFAULT_ACTOR_EPOCHS = 1000
-DEFAULT_CRITIC_EPOCHS = 500
-DEFAULT_PRETRAIN_BATCH_SIZE = 8192
-
-DEFAULT_ACTOR_LAYER_SIZES = [512, 512, 512, 512, 512]
-DEFAULT_CRITIC_LAYER_SIZES = [512, 512, 512, 512, 512]
-
 OBSERVER_POLES = np.array(
     [
         0.44619852,
@@ -116,11 +106,14 @@ class OFMPCComponents:
 
 @dataclass(frozen=True)
 class PretrainingRunConfig:
-    mpc_samples: int = DEFAULT_MPC_SAMPLES
-    steady_samples: int = DEFAULT_STEADY_SAMPLES
-    chunk_size: int = DEFAULT_CHUNK_SIZE
-    actor_epochs: int = DEFAULT_ACTOR_EPOCHS
-    critic_epochs: int = DEFAULT_CRITIC_EPOCHS
+    mpc_samples: int
+    steady_samples: int
+    chunk_size: int
+    actor_epochs: int
+    critic_epochs: int
+    pretrain_batch_size: int
+    actor_layer_sizes: tuple[int, ...]
+    critic_layer_sizes: tuple[int, ...]
     seed: int = 123
     device_requested: str = "auto"
     output_root: str = os.path.join("results", "PretrainOFMPC")
@@ -128,6 +121,8 @@ class PretrainingRunConfig:
 
 @dataclass(frozen=True)
 class ComparisonRunConfig:
+    actor_layer_sizes: tuple[int, ...]
+    critic_layer_sizes: tuple[int, ...]
     agent_path: str | None = None
     modes: tuple[str, ...] = ("nominal", "disturb")
     n_tests: int = 2
@@ -150,6 +145,10 @@ def validate_pretraining_config(config: PretrainingRunConfig) -> None:
         raise ValueError("actor_epochs and critic_epochs must be nonnegative.")
     if config.actor_epochs + config.critic_epochs <= 0:
         raise ValueError("At least one actor or critic pretraining epoch is required.")
+    if config.pretrain_batch_size <= 0:
+        raise ValueError("pretrain_batch_size must be positive.")
+    validate_layer_sizes(config.actor_layer_sizes, "actor_layer_sizes")
+    validate_layer_sizes(config.critic_layer_sizes, "critic_layer_sizes")
 
 
 def validate_comparison_config(config: ComparisonRunConfig) -> None:
@@ -162,6 +161,16 @@ def validate_comparison_config(config: ComparisonRunConfig) -> None:
     unknown = [mode for mode in config.modes if mode not in {"nominal", "disturb"}]
     if unknown:
         raise ValueError(f"Unsupported modes: {unknown}")
+    validate_layer_sizes(config.actor_layer_sizes, "actor_layer_sizes")
+    validate_layer_sizes(config.critic_layer_sizes, "critic_layer_sizes")
+
+
+def validate_layer_sizes(layer_sizes: tuple[int, ...], name: str) -> None:
+    if not layer_sizes:
+        raise ValueError(f"{name} must contain at least one hidden layer size.")
+    bad = [value for value in layer_sizes if int(value) <= 0]
+    if bad:
+        raise ValueError(f"{name} entries must be positive integers; got {bad}.")
 
 
 def resolve_device(name: str) -> torch.device:
@@ -276,14 +285,14 @@ def make_td3_agent(
     *,
     buffer_size: int,
     device: torch.device,
-    actor_hidden: list[int] | None = None,
-    critic_hidden: list[int] | None = None,
+    actor_hidden: tuple[int, ...] | list[int],
+    critic_hidden: tuple[int, ...] | list[int],
 ) -> TD3Agent:
     return TD3Agent(
         state_dim=dimensions.state_dim,
         action_dim=dimensions.action_dim,
-        actor_hidden=actor_hidden or DEFAULT_ACTOR_LAYER_SIZES,
-        critic_hidden=critic_hidden or DEFAULT_CRITIC_LAYER_SIZES,
+        actor_hidden=list(actor_hidden),
+        critic_hidden=list(critic_hidden),
         gamma=0.995,
         actor_lr=1e-4,
         critic_lr=1e-4,
@@ -457,7 +466,13 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     system_data = load_of_mpc_system_data(setup)
     dimensions = compute_td3_dimensions(system_data["A_aug"], system_data["B_aug"], system_data["C_aug"])
     total_samples = int(config.mpc_samples + config.steady_samples)
-    agent = make_td3_agent(dimensions, buffer_size=total_samples, device=device)
+    agent = make_td3_agent(
+        dimensions,
+        buffer_size=total_samples,
+        device=device,
+        actor_hidden=config.actor_layer_sizes,
+        critic_hidden=config.critic_layer_sizes,
+    )
     of_mpc = make_of_mpc_components(system_data)
 
     buffer_start = time.perf_counter()
@@ -505,7 +520,7 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     )
     data_loader = DataLoader(
         dataset,
-        batch_size=min(DEFAULT_PRETRAIN_BATCH_SIZE, buffer_size),
+        batch_size=min(config.pretrain_batch_size, buffer_size),
         shuffle=True,
         drop_last=False,
         pin_memory=(device.type == "cuda"),
@@ -536,14 +551,6 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
         "method": "td3_pretraining_from_offset_free_mpc",
         "run_config": asdict(config),
         "device_used": str(device),
-        "defaults": {
-            "mpc_samples": DEFAULT_MPC_SAMPLES,
-            "steady_samples": DEFAULT_STEADY_SAMPLES,
-            "chunk_size": DEFAULT_CHUNK_SIZE,
-            "actor_epochs": DEFAULT_ACTOR_EPOCHS,
-            "critic_epochs": DEFAULT_CRITIC_EPOCHS,
-            "pretrain_batch_size": DEFAULT_PRETRAIN_BATCH_SIZE,
-        },
         "controller": {
             "augmentation_style": "rawlings",
             "augmentation_mode": "output_disturbance",
@@ -559,8 +566,8 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
         },
         "td3": {
             "dimensions": dimensions,
-            "actor_hidden": DEFAULT_ACTOR_LAYER_SIZES,
-            "critic_hidden": DEFAULT_CRITIC_LAYER_SIZES,
+            "actor_hidden": config.actor_layer_sizes,
+            "critic_hidden": config.critic_layer_sizes,
             "gamma": agent.gamma,
             "actor_lr": agent.actor_lr,
             "critic_lr": agent.critic_lr,
@@ -862,7 +869,13 @@ def run_pretrained_of_mpc_comparison(config: ComparisonRunConfig) -> dict[str, A
     artifacts: dict[str, Any] = {}
 
     for mode in config.modes:
-        agent = make_td3_agent(dimensions, buffer_size=300_000, device=device)
+        agent = make_td3_agent(
+            dimensions,
+            buffer_size=300_000,
+            device=device,
+            actor_hidden=config.actor_layer_sizes,
+            critic_hidden=config.critic_layer_sizes,
+        )
         agent.load(str(agent_path))
 
         rl_results = run_rl_pre_trained(

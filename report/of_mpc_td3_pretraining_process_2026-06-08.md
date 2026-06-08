@@ -133,18 +133,27 @@ The actor and critic hidden layers are `[512, 512, 512, 512, 512]` for compatibi
 
 ## Default Workload
 
-The pretraining runner has one production default configuration, matching the original `Polymer_example` workload sizes:
+The pretraining runner has one production default configuration, matching the original `Polymer_example` workload sizes. These run-tunable defaults live in `PretrainTD3OffsetFreeMPC.py`, not in the reusable helper module, so they can be changed directly for a new run:
 
 - `mpc_samples = 4_900_000`
 - `steady_samples = 100_000`
 - `chunk_size = 100_000`
 - `actor_epochs = 1000`
 - `critic_epochs = 500`
+- `pretrain_batch_size = 8192`
+- actor hidden layers `[512, 512, 512, 512, 512]`
+- critic hidden layers `[512, 512, 512, 512, 512]`
 
 There is no `smoke` preset and no `legacy-full` preset. Smoke runs are explicit overrides only:
 
 ```powershell
 python PretrainTD3OffsetFreeMPC.py --mpc-samples 32 --steady-samples 8 --chunk-size 16 --actor-epochs 1 --critic-epochs 1
+```
+
+The runner also exposes CLI overrides for the pretraining batch size and architecture:
+
+```powershell
+python PretrainTD3OffsetFreeMPC.py --pretrain-batch-size 4096 --actor-layers 512,512,512 --critic-layers 512,512,512
 ```
 
 The full default run is:
@@ -196,6 +205,7 @@ Useful commands:
 python ComparePretrainedTD3OffsetFreeMPC.py
 python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl
 python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl --set-points-len 10 --modes nominal
+python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl --actor-layers 512,512,512 --critic-layers 512,512,512
 ```
 
 ## Limitations
@@ -208,4 +218,3 @@ python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<
 ## Future LMPC Conversion
 
 The future LMPC migration should keep this runner/helper split and replace only the expert-label source. The TD3 state representation, artifact format, and comparison runner can remain stable while the label generator changes from OF-MPC to Direct Lyapunov MPC.
-

@@ -11,6 +11,23 @@ from utils.of_mpc_td3_workflow import (
 )
 
 
+DEFAULT_ACTOR_LAYER_SIZES = [512, 512, 512, 512, 512]
+DEFAULT_CRITIC_LAYER_SIZES = [512, 512, 512, 512, 512]
+
+
+def parse_layer_sizes(value: str) -> tuple[int, ...]:
+    values = [part.strip() for part in str(value).split(",") if part.strip()]
+    if not values:
+        raise argparse.ArgumentTypeError("Layer sizes must contain at least one integer.")
+    try:
+        layer_sizes = tuple(int(part) for part in values)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Layer sizes must be comma-separated integers.") from exc
+    if any(size <= 0 for size in layer_sizes):
+        raise argparse.ArgumentTypeError("Layer sizes must be positive integers.")
+    return layer_sizes
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Load a saved TD3 agent and compare it against offset-free MPC.",
@@ -33,6 +50,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-tests", type=int, default=2)
     parser.add_argument("--set-points-len", type=int, default=400)
     parser.add_argument("--seed", type=int, default=123)
+    parser.add_argument(
+        "--actor-layers",
+        type=parse_layer_sizes,
+        default=",".join(str(value) for value in DEFAULT_ACTOR_LAYER_SIZES),
+        help="Comma-separated actor hidden layer sizes used to load the checkpoint.",
+    )
+    parser.add_argument(
+        "--critic-layers",
+        type=parse_layer_sizes,
+        default=",".join(str(value) for value in DEFAULT_CRITIC_LAYER_SIZES),
+        help="Comma-separated critic hidden layer sizes used to load the checkpoint.",
+    )
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda"],
@@ -60,6 +89,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = ComparisonRunConfig(
+        actor_layer_sizes=tuple(args.actor_layers),
+        critic_layer_sizes=tuple(args.critic_layers),
         agent_path=args.agent_path,
         modes=mode_list(args.modes),
         n_tests=int(args.n_tests),
@@ -74,6 +105,8 @@ def main() -> None:
     print("Starting pretrained TD3 versus OF-MPC comparison.")
     print(f"Modes: {', '.join(config.modes)}")
     print(f"Setpoint length: {config.set_points_len}")
+    print(f"Actor layers: {list(config.actor_layer_sizes)}")
+    print(f"Critic layers: {list(config.critic_layer_sizes)}")
     result = run_pretrained_of_mpc_comparison(config)
     print("Comparison complete.")
     print(f"Run directory: {result['run_dir']}")
