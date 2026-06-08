@@ -4,20 +4,25 @@ Date: 2026-06-08
 
 ## Objective
 
-This report documents the migrated offset-free MPC pretraining workflow for the TD3 agent in `Lyapunov_polymer`. The migration adds a repo-native script that generates expert demonstrations with the existing offset-free MPC formulation, fills the TD3 replay buffer with synthetic samples, and saves a compatible TD3 checkpoint under `results/PretrainOFMPC/`.
+This report documents the repo-native offset-free MPC pretraining workflow for the TD3 agent in `Lyapunov_polymer`. The workflow now follows the `Polymer_example` organization:
 
-This is a process report, not a new performance report. It does not claim that a new checkpoint improves the 300-episode Direct Lyapunov safety-gate study unless that checkpoint is later trained and evaluated in closed loop.
+- reusable setup, controller, training, artifact, and comparison helpers live in `utils/of_mpc_td3_workflow.py`
+- `PretrainTD3OffsetFreeMPC.py` is only the pretraining and saving runner
+- `ComparePretrainedTD3OffsetFreeMPC.py` is only the saved-agent versus OF-MPC comparison runner
+
+This is a process report. It does not claim new closed-loop performance unless a generated checkpoint is later evaluated and reported.
 
 ## Coordinates
 
-The pretraining workflow uses the same scaled-deviation coordinate convention as the active RL and MPC code.
+The workflow uses scaled-deviation coordinates.
 
-- Physical manipulated inputs are $u = [Q_c, Q_m]^\top$.
-- Physical outputs are $y = [\eta, T]^\top$.
+- Manipulated inputs are $u = [Q_c, Q_m]^\top$.
+- Outputs are $y = [\eta, T]^\top$.
 - The steady-state input anchor is $u_{ss} = [471.6, 378.0]^\top$.
-- The output steady state is computed by `PolymerCSTR` from the same plant parameters used by the current pretrained runner.
-- Inputs are min-max scaled and then represented as deviation from $u_{ss}$.
-- The TD3 state is the concatenation
+- The output steady state is computed from `PolymerCSTR`.
+- Inputs and outputs are min-max scaled, and the controller operates on deviations from the steady-state anchors.
+
+The TD3 state is
 
 $$
 s_k =
@@ -28,20 +33,22 @@ s_k =
 \end{bmatrix},
 $$
 
-where $\tilde{x}_{d,k}$ is the augmented model state mapped to $[-1, 1]$, $\tilde{y}_{sp,k}$ is the scaled setpoint deviation mapped to $[-1, 1]$, and $\tilde{u}_{k-1}$ is the previous input deviation mapped to $[-1, 1]$.
+where $\tilde{x}_{d,k}$ is the augmented state mapped to $[-1, 1]$, $\tilde{y}_{sp,k}$ is the setpoint deviation mapped to $[-1, 1]$, and $\tilde{u}_{k-1}$ is the previous input deviation mapped to $[-1, 1]$.
 
-For the current Rawlings output-disturbance augmentation, this gives
+The dimensions are not hard-coded. They are computed from the augmented matrices:
 
-- `STATE_DIM = 13`
-- `ACTION_DIM = 2`
-- actor hidden layers `[512, 512, 512, 512, 512]`
-- critic hidden layers `[512, 512, 512, 512, 512]`
+```python
+inputs_number = int(B_aug.shape[1])
+set_points_number = int(C_aug.shape[0])
+state_dim = int(A_aug.shape[0]) + set_points_number + inputs_number
+action_dim = inputs_number
+```
 
-These dimensions match the active `DirectLyapunovSafetyGateRL_Pretrained.py` architecture.
+For the current polymer model this gives `state_dim = 13` and `action_dim = 2`, but those values are consequences of the matrices, not separate workflow constants.
 
-## Offset-Free Augmentation
+## Offset-Free Expert
 
-The migrated workflow uses the Rawlings-style output-disturbance model already available in `utils.td3_helpers.load_and_prepare_system_data(...)`:
+The pretraining expert is offset-free MPC, not Direct Lyapunov MPC. The augmentation is the Rawlings output-disturbance model:
 
 $$
 \begin{aligned}
@@ -51,34 +58,22 @@ y_k &= C x_k + C_d d_k .
 \end{aligned}
 $$
 
-For the migrated OF-MPC pretraining script, the selected mode is `augmentation_style="rawlings"` and `augmentation_mode="output_disturbance"`, so
+The selected mode is output disturbance:
 
 $$
 B_d = 0, \qquad C_d = I.
 $$
 
-This keeps the pretraining model consistent with the disturbance coordinates used by the active Direct Lyapunov workflow.
-
-## Expert OF-MPC Problem
-
-The expert controller is the legacy offset-free MPC, not the Direct Lyapunov MPC. For each synthetic sample, the script solves a finite-horizon tracking problem with
+The OF-MPC expert uses:
 
 - prediction horizon `NP = 9`
 - control horizon `NC = 3`
 - output weights $Q = \operatorname{diag}(5, 1)$
-- move weights $R = \operatorname{diag}(1, 1)$
-- physical input bounds $[71.6, 78.0] \le u \le [870.0, 670.0]$
-- broad pretraining setpoint envelope
+- input-move weights $R = \operatorname{diag}(1, 1)$
+- input bounds $[71.6, 78.0] \le u \le [870.0, 670.0]$
+- pretraining setpoint envelope `[[2.8, 320.0], [5.0, 326.0]]`
 
-$$
-y_{sp}^{phys} \in
-\left\{
-[2.8, 320.0]^\top,\,
-[5.0, 326.0]^\top
-\right\}.
-$$
-
-In scaled-deviation coordinates, the first input move is selected by
+At each sampled state, the expert solves
 
 $$
 \begin{aligned}
@@ -94,16 +89,17 @@ $$
 \end{aligned}
 $$
 
-For $i \ge N_C$, the final optimized move is held constant across the remaining prediction horizon. The expert label stored in the replay buffer is the first optimized input move $u_0^\star$.
+The first optimized move $u_0^\star$ is stored as the TD3 action label.
 
-## Replay Buffer Construction
+## Replay Buffer and TD3 Pretraining
 
-The workflow reuses the existing helper functions:
+The runner reuses the existing low-level helpers:
 
 - `utils.td3_helpers.filling_the_buffer(...)`
 - `utils.td3_helpers.add_steady_state_samples(...)`
+- `TD3Agent.pretrain_from_buffer(...)`
 
-For the broad MPC samples, the helper samples
+For broad samples:
 
 $$
 x_d \sim \mathcal{U}(x_{min}, x_{max}), \qquad
@@ -111,19 +107,13 @@ y_{sp} \sim \mathcal{U}(y_{sp,min}, y_{sp,max}), \qquad
 u_{prev} \sim \mathcal{U}(u_{min}^{dev}, u_{max}^{dev}).
 $$
 
-After the expert MPC solve, it stores
+The stored transition uses
 
 $$
-a_k = \tilde{u}_0^\star,
+x_{d,k+1}=A_{aug}x_{d,k}+B_{aug}u_0^\star,
 $$
 
-and propagates the model one step:
-
-$$
-x_{d,k+1}=A_{aug}x_{d,k}+B_{aug}u_0^\star.
-$$
-
-The stored reward is the negative tracking and input-move penalty:
+and the stored reward is
 
 $$
 r_k =
@@ -134,101 +124,88 @@ r_k =
 \right].
 $$
 
-The near-steady samples use a narrow Gaussian around zero augmented-state deviation, zero setpoint deviation, and a nearly zero previous input deviation. These samples bias the actor toward the steady-state action near the governed target.
+The TD3 pretraining stages are:
 
-## TD3 Pretraining Stages
+1. Behavioral cloning of the OF-MPC first move.
+2. Critic TD warm-up under the cloned actor.
 
-The migrated script calls `TD3Agent.pretrain_from_buffer(...)` with the generated replay data.
+The actor and critic hidden layers are `[512, 512, 512, 512, 512]` for compatibility with the current `Lyapunov_polymer` checkpoints and runners.
 
-Stage 1 is behavioral cloning:
+## Default Workload
 
-$$
-\min_{\theta_\pi}
-\frac{1}{N}
-\sum_{k=1}^{N}
-\left\|
-\pi_{\theta_\pi}(s_k)-a_k^{MPC}
-\right\|_2^2 .
-$$
+The pretraining runner has one production default configuration, matching the original `Polymer_example` workload sizes:
 
-Stage 2 freezes the actor and trains the critic with TD targets under the cloned policy:
+- `mpc_samples = 4_900_000`
+- `steady_samples = 100_000`
+- `chunk_size = 100_000`
+- `actor_epochs = 1000`
+- `critic_epochs = 500`
 
-$$
-y_k =
-r_k + \gamma(1-d_k)
-Q_{\bar{\theta}_Q}
-\left(
-s_{k+1},
-\pi_{\bar{\theta}_\pi}(s_{k+1})+\epsilon
-\right),
-$$
+There is no `smoke` preset and no `legacy-full` preset. Smoke runs are explicit overrides only:
 
-with TD3 target-policy smoothing enabled for the critic warm-up. The saved checkpoint contains actor and critic state dictionaries in the current `TD3Agent.save(...)` format.
+```powershell
+python PretrainTD3OffsetFreeMPC.py --mpc-samples 32 --steady-samples 8 --chunk-size 16 --actor-epochs 1 --critic-epochs 1
+```
 
-## Script Interface
-
-New entrypoint:
+The full default run is:
 
 ```powershell
 python PretrainTD3OffsetFreeMPC.py
 ```
 
-The default preset is `smoke`, intended for fast validation rather than a useful production checkpoint.
-
-Useful commands:
-
-```powershell
-python PretrainTD3OffsetFreeMPC.py --preset legacy-full
-python PretrainTD3OffsetFreeMPC.py --mpc-samples 100000 --steady-samples 5000 --actor-epochs 50 --critic-epochs 20
-python PretrainTD3OffsetFreeMPC.py --mpc-samples 32 --steady-samples 8 --chunk-size 16 --actor-epochs 1 --critic-epochs 1
-```
-
-The script writes artifacts under
+Artifacts are written under:
 
 ```text
 results/PretrainOFMPC/<timestamp>/
 ```
 
-Expected files:
+Expected files include the checkpoint, `config.json`, `summary.json`, and loss arrays when available.
 
-- `of_mpc_pretrained_td3_<timestamp>.pkl`
-- `config.json`
-- `summary.json`
-- `loss_arrays.json`
-- `loss_arrays.csv`, only when the TD3 agent exposes nonempty loss arrays
+## Saved-Agent Comparison Runner
 
-## Selecting a New Checkpoint
+`ComparePretrainedTD3OffsetFreeMPC.py` mirrors `PretrainAgentPerformance.ipynb` from `Polymer_example`.
 
-The pretrained Direct Lyapunov safety-gate runner keeps its existing default checkpoint:
+It loads a saved TD3 checkpoint, runs it with `Simulation.run_rl.run_rl_pre_trained(...)`, and compares it against OF-MPC for nominal and disturbance modes. The comparison scenario is:
+
+```python
+[[4.5, 324.0],
+ [3.4, 321.0]]
+```
+
+Default comparison settings are:
+
+- `n_tests = 2`
+- `set_points_len = 400`
+- modes: `nominal` and `disturb`
+
+If an OF-MPC baseline pickle is missing, the runner generates it with `Simulation.mpc_run.run_mpc(...)` and caches it under:
 
 ```text
-Data/agent_2507171027.pkl
+results/PretrainOFMPCComparison/baselines/
 ```
 
-To evaluate a migrated pretraining checkpoint, set:
+Comparison artifacts are written under:
+
+```text
+results/PretrainOFMPCComparison/<timestamp>/
+```
+
+Useful commands:
 
 ```powershell
-$env:PRETRAINED_TD3_AGENT_PATH='results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl'
-python DirectLyapunovSafetyGateRL_Pretrained.py
+python ComparePretrainedTD3OffsetFreeMPC.py
+python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl
+python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl --set-points-len 10 --modes nominal
 ```
-
-Relative paths are resolved from the repository root. Absolute paths are also accepted.
 
 ## Limitations
 
-- The expert labels are still OF-MPC labels. They are not Direct Lyapunov MPC labels.
-- The synthetic state distribution is broad and model-based, so it can include states that are not equally likely under closed-loop plant operation.
-- The reward stored for critic warm-up is the OF-MPC pretraining penalty, not the safety-gate RL training reward used in the 300-episode study.
-- The smoke preset only validates plumbing and checkpoint compatibility. It is too small to produce a meaningful actor.
-- `TD3Agent.pretrain_from_buffer(...)` currently prints epoch losses, but may not populate persistent loss arrays for this path. The script saves loss files when arrays are available.
+- The expert labels are OF-MPC labels, not LMPC labels.
+- The replay state distribution is synthetic and broad, so it may not match closed-loop visitation under the plant.
+- The stored critic reward is the OF-MPC pretraining penalty, not the safety-gate RL reward used in Direct Lyapunov studies.
+- The comparison runner is an OF-MPC versus saved-TD3 comparison. It does not include the Direct Lyapunov safety gate.
 
-## Future LMPC Conversion Path
+## Future LMPC Conversion
 
-The next migration should replace only the expert-label generator, not the TD3 checkpoint format or runner interface.
-
-1. Keep the replay state and action representation fixed.
-2. Replace `MpcSolver.mpc_opt_fun(...)` labels with Direct Lyapunov MPC first-step labels.
-3. Store diagnostics for target feasibility, Lyapunov contraction residual, fallback feasibility, and slack use.
-4. Compare OF-MPC-pretrained and LMPC-pretrained agents with the same safety-gate runner and the same disturbance test cycle.
-5. Report both training reward and `reward_no_penalty`, because the safety-gate reward includes fallback/event penalties.
+The future LMPC migration should keep this runner/helper split and replace only the expert-label source. The TD3 state representation, artifact format, and comparison runner can remain stable while the label generator changes from OF-MPC to Direct Lyapunov MPC.
 
