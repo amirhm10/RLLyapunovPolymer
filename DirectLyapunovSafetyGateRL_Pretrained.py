@@ -321,7 +321,18 @@ study_name = "Pretrain"
 study_root = os.path.join(os.fspath(repo_path()), "results", study_name, study_timestamp)
 os.makedirs(study_root, exist_ok=True)
 
-agent_path = os.path.join(os.fspath(repo_path()), "Data", "agent_2507171027.pkl")
+DEFAULT_PRETRAINED_TD3_AGENT_PATH = os.path.join("Data", "agent_2507171027.pkl")
+
+
+def resolve_pretrained_td3_agent_path():
+    requested_path = os.environ.get("PRETRAINED_TD3_AGENT_PATH", DEFAULT_PRETRAINED_TD3_AGENT_PATH)
+    requested_path = os.path.expanduser(requested_path)
+    if os.path.isabs(requested_path):
+        return os.path.abspath(requested_path)
+    return os.path.abspath(os.path.join(os.fspath(repo_path()), requested_path))
+
+
+agent_path = resolve_pretrained_td3_agent_path()
 if not os.path.exists(agent_path):
     raise FileNotFoundError(f"TD3 checkpoint not found: {agent_path}")
 
