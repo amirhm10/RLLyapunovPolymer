@@ -157,6 +157,12 @@ class TD3Agent(nn.Module):
 
         self.state_dim = int(state_dim)
         self.action_dim = int(action_dim)
+        self.actor_hidden = [int(v) for v in actor_hidden]
+        self.critic_hidden = [int(v) for v in critic_hidden]
+        self.activation = str(activation)
+        self.use_layernorm = bool(use_layernorm)
+        self.dropout = float(dropout)
+        self.squash = str(squash)
         self.loss_fn_actor = nn.MSELoss()
 
         # --- actors and critic networks ---
@@ -762,6 +768,10 @@ class TD3Agent(nn.Module):
             "actor_target_state_dict": self.actor_target.state_dict(),
             "critic_target_state_dict": self.critic_target.state_dict(),
             "hparams": {
+                "state_dim": self.state_dim,
+                "action_dim": self.action_dim,
+                "actor_hidden": list(self.actor_hidden),
+                "critic_hidden": list(self.critic_hidden),
                 "gamma": self.gamma,
                 "actor_lr": self.actor_lr,
                 "critic_lr": self.critic_lr,
@@ -777,6 +787,10 @@ class TD3Agent(nn.Module):
                 "max_action": self.max_action,
                 "actor_freeze": self.actor_freeze,
                 "mode": self.mode,
+                "activation": self.activation,
+                "use_layernorm": self.use_layernorm,
+                "dropout": self.dropout,
+                "squash": self.squash,
                 "steps": self.steps,
                 "train_steps": self.train_steps,
                 "total_it": self.total_it,
