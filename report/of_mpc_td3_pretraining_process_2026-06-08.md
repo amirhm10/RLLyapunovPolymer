@@ -55,12 +55,21 @@ x_min = [-272.28060121, -1112.33972595, -76.63993491, -608.60327886,
          -3.94399122, -3.93115257, -2.9532091, -4.06547624, -28.25906582]
 ```
 
-The default TD3 setpoint envelope is the direct two-setpoint polymer schedule:
+The default TD3 setpoint-scaling envelope is the broad Polymer-example pretraining envelope used by the saved `Data/agent_2507171027.pkl` checkpoint:
+
+```python
+[[2.8, 320.0],
+ [5.0, 326.0]]
+```
+
+The direct two-setpoint polymer schedule remains the default rollout and comparison scenario:
 
 ```python
 [[4.5, 324.0],
  [3.4, 321.0]]
 ```
+
+This separation is important: the TD3 state feature $\tilde{y}_{sp,k}$ is scaled with the broad pretraining envelope, while the actual commanded setpoint sequence can be the direct Lyapunov comparison schedule.
 
 ## Offset-Free Expert
 
@@ -87,7 +96,7 @@ The OF-MPC expert uses:
 - output weights $Q = \operatorname{diag}(5, 1)$
 - input-move weights $R = \operatorname{diag}(1, 1)$
 - input bounds $[71.6, 78.0] \le u \le [870.0, 670.0]$
-- pretraining setpoint envelope `[[4.5, 324.0], [3.4, 321.0]]`
+- TD3 setpoint-scaling envelope `[[2.8, 320.0], [5.0, 326.0]]`
 
 At each sampled state, the expert solves
 

@@ -33,13 +33,23 @@ DEFAULT_TD3_STATE_X_MIN = np.array(
     dtype=float,
 )
 
-DEFAULT_TD3_SETPOINT_Y_PHYS = np.array(
+DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS = np.array(
+    [
+        [2.8, 320.0],
+        [5.0, 326.0],
+    ],
+    dtype=float,
+)
+
+DEFAULT_DIRECT_SETPOINT_Y_PHYS = np.array(
     [
         [4.5, 324.0],
         [3.4, 321.0],
     ],
     dtype=float,
 )
+
+DEFAULT_TD3_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS.copy()
 
 DEFAULT_U_MIN_PHYS = np.array([71.6, 78.0], dtype=float)
 DEFAULT_U_MAX_PHYS = np.array([870.0, 670.0], dtype=float)

@@ -24,7 +24,8 @@ from TD3Agent.agent import TD3Agent
 from TD3Agent.reward_functions import make_reward_fn_mpc_quadratic
 from utils.path_helpers import repo_path, resolve_repo_path
 from utils.polymer_td3_defaults import (
-    DEFAULT_TD3_SETPOINT_Y_PHYS,
+    DEFAULT_DIRECT_SETPOINT_Y_PHYS,
+    DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS,
     DEFAULT_U_MAX_PHYS,
     DEFAULT_U_MIN_PHYS,
 )
@@ -44,8 +45,8 @@ R_MPC = np.array([1.0, 1.0], dtype=float)
 Q_REWARD = np.diag(Q_MPC)
 R_REWARD = np.diag(R_MPC)
 
-PRETRAIN_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_Y_PHYS.copy()
-COMPARISON_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_Y_PHYS.copy()
+PRETRAIN_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS.copy()
+COMPARISON_SETPOINT_Y_PHYS = DEFAULT_DIRECT_SETPOINT_Y_PHYS.copy()
 U_MIN_PHYS = DEFAULT_U_MIN_PHYS.copy()
 U_MAX_PHYS = DEFAULT_U_MAX_PHYS.copy()
 
@@ -958,6 +959,14 @@ def run_pretrained_of_mpc_comparison(config: ComparisonRunConfig) -> dict[str, A
         "n_tests": int(config.n_tests),
         "set_points_len": int(config.set_points_len),
         "td3_dimensions": dimensions,
+        "scaling": {
+            "state_bounds_source": system_data.get("state_bounds_source"),
+            "setpoint_bounds_source": system_data.get("setpoint_bounds_source"),
+            "setpoint_scaler_y_phys": jsonable(system_data.get("setpoint_range_y_used")),
+            "comparison_setpoint_y_phys": jsonable(COMPARISON_SETPOINT_Y_PHYS),
+            "y_sp_min": jsonable(system_data["min_max_dict"]["y_sp_min"]),
+            "y_sp_max": jsonable(system_data["min_max_dict"]["y_sp_max"]),
+        },
         "reward_config": reward_config,
         "metrics_json": relative_to_repo(metrics_json),
         "metrics_csv": relative_to_repo(metrics_csv),

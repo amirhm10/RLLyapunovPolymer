@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 
 from Simulation.mpc import augment_state_space, augment_state_space_rawlings
 from utils.path_helpers import resolve_repo_path
-from utils.polymer_td3_defaults import default_td3_state_bounds
+from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS, default_td3_state_bounds
 from utils.scaling_helpers import apply_min_max, apply_min_max_pm1
 
 
@@ -90,6 +90,7 @@ def load_and_prepare_system_data(
     Cd=None,
     state_min=None,
     state_max=None,
+    setpoint_range_y=None,
 ):
     """
     Loads system matrices, scaling factors, and min-max state info from files,
@@ -153,12 +154,26 @@ def load_and_prepare_system_data(
     if np.any(state_max_used <= state_min_used):
         raise ValueError("Each state_max entry must be greater than state_min.")
 
-    y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
     setpoint_y = np.atleast_2d(np.asarray(setpoint_y, dtype=float))
+    if setpoint_range_y is None:
+        setpoint_range_y_used = DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS.copy()
+        setpoint_bounds_source = "default_polymer_td3_scaler"
+    else:
+        setpoint_range_y_used = np.atleast_2d(np.asarray(setpoint_range_y, dtype=float))
+        setpoint_bounds_source = "caller_override"
+
+    y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
+    if setpoint_range_y_used.shape[1] != y_ss_scaled.size:
+        raise ValueError(
+            "Setpoint scaling envelope must match the number of outputs "
+            f"{y_ss_scaled.size}; got shape {setpoint_range_y_used.shape}."
+        )
     y_sp_scaled = apply_min_max(setpoint_y, data_min[n_inputs:], data_max[n_inputs:])
     y_sp_scaled_deviation = y_sp_scaled - y_ss_scaled
-    y_sp_bounds_min = np.min(y_sp_scaled_deviation, axis=0)
-    y_sp_bounds_max = np.max(y_sp_scaled_deviation, axis=0)
+    y_sp_range_scaled = apply_min_max(setpoint_range_y_used, data_min[n_inputs:], data_max[n_inputs:])
+    y_sp_range_scaled_deviation = y_sp_range_scaled - y_ss_scaled
+    y_sp_bounds_min = np.min(y_sp_range_scaled_deviation, axis=0)
+    y_sp_bounds_max = np.max(y_sp_range_scaled_deviation, axis=0)
 
     u_ss_scaled = apply_min_max(steady_states["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
     b_min = apply_min_max(u_min, data_min[:n_inputs], data_max[:n_inputs]) - u_ss_scaled
@@ -191,6 +206,9 @@ def load_and_prepare_system_data(
         "state_bounds_source": state_bounds_source,
         "state_min_used": state_min_used,
         "state_max_used": state_max_used,
+        "setpoint_bounds_source": setpoint_bounds_source,
+        "setpoint_range_y_used": setpoint_range_y_used,
+        "y_sp_range_scaled_deviation": y_sp_range_scaled_deviation,
         "y_ss_scaled": y_ss_scaled,
         "y_sp_scaled": y_sp_scaled,
         "y_sp_scaled_deviation": y_sp_scaled_deviation,
