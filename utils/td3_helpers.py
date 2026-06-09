@@ -10,6 +10,7 @@ from torch.utils.data import Dataset
 
 from Simulation.mpc import augment_state_space, augment_state_space_rawlings
 from utils.path_helpers import resolve_repo_path
+from utils.polymer_td3_defaults import default_td3_state_bounds
 from utils.scaling_helpers import apply_min_max, apply_min_max_pm1
 
 
@@ -87,6 +88,8 @@ def load_and_prepare_system_data(
     augmentation_mode=None,
     Bd=None,
     Cd=None,
+    state_min=None,
+    state_max=None,
 ):
     """
     Loads system matrices, scaling factors, and min-max state info from files,
@@ -132,6 +135,23 @@ def load_and_prepare_system_data(
     min_max_states_path = os.path.join(full_data_dir, "min_max_states.pickle")
     with open(min_max_states_path, "rb") as file:
         min_max_states = pickle.load(file)
+    if state_min is None and state_max is None:
+        state_min_used, state_max_used = default_td3_state_bounds(A_aug.shape[0])
+        state_bounds_source = "default_polymer_td3"
+    elif state_min is None or state_max is None:
+        raise ValueError("Provide both state_min and state_max, or neither.")
+    else:
+        state_min_used = np.asarray(state_min, dtype=float).reshape(-1)
+        state_max_used = np.asarray(state_max, dtype=float).reshape(-1)
+        state_bounds_source = "caller_override"
+
+    if state_min_used.shape != (A_aug.shape[0],) or state_max_used.shape != (A_aug.shape[0],):
+        raise ValueError(
+            "State scaling bounds must match the augmented state dimension "
+            f"{A_aug.shape[0]}; got {state_min_used.shape} and {state_max_used.shape}."
+        )
+    if np.any(state_max_used <= state_min_used):
+        raise ValueError("Each state_max entry must be greater than state_min.")
 
     y_ss_scaled = apply_min_max(steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
     setpoint_y = np.atleast_2d(np.asarray(setpoint_y, dtype=float))
@@ -145,8 +165,8 @@ def load_and_prepare_system_data(
     b_max = apply_min_max(u_max, data_min[:n_inputs], data_max[:n_inputs]) - u_ss_scaled
 
     min_max_dict = {
-        "x_max": min_max_states["max_s"],
-        "x_min": min_max_states["min_s"],
+        "x_max": state_max_used,
+        "x_min": state_min_used,
         "y_sp_min": y_sp_bounds_min,
         "y_sp_max": y_sp_bounds_max,
         "u_max": b_max,
@@ -168,6 +188,9 @@ def load_and_prepare_system_data(
         "data_min": data_min,
         "data_max": data_max,
         "min_max_states": min_max_states,
+        "state_bounds_source": state_bounds_source,
+        "state_min_used": state_min_used,
+        "state_max_used": state_max_used,
         "y_ss_scaled": y_ss_scaled,
         "y_sp_scaled": y_sp_scaled,
         "y_sp_scaled_deviation": y_sp_scaled_deviation,

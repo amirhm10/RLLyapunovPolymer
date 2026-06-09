@@ -4,14 +4,9 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_Y_PHYS
 
-DIRECT_TWO_SETPOINT_Y_PHYS = np.array(
-    [
-        [4.5, 324.0],
-        [3.4, 321.0],
-    ],
-    dtype=float,
-)
+DIRECT_TWO_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_Y_PHYS.copy()
 
 DIRECT_DISTURBANCE_N_TESTS = 300
 DIRECT_DISTURBANCE_SETPOINT_LEN = 400

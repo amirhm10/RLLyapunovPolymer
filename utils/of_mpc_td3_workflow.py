@@ -23,6 +23,11 @@ from Simulation.system_functions import PolymerCSTR
 from TD3Agent.agent import TD3Agent
 from TD3Agent.reward_functions import make_reward_fn_mpc_quadratic
 from utils.path_helpers import repo_path, resolve_repo_path
+from utils.polymer_td3_defaults import (
+    DEFAULT_TD3_SETPOINT_Y_PHYS,
+    DEFAULT_U_MAX_PHYS,
+    DEFAULT_U_MIN_PHYS,
+)
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.td3_helpers import (
     ReplayDataset,
@@ -39,22 +44,10 @@ R_MPC = np.array([1.0, 1.0], dtype=float)
 Q_REWARD = np.diag(Q_MPC)
 R_REWARD = np.diag(R_MPC)
 
-PRETRAIN_SETPOINT_Y_PHYS = np.array(
-    [
-        [2.8, 320.0],
-        [5.0, 326.0],
-    ],
-    dtype=float,
-)
-COMPARISON_SETPOINT_Y_PHYS = np.array(
-    [
-        [4.5, 324.0],
-        [3.4, 321.0],
-    ],
-    dtype=float,
-)
-U_MIN_PHYS = np.array([71.6, 78.0], dtype=float)
-U_MAX_PHYS = np.array([870.0, 670.0], dtype=float)
+PRETRAIN_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_Y_PHYS.copy()
+COMPARISON_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_Y_PHYS.copy()
+U_MIN_PHYS = DEFAULT_U_MIN_PHYS.copy()
+U_MAX_PHYS = DEFAULT_U_MAX_PHYS.copy()
 
 OBSERVER_POLES = np.array(
     [

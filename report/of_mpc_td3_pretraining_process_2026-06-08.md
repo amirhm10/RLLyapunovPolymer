@@ -46,6 +46,22 @@ action_dim = inputs_number
 
 For the current polymer model this gives `state_dim = 13` and `action_dim = 2`, but those values are consequences of the matrices, not separate workflow constants.
 
+The TD3 normalization ranges are centralized in `utils/polymer_td3_defaults.py` and are used by the pretraining runner, comparison runner, and active Lyapunov pretrained workflow through `utils.td3_helpers.load_and_prepare_system_data(...)`. The default augmented-state envelope is:
+
+```python
+x_max = [256.79686253, 256.01560603, 48.99447186, 144.79949103,
+         2.82199733, 3.14014989, 2.78866348, 3.71691422, 6.2029936]
+x_min = [-272.28060121, -1112.33972595, -76.63993491, -608.60327886,
+         -3.94399122, -3.93115257, -2.9532091, -4.06547624, -28.25906582]
+```
+
+The default TD3 setpoint envelope is the direct two-setpoint polymer schedule:
+
+```python
+[[4.5, 324.0],
+ [3.4, 321.0]]
+```
+
 ## Offset-Free Expert
 
 The pretraining expert is offset-free MPC, not Direct Lyapunov MPC. The augmentation is the Rawlings output-disturbance model:
@@ -71,7 +87,7 @@ The OF-MPC expert uses:
 - output weights $Q = \operatorname{diag}(5, 1)$
 - input-move weights $R = \operatorname{diag}(1, 1)$
 - input bounds $[71.6, 78.0] \le u \le [870.0, 670.0]$
-- pretraining setpoint envelope `[[2.8, 320.0], [5.0, 326.0]]`
+- pretraining setpoint envelope `[[4.5, 324.0], [3.4, 321.0]]`
 
 At each sampled state, the expert solves
 
@@ -99,7 +115,7 @@ The runner reuses the existing low-level helpers:
 - `utils.td3_helpers.add_steady_state_samples(...)`
 - `TD3Agent.pretrain_from_buffer(...)`
 
-For broad samples:
+For sampled expert states:
 
 $$
 x_d \sim \mathcal{U}(x_{min}, x_{max}), \qquad
@@ -211,7 +227,7 @@ python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<
 ## Limitations
 
 - The expert labels are OF-MPC labels, not LMPC labels.
-- The replay state distribution is synthetic and broad, so it may not match closed-loop visitation under the plant.
+- The replay state distribution is synthetic, so it may not match closed-loop visitation under the plant.
 - The stored critic reward is the OF-MPC pretraining penalty, not the safety-gate RL reward used in Direct Lyapunov studies.
 - The comparison runner is an OF-MPC versus saved-TD3 comparison. It does not include the Direct Lyapunov safety gate.
 
