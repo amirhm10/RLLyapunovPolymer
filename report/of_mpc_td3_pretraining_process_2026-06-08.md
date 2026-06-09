@@ -233,6 +233,74 @@ python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<
 python ComparePretrainedTD3OffsetFreeMPC.py --agent-path results/PretrainOFMPC/<timestamp>/of_mpc_pretrained_td3_<timestamp>.pkl --actor-layers 512,512,512 --critic-layers 512,512,512
 ```
 
+## Current Result Check
+
+The latest substantive pretraining bundle reviewed here is:
+
+```text
+results/PretrainOFMPC/20260609_002245/
+```
+
+Configuration:
+
+- checkpoint: `of_mpc_pretrained_td3_20260609_134202.pkl`
+- replay samples: `2,000,000` OF-MPC samples plus `100,000` near-steady samples
+- architecture: actor and critic hidden layers `[256, 256, 256]`
+- pretraining: `1000` actor behavioral-cloning epochs and `500` critic TD warm-up epochs
+- scaler: broad Polymer TD3 setpoint scaler `[[2.8, 320.0], [5.0, 326.0]]`
+- comparison rollout: direct two-setpoint scenario `[[4.5, 324.0], [3.4, 321.0]]`
+
+The matching comparison bundle is:
+
+```text
+results/PretrainOFMPCComparison/20260609_155747/
+```
+
+Nominal comparison:
+
+- TD3 mean RMSE: `0.3562`
+- OF-MPC mean RMSE: `0.3554`
+- TD3 minus OF-MPC mean RMSE: `0.0008`
+- TD3 mean absolute input move: `0.6535`
+- OF-MPC mean absolute input move: `0.6461`
+
+Disturbance comparison:
+
+- TD3 mean RMSE: `0.3594`
+- OF-MPC mean RMSE: `0.3569`
+- TD3 minus OF-MPC mean RMSE: `0.0025`
+- TD3 mean absolute input move: `0.6679`
+- OF-MPC mean absolute input move: `0.6776`
+
+The learned policy is therefore very close to the OF-MPC expert on this two-setpoint comparison. Relative to the earlier smaller checkpoint `results/PretrainOFMPC/20260608_171525/`, which had mean RMSE around `2.19` nominal and `1.95` disturbed under the corrected scaler, this is a major improvement.
+
+The TD3 and OF-MPC trajectories are also close in physical units. In the latest comparison, the mean absolute TD3-versus-OF-MPC input differences were approximately `[5.71, 0.99]` L/h in nominal mode and `[5.51, 1.36]` L/h in disturbance mode. Mean absolute output differences were approximately `[0.0098, 0.0343]` for nominal mode and `[0.0082, 0.0277]` for disturbance mode.
+
+## Critic-Loss Audit
+
+The current result bundle does not contain a usable critic-loss curve. The file `loss_arrays.json` exists, but its lists are empty:
+
+```json
+{
+  "actor_bc_losses": [],
+  "actor_losses": [],
+  "critic_losses": []
+}
+```
+
+This is a logging issue in the completed run, not direct evidence that the critic failed. The pretraining loop printed epoch losses during training, but the epoch-averaged actor and critic losses were not being appended to the saved loss arrays. The code has now been updated so future runs append:
+
+- one actor behavioral-cloning loss per actor epoch
+- one critic TD loss per critic epoch
+
+For the completed `20260609_002245` checkpoint, critic health can only be assessed indirectly. A proxy TD diagnostic on the saved comparison rollout gave:
+
+- nominal mean absolute TD residual: about `570` for Q1 and `663` for Q2
+- disturbance mean absolute TD residual: about `660` for Q1 and `601` for Q2
+- mean Q-values: about `-1.22e5`
+
+The Q-value scale is large because the critic was trained on broad synthetic replay samples where the stored reward mean was about `-604`; with `gamma = 0.995`, a continuing-value scale near `-604 / (1 - 0.995) \approx -1.21e5` is expected. The rollout TD residual is therefore roughly at the sub-percent scale relative to the Q magnitude. This proxy does not replace a real training loss curve, but it does not indicate an obvious critic divergence.
+
 ## Limitations
 
 - The expert labels are OF-MPC labels, not LMPC labels.

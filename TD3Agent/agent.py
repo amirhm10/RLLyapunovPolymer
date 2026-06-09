@@ -617,10 +617,13 @@ class TD3Agent(nn.Module):
                 sch_a.step()
 
             hard_update(self.actor_target, self.actor)
+            epoch_bc_loss = bc_loss_sum / max(1, n_sum)
+            self.actor_losses.append(float(epoch_bc_loss))
+            self.actor_bc_losses.append(float(epoch_bc_loss))
 
             if log_interval and (ep == 1 or ep % log_interval == 0):
                 lr_a = self.actor_optimizer.param_groups[0]["lr"]
-                print(f"[pretrain][actor_bc] ep={ep} loss={bc_loss_sum / max(1, n_sum):.4e} lr={lr_a:.2e}")
+                print(f"[pretrain][actor_bc] ep={ep} loss={epoch_bc_loss:.4e} lr={lr_a:.2e}")
 
         # -------------------------
         # Stage 2: critic TD with frozen actor
@@ -703,9 +706,12 @@ class TD3Agent(nn.Module):
             if sch_c is not None:
                 sch_c.step()
 
+            epoch_critic_loss = q_loss_sum / max(1, n_sum)
+            self.critic_losses.append(float(epoch_critic_loss))
+
             if log_interval and (ep == 1 or ep % log_interval == 0):
                 lr_c = self.critic_optimizer.param_groups[0]["lr"]
-                print(f"[pretrain][critic_td] ep={ep} loss={q_loss_sum / max(1, n_sum):.4e} lr={lr_c:.2e}")
+                print(f"[pretrain][critic_td] ep={ep} loss={epoch_critic_loss:.4e} lr={lr_c:.2e}")
 
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
