@@ -193,7 +193,7 @@ Artifacts are written under:
 results/PretrainOFMPC/<timestamp>/
 ```
 
-Expected files include the checkpoint, `config.json`, `summary.json`, and loss arrays when available.
+Expected files include the checkpoint, `config.json`, `summary.json`, `loss_arrays.json`, `loss_arrays.csv`, `loss_summary.json`, and `pretraining_history.json`.
 
 ## Saved-Agent Comparison Runner
 
@@ -288,7 +288,18 @@ The current result bundle does not contain a usable critic-loss curve. The file 
 }
 ```
 
-This is a logging issue in the completed run, not direct evidence that the critic failed. The pretraining loop printed epoch losses during training, but the epoch-averaged actor and critic losses were not being appended to the saved loss arrays. The code has now been updated so future runs append:
+This is a logging issue in the completed run, not direct evidence that the critic failed. The pretraining loop printed epoch losses during training, but the epoch-averaged actor and critic losses were not saved into the result bundle in an analyzable form.
+
+The pretraining code has now been hardened for future OF-MPC and LMPC runs. The TD3 pretraining routine returns an explicit history, and the workflow writes:
+
+- `loss_arrays.json`: backward-compatible raw actor and critic loss lists
+- `loss_arrays.csv`: one row per epoch index for quick plotting
+- `loss_summary.json`: counts and first, last, min, max, and mean loss statistics
+- `pretraining_history.json`: loss, learning-rate, and sample-count history from the pretraining call
+
+The workflow also validates loss logging before saving the checkpoint. If actor or critic epochs are requested and the corresponding loss history is empty or shorter than expected, the run now raises an error instead of silently producing `{}`-style empty loss artifacts.
+
+Future valid runs should contain:
 
 - one actor behavioral-cloning loss per actor epoch
 - one critic TD loss per critic epoch

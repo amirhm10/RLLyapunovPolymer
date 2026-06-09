@@ -657,7 +657,7 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
     )
 
     train_start = time.perf_counter()
-    agent.pretrain_from_buffer(
+    pretraining_history = agent.pretrain_from_buffer(
         num_actor_epochs=config.actor_epochs,
         num_critic_epochs=config.critic_epochs,
         data_loader=data_loader,
@@ -667,6 +667,13 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
     )
     train_seconds = float(time.perf_counter() - train_start)
 
+    loss_paths = save_loss_artifacts(
+        run_dir,
+        agent,
+        expected_actor_epochs=config.actor_epochs,
+        expected_critic_epochs=config.critic_epochs,
+        pretraining_history=pretraining_history,
+    )
     checkpoint_path = Path(
         agent.save(
             str(run_dir),
@@ -674,7 +681,6 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
             include_optim=False,
         )
     )
-    loss_paths = save_loss_artifacts(run_dir, agent)
 
     full_config = {
         "run_timestamp": run_timestamp,

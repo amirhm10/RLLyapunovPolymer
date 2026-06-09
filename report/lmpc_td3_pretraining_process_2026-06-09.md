@@ -186,6 +186,10 @@ Expected files:
 - `label_diagnostics.json`
 - `loss_arrays.json`
 - `loss_arrays.csv`
+- `loss_summary.json`
+- `pretraining_history.json`
+
+The loss writer is shared with the OF-MPC workflow. It validates that requested actor and critic epochs produced non-empty epoch histories before the checkpoint is saved, so a run with missing loss logs now fails clearly instead of leaving empty loss arrays for later analysis.
 
 Comparison artifacts are written to:
 

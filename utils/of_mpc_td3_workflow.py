@@ -416,22 +416,86 @@ def array_stats(array: np.ndarray) -> dict[str, Any]:
     }
 
 
-def save_loss_artifacts(run_dir: Path, agent: TD3Agent) -> dict[str, str | None]:
+def loss_series_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0}
+    array = np.asarray(values, dtype=float)
+    return {
+        "count": int(array.size),
+        "first": float(array[0]),
+        "last": float(array[-1]),
+        "min": float(np.min(array)),
+        "max": float(np.max(array)),
+        "mean": float(np.mean(array)),
+    }
+
+
+def save_loss_artifacts(
+    run_dir: Path,
+    agent: TD3Agent,
+    *,
+    expected_actor_epochs: int | None = None,
+    expected_critic_epochs: int | None = None,
+    pretraining_history: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     losses = {
         "actor_losses": [float(v) for v in agent.actor_losses],
         "actor_bc_losses": [float(v) for v in agent.actor_bc_losses],
         "critic_losses": [float(v) for v in agent.critic_losses],
     }
+    history = pretraining_history or {}
+
+    actor_history_count = len(history.get("actor_bc_losses", []))
+    critic_history_count = len(history.get("critic_losses", []))
+    actor_logged_count = actor_history_count if pretraining_history is not None else len(losses["actor_bc_losses"])
+    critic_logged_count = critic_history_count if pretraining_history is not None else len(losses["critic_losses"])
+
+    validation_issues: list[str] = []
+    if expected_actor_epochs is not None and expected_actor_epochs > 0:
+        if actor_logged_count == 0:
+            validation_issues.append("actor behavioral-cloning losses are empty")
+        elif actor_logged_count < expected_actor_epochs:
+            validation_issues.append(
+                f"actor behavioral-cloning losses have {actor_logged_count} entries, "
+                f"expected at least {expected_actor_epochs}"
+            )
+    if expected_critic_epochs is not None and expected_critic_epochs > 0:
+        if critic_logged_count == 0:
+            validation_issues.append("critic TD losses are empty")
+        elif critic_logged_count < expected_critic_epochs:
+            validation_issues.append(
+                f"critic TD losses have {critic_logged_count} entries, "
+                f"expected at least {expected_critic_epochs}"
+            )
+
+    if validation_issues:
+        raise RuntimeError(
+            "Pretraining loss logging failed validation: " + "; ".join(validation_issues)
+        )
+
     losses_json = run_dir / "loss_arrays.json"
     write_json(losses_json, losses)
 
+    history_json_path: str | None = None
+    if pretraining_history is not None:
+        history_json = run_dir / "pretraining_history.json"
+        write_json(history_json, pretraining_history)
+        history_json_path = relative_to_repo(history_json)
+
     losses_csv = run_dir / "loss_arrays.csv"
     if any(losses.values()):
-        max_len = max(len(values) for values in losses.values())
+        history_columns = {
+            "actor_bc_lr": [float(v) for v in history.get("actor_bc_lrs", [])],
+            "critic_lr": [float(v) for v in history.get("critic_lrs", [])],
+            "actor_bc_samples": [int(v) for v in history.get("actor_bc_samples", [])],
+            "critic_samples": [int(v) for v in history.get("critic_samples", [])],
+        }
+        all_columns = {**losses, **history_columns}
+        max_len = max(len(values) for values in all_columns.values())
         rows = []
         for idx in range(max_len):
             row = {"index": idx}
-            for name, values in losses.items():
+            for name, values in all_columns.items():
                 row[name] = values[idx] if idx < len(values) else ""
             rows.append(row)
         write_csv(losses_csv, rows)
@@ -439,9 +503,31 @@ def save_loss_artifacts(run_dir: Path, agent: TD3Agent) -> dict[str, str | None]
     else:
         losses_csv_path = None
 
+    loss_summary = {
+        "loss_logging_ok": True,
+        "expected_actor_epochs": None if expected_actor_epochs is None else int(expected_actor_epochs),
+        "expected_critic_epochs": None if expected_critic_epochs is None else int(expected_critic_epochs),
+        "counts": {name: len(values) for name, values in losses.items()},
+        "history_counts": {
+            "actor_bc_losses": actor_history_count,
+            "critic_losses": critic_history_count,
+            "actor_bc_lrs": len(history.get("actor_bc_lrs", [])),
+            "critic_lrs": len(history.get("critic_lrs", [])),
+            "actor_bc_samples": len(history.get("actor_bc_samples", [])),
+            "critic_samples": len(history.get("critic_samples", [])),
+        },
+        "series": {name: loss_series_stats(values) for name, values in losses.items()},
+    }
+    loss_summary_json = run_dir / "loss_summary.json"
+    write_json(loss_summary_json, loss_summary)
+
     return {
         "loss_arrays_json": relative_to_repo(losses_json),
         "loss_arrays_csv": losses_csv_path,
+        "loss_summary_json": relative_to_repo(loss_summary_json),
+        "pretraining_history_json": history_json_path,
+        "loss_logging_ok": True,
+        "loss_counts": loss_summary["counts"],
     }
 
 
@@ -521,7 +607,7 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     )
 
     train_start = time.perf_counter()
-    agent.pretrain_from_buffer(
+    pretraining_history = agent.pretrain_from_buffer(
         num_actor_epochs=config.actor_epochs,
         num_critic_epochs=config.critic_epochs,
         data_loader=data_loader,
@@ -531,6 +617,13 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     )
     train_seconds = float(time.perf_counter() - train_start)
 
+    loss_paths = save_loss_artifacts(
+        run_dir,
+        agent,
+        expected_actor_epochs=config.actor_epochs,
+        expected_critic_epochs=config.critic_epochs,
+        pretraining_history=pretraining_history,
+    )
     checkpoint_path = Path(
         agent.save(
             str(run_dir),
@@ -538,7 +631,6 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
             include_optim=False,
         )
     )
-    loss_paths = save_loss_artifacts(run_dir, agent)
 
     full_config = {
         "run_timestamp": run_timestamp,

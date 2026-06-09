@@ -552,7 +552,7 @@ class TD3Agent(nn.Module):
             log_interval: int = 1,
             mode: str = "mpc",
             sched_kind: str = "cosine",
-    ) -> None:
+    ) -> dict:
         """
         Two-stage pretraining:
         Stage 1: actor behavioral cloning (pure imitation).
@@ -563,6 +563,16 @@ class TD3Agent(nn.Module):
         Otherwise, samples come from self.buffer (random batches).
         """
         self.mode = mode
+        history = {
+            "mode": mode,
+            "sched_kind": sched_kind,
+            "actor_bc_losses": [],
+            "critic_losses": [],
+            "actor_bc_lrs": [],
+            "critic_lrs": [],
+            "actor_bc_samples": [],
+            "critic_samples": [],
+        }
 
         if data_loader is None and len(self.buffer) < self.batch_size:
             raise RuntimeError("Buffer is less than the batch size")
@@ -626,9 +636,12 @@ class TD3Agent(nn.Module):
             epoch_bc_loss = bc_loss_sum / max(1, n_sum)
             self.actor_losses.append(float(epoch_bc_loss))
             self.actor_bc_losses.append(float(epoch_bc_loss))
+            lr_a = float(self.actor_optimizer.param_groups[0]["lr"])
+            history["actor_bc_losses"].append(float(epoch_bc_loss))
+            history["actor_bc_lrs"].append(lr_a)
+            history["actor_bc_samples"].append(int(n_sum))
 
             if log_interval and (ep == 1 or ep % log_interval == 0):
-                lr_a = self.actor_optimizer.param_groups[0]["lr"]
                 print(f"[pretrain][actor_bc] ep={ep} loss={epoch_bc_loss:.4e} lr={lr_a:.2e}")
 
         # -------------------------
@@ -714,14 +727,18 @@ class TD3Agent(nn.Module):
 
             epoch_critic_loss = q_loss_sum / max(1, n_sum)
             self.critic_losses.append(float(epoch_critic_loss))
+            lr_c = float(self.critic_optimizer.param_groups[0]["lr"])
+            history["critic_losses"].append(float(epoch_critic_loss))
+            history["critic_lrs"].append(lr_c)
+            history["critic_samples"].append(int(n_sum))
 
             if log_interval and (ep == 1 or ep % log_interval == 0):
-                lr_c = self.critic_optimizer.param_groups[0]["lr"]
                 print(f"[pretrain][critic_td] ep={ep} loss={epoch_critic_loss:.4e} lr={lr_c:.2e}")
 
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
         self.unfreeze_actor()
+        return history
 
 
 
@@ -794,6 +811,11 @@ class TD3Agent(nn.Module):
                 "steps": self.steps,
                 "train_steps": self.train_steps,
                 "total_it": self.total_it,
+            },
+            "training_losses": {
+                "actor_losses": [float(v) for v in self.actor_losses],
+                "actor_bc_losses": [float(v) for v in self.actor_bc_losses],
+                "critic_losses": [float(v) for v in self.critic_losses],
             },
         }
 
