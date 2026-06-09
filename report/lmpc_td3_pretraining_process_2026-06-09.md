@@ -78,7 +78,7 @@ The Direct LMPC expert uses:
 
 - `NP = 9`
 - `NC = 3`
-- `Qy_diag = [12, 6]`
+- MPC/LMPC objective weights `Qy_mpc_diag = [5, 1]`
 - `Su_diag = [1, 1]`
 - `Rdu_diag = [1, 1]`
 - `terminal_set_on = True`
@@ -136,7 +136,20 @@ s_{k+1} &= \operatorname{scale}_{[-1,1]}(x_{d,k+1}, y_{sp,k}, u_0^\star).
 \end{aligned}
 $$
 
-The reward is the active Direct Lyapunov RL relative-QR reward from the pretrained safety-gate workflow, evaluated without fallback penalties because these are expert labels rather than safety-gate intervention events.
+The offline replay reward is not the online shaped RL reward. It is the same one-step quadratic stage cost used by the MPC objective weights:
+
+$$
+r_k =
+-\left[
+\left(y_{k+1}-y_{sp,k}\right)^\top Q_{MPC}
+\left(y_{k+1}-y_{sp,k}\right)
++
+\left(u_0^\star-u_{prev,k}\right)^\top R_{MPC}
+\left(u_0^\star-u_{prev,k}\right)
+\right],
+$$
+
+with $Q_{MPC}=\operatorname{diag}(5,1)$ and $R_{MPC}=\operatorname{diag}(1,1)$. The online safety-gate RL reward remains a separate shaped reward family and does not set the LMPC or OF-MPC objective weights.
 
 ## TD3 Pretraining
 
@@ -245,30 +258,30 @@ python -m py_compile PretrainTD3LyapunovMPC.py ComparePretrainedTD3LyapunovMPC.p
 Smoke pretraining was run with 2 broad LMPC labels, 2 near-steady labels, and one actor/critic epoch. The generated bundle was:
 
 ```text
-results/PretrainLMPC/20260609_163533/
+results/PretrainLMPC/20260609_192848/
 ```
 
-Observed smoke diagnostics:
+Observed corrected smoke diagnostics:
 
 - accepted labels: `4`
-- attempted candidates: `9`
-- total acceptance rate: `0.4444`
-- broad acceptance rate: `0.2857`
+- attempted candidates: `4`
+- total acceptance rate: `1.0`
+- broad acceptance rate: `1.0`
 - steady acceptance rate: `1.0`
 - actor BC loss entries: `1`
 - critic TD loss entries: `1`
-- actor BC loss: `0.1942`
-- critic TD loss: `655.37`
+- actor BC loss: `0.0594`
+- critic TD loss: `182.21`
 
 This confirms artifact writing and non-empty loss arrays. It is too small to say anything meaningful about final closed-loop performance.
 
 A short nominal comparison was run for this smoke checkpoint:
 
 ```text
-results/PretrainLMPCComparison/20260609_163544/
+results/PretrainLMPCComparison/20260609_192911/
 ```
 
-The metrics file contains TD3, Direct LMPC, and OF-MPC records. The Direct LMPC baseline had target success rate `1.0` and contraction satisfaction rate `1.0` on this short nominal run. The OF-MPC diagnostic baseline had target success rate `1.0`, contraction satisfaction rate `0.95`, and one diagnostic unsafe step.
+The metrics file contains TD3, Direct LMPC, and OF-MPC records. The Direct LMPC baseline had target success rate `1.0` and contraction satisfaction rate `1.0` on this short nominal run. The OF-MPC diagnostic baseline had target success rate `1.0`, contraction satisfaction rate `0.85`, and three diagnostic unsafe steps. The baseline cache filenames now include the MPC objective-weight token, for example `_q5_1_r1_1`, so older `[12,6]` smoke baselines are not silently reused.
 
 Failure handling was also tested by requesting 3 broad labels with only 3 candidate attempts. The run failed clearly after accepting 1 of 3 labels and wrote diagnostics:
 
@@ -286,7 +299,7 @@ results/PretrainOFMPCSmoke/20260609_191259/
 
 - Broad random candidates can be rejected by hard LMPC. Acceptance rate must be monitored before committing to a large production run.
 - The current V1 label generator is sequential. This avoids pickling CVXPY solver objects but is slower than OF-MPC replay generation.
-- The LMPC pretraining reward matches the Direct Lyapunov RL reward family, but fallback penalties are inactive because failed LMPC labels are skipped instead of stored.
+- Offline LMPC pretraining uses the one-step MPC quadratic reward. Online RL training uses the shaped relative-QR reward and should remain separate from the MPC/LMPC objective weights.
 - The plan uses `lyap_eps = 1e-9`, which is stricter than the currently converted Direct Lyapunov runners that use `lyap_eps = 5e-3`.
 - The smoke checkpoint is intentionally tiny and should not be interpreted as evidence of policy quality.
 

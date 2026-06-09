@@ -24,7 +24,7 @@ from Lyapunov.direct_lyapunov_mpc import (
 from Plotting_fns.mpc_plot_fns import plot_mpc_rl_results_cstr
 from Simulation.mpc import MpcSolver
 from TD3Agent.agent import TD3Agent
-from TD3Agent.reward_functions import make_reward_fn_relative_QR
+from TD3Agent.reward_functions import make_reward_fn_mpc_quadratic
 from utils.direct_lyapunov_study import governed_reference_case_spec
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.of_mpc_td3_workflow import (
@@ -67,9 +67,9 @@ from utils.td3_helpers import ReplayDataset
 
 
 PREDICT_HORIZON = 9
-QY_LMPC = np.array([12.0, 6.0], dtype=float)
-SU_LMPC = np.array([1.0, 1.0], dtype=float)
-RDU_LMPC = np.array([1.0, 1.0], dtype=float)
+QY_MPC = np.array([5.0, 1.0], dtype=float)
+SU_MPC = np.array([1.0, 1.0], dtype=float)
+RDU_MPC = np.array([1.0, 1.0], dtype=float)
 
 RHO_LYAP = 0.99
 LYAP_EPS = 1.0e-9
@@ -178,7 +178,7 @@ def validate_lmpc_comparison_config(config: LMPCComparisonRunConfig) -> None:
 
 def make_lmpc_target_config() -> dict[str, Any]:
     return governed_reference_case_spec(
-        QY_LMPC,
+        QY_MPC,
         case_name="lmpc_td3_pretraining_governed_reference",
         controller_mode="direct_lyapunov_mpc",
         lyapunov_mode=LYAPUNOV_MODE,
@@ -201,13 +201,13 @@ def make_lmpc_components(system_data: dict[str, Any]) -> LMPCComponents:
         A_aug=system_data["A_aug"],
         B_aug=system_data["B_aug"],
         C_aug=system_data["C_aug"],
-        Qy_diag=QY_LMPC,
+        Qy_diag=QY_MPC,
         NP=PREDICT_HORIZON,
         NC=CONTROL_HORIZON,
-        Su_diag=SU_LMPC,
+        Su_diag=SU_MPC,
         u_min=u_dev_min,
         u_max=u_dev_max,
-        Rdu_diag=RDU_LMPC,
+        Rdu_diag=RDU_MPC,
         terminal_set_on=True,
         terminal_alpha_scale=1.0,
     )
@@ -221,30 +221,8 @@ def make_lmpc_components(system_data: dict[str, Any]) -> LMPCComponents:
     )
 
 
-def make_lmpc_reward(system_data: dict[str, Any], dimensions: TD3Dimensions) -> tuple[dict[str, Any], Any]:
-    return make_reward_fn_relative_QR(
-        data_min=system_data["data_min"],
-        data_max=system_data["data_max"],
-        n_inputs=dimensions.inputs_number,
-        k_rel=np.array([0.0015, 0.00015], dtype=float),
-        band_floor_phys=np.array([0.003, 0.035], dtype=float),
-        Q_diag=QY_LMPC,
-        R_diag=RDU_LMPC,
-        tau_frac=0.5,
-        gamma_out=1.0,
-        gamma_in=3.0,
-        beta=1.0,
-        gate="geom",
-        lam_in=3.0,
-        bonus_kind="quadratic",
-        gamma_fallback=3.0,
-        fallback_event_penalty=10.0,
-        R_fallback_diag=RDU_LMPC,
-        maintenance_band_scale=0.5,
-        maintenance_move_weight=0.0,
-        jitter_weight=0.0,
-        dwell_bonus=0.0,
-    )
+def make_lmpc_offline_reward() -> tuple[dict[str, Any], Any]:
+    return make_reward_fn_mpc_quadratic(Q_diag=QY_MPC, R_diag=RDU_MPC)
 
 
 def make_lmpc_td3_agent(
@@ -623,7 +601,7 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
         critic_hidden=config.critic_layer_sizes,
     )
     lmpc = make_lmpc_components(system_data)
-    reward_config, reward_fn = make_lmpc_reward(system_data, dimensions)
+    reward_config, reward_fn = make_lmpc_offline_reward()
 
     label_start = time.perf_counter()
     label_diagnostics = fill_lmpc_replay_buffer(
@@ -712,9 +690,9 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
             "u_max_phys": U_MAX_PHYS,
             "predict_horizon": PREDICT_HORIZON,
             "control_horizon": CONTROL_HORIZON,
-            "Qy_diag": QY_LMPC,
-            "Su_diag": SU_LMPC,
-            "Rdu_diag": RDU_LMPC,
+            "Qy_mpc_diag": QY_MPC,
+            "Su_mpc_diag": SU_MPC,
+            "Rdu_mpc_diag": RDU_MPC,
             "rho_lyap": RHO_LYAP,
             "lyap_eps": LYAP_EPS,
             "slack_penalty": SLACK_PENALTY,
@@ -907,7 +885,21 @@ def _baseline_cache_path(
     disturbance_after_step: bool,
 ) -> Path:
     timing = "after" if bool(disturbance_after_step) else "before"
-    return cache_dir / f"{controller}_{mode}_n{int(n_tests)}_len{int(set_points_len)}_disturb_{timing}.pickle"
+    weights = _weights_cache_token(QY_MPC, RDU_MPC)
+    return cache_dir / (
+        f"{controller}_{mode}_n{int(n_tests)}_len{int(set_points_len)}_"
+        f"disturb_{timing}_{weights}.pickle"
+    )
+
+
+def _weights_cache_token(q_diag: np.ndarray, r_diag: np.ndarray) -> str:
+    def format_value(value: float) -> str:
+        text = f"{float(value):.6g}"
+        return text.replace("-", "m").replace(".", "p")
+
+    q_token = "_".join(format_value(value) for value in np.asarray(q_diag, dtype=float).reshape(-1))
+    r_token = "_".join(format_value(value) for value in np.asarray(r_diag, dtype=float).reshape(-1))
+    return f"q{q_token}_r{r_token}"
 
 
 def _save_rollout_payload(path: Path, payload: dict[str, Any]) -> None:
@@ -1129,7 +1121,7 @@ def load_or_generate_of_mpc_diagnostic_baseline(
         with path.open("rb") as handle:
             return pickle.load(handle), path, False
 
-    of_mpc = make_of_mpc_components(system_data, q_mpc=QY_LMPC, r_mpc=RDU_LMPC)
+    of_mpc = make_of_mpc_components(system_data, q_mpc=QY_MPC, r_mpc=RDU_MPC)
     payload = run_offset_free_mpc_with_direct_diagnostics(
         make_polymer_system(setup),
         of_mpc.mpc_obj,
@@ -1268,7 +1260,7 @@ def run_pretrained_lmpc_comparison(config: LMPCComparisonRunConfig) -> dict[str,
         data_max=system_data["data_max"],
         inputs_number=dimensions.inputs_number,
     )
-    reward_config, reward_fn = make_lmpc_reward(system_data, dimensions)
+    reward_config, reward_fn = make_lmpc_offline_reward()
 
     agent_path = resolve_lmpc_pretrained_checkpoint(config.agent_path)
     actor_layers, critic_layers, checkpoint_arch = resolve_checkpoint_layers(
@@ -1407,9 +1399,9 @@ def run_pretrained_lmpc_comparison(config: LMPCComparisonRunConfig) -> dict[str,
         "actor_layers_used": actor_layers,
         "critic_layers_used": critic_layers,
         "controller": {
-            "Qy_diag": QY_LMPC,
-            "Su_diag": SU_LMPC,
-            "Rdu_diag": RDU_LMPC,
+            "Qy_mpc_diag": QY_MPC,
+            "Su_mpc_diag": SU_MPC,
+            "Rdu_mpc_diag": RDU_MPC,
             "rho_lyap": RHO_LYAP,
             "lyap_eps": LYAP_EPS,
             "target_mode": TARGET_MODE,

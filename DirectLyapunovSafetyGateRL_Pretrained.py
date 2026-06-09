@@ -193,9 +193,11 @@ STD_END = 0.0
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 
-Qy_diag = np.array([12.0, 6.0])
-Su_diag = np.array([1.0, 1.0])
-Rdu_diag = np.array([1.0, 1.0])
+Qy_mpc_diag = np.array([5.0, 1.0])
+Su_mpc_diag = np.array([1.0, 1.0])
+Rdu_mpc_diag = np.array([1.0, 1.0])
+Qy_reward_diag = np.array([12.0, 6.0])
+Rdu_reward_diag = np.array([1.0, 1.0])
 k_rel = np.array([0.0015, 0.00015])
 band_floor_phys = np.array([0.003, 0.035])
 gamma_fallback = 3.0
@@ -206,8 +208,8 @@ reward_config, reward_fn = make_reward_fn_relative_QR(
     n_inputs=inputs_number,
     k_rel=k_rel,
     band_floor_phys=band_floor_phys,
-    Q_diag=Qy_diag,
-    R_diag=Rdu_diag,
+    Q_diag=Qy_reward_diag,
+    R_diag=Rdu_reward_diag,
     tau_frac=0.5,
     gamma_out=1.0,
     gamma_in=3.0,
@@ -217,7 +219,7 @@ reward_config, reward_fn = make_reward_fn_relative_QR(
     bonus_kind="quadratic",
     gamma_fallback=gamma_fallback,
     fallback_event_penalty=fallback_event_penalty,
-    R_fallback_diag=Rdu_diag,
+    R_fallback_diag=Rdu_reward_diag,
     maintenance_band_scale=0.5,
     maintenance_move_weight=0.0,
     jitter_weight=0.0,
@@ -241,13 +243,13 @@ LMPC_obj = design_direct_lyapunov_mpc_solver(
     A_aug=A_aug,
     B_aug=B_aug,
     C_aug=C_aug,
-    Qy_diag=Qy_diag,
+    Qy_diag=Qy_mpc_diag,
     NP=predict_h,
     NC=cont_h,
-    Su_diag=Su_diag,
+    Su_diag=Su_mpc_diag,
     u_min=u_dev_min,
     u_max=u_dev_max,
-    Rdu_diag=Rdu_diag,
+    Rdu_diag=Rdu_mpc_diag,
     terminal_set_on=True,
     terminal_alpha_scale=1.0,
 )
@@ -256,8 +258,8 @@ MPC_obj_offset_free = MpcSolver(
     A_aug,
     B_aug,
     C_aug,
-    Q_out=Qy_diag,
-    R_in=Rdu_diag,
+    Q_out=Qy_mpc_diag,
+    R_in=Rdu_mpc_diag,
     NP=predict_h,
     NC=cont_h,
 )
@@ -271,7 +273,7 @@ ha_change = 0.92
 
 case_specs = [
     governed_reference_case_spec(
-        Qy_diag,
+        Qy_mpc_diag,
         case_name="rl_gate_governed_reference",
         controller_mode="direct_safety_gate",
         label="Pretrained RL with governed-reference safety gate",
@@ -279,7 +281,7 @@ case_specs = [
         x_ref_weight=xs_prev_penalty_weight,
     ),
     governed_reference_case_spec(
-        Qy_diag,
+        Qy_mpc_diag,
         case_name="mpc_only",
         controller_mode="mpc_only",
         lyapunov_mode="diagnostic_only",
@@ -373,6 +375,11 @@ def run_case(case_spec):
         "projection_backend": case_projection_backend,
         "target_mode": case_spec["target_mode"],
         "target_config": case_target_config,
+        "Qy_mpc_diag": Qy_mpc_diag.copy(),
+        "Su_mpc_diag": Su_mpc_diag.copy(),
+        "Rdu_mpc_diag": Rdu_mpc_diag.copy(),
+        "Qy_reward_diag": Qy_reward_diag.copy(),
+        "Rdu_reward_diag": Rdu_reward_diag.copy(),
         "u_prev_penalty_weight": u_prev_penalty_weight,
         "xs_prev_penalty_weight": xs_prev_penalty_weight,
         "rho_lyap": rho_lyap,
