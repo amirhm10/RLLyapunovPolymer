@@ -1,0 +1,1533 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{ragged2e}
+\usepackage{tikz}
+\usepackage{xcolor}
+\usepackage{array}
+
+\usetikzlibrary{arrows.meta,positioning,calc}
+
+\graphicspath{{./figures/}}
+\input{figures/latest_runner_slide_figures.tex}
+
+\definecolor{maroon1}{rgb}{0.478, 0, 0.235}
+\definecolor{maroonDim}{RGB}{108,43,72}
+\definecolor{blockTint}{RGB}{246,244,247}
+\definecolor{lightgray}{rgb}{0.94,0.94,0.97}
+\definecolor{lightgray2}{rgb}{0.5,0.5,0.5}
+\definecolor{maccblue}{RGB}{28,74,117}
+\definecolor{maccgreen}{RGB}{44,118,92}
+\definecolor{maccred}{RGB}{156,58,52}
+\definecolor{maccorange}{RGB}{216,100,42}
+
+\usetheme{Copenhagen}
+\usecolortheme[named=maroon1]{structure}
+
+\setbeamerfont{caption}{size=\scriptsize}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\setbeamercolor{block title}{fg=white,bg=maroonDim}
+
+\newcommand{\refnote}[1]{{\bfseries\color{maroon1}\scriptsize (#1)}}
+
+\expandafter\def\expandafter\insertshorttitle\expandafter{%
+\insertshorttitle\hfill%
+\insertframenumber\,/\,\inserttotalframenumber}
+
+\title[CSChE 2026]{%
+\textbf{Safe Reinforcement Learning Control via Offset-Free MPC Pre-Training and a Data-Driven Lyapunov Safety Layer}}
+
+\author[A. H. Hamedi]{%
+\underline{\bf \scriptsize A. H. Hamedi$^1$  Ankur Kumar$^2$, Atharva Vijay Suryavanshi$^2$, P. Mhaskar$^1$}\\\vspace{0.2cm}{\scriptsize \color{maroon1} [1] Department of Chemical Engineering, McMaster University}\\\vspace{0.1cm}{\scriptsize \color{maroon1} [2] Linde plc.}}
+
+\date[CSChE 2026]{%
+{\scriptsize CSChE 2026}}
+
+\begin{document}
+
+%============================= Slide 1 ============================
+\begin{frame}
+
+
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=white,bg=maroonDim}
+
+
+
+\begin{figure}[!h]
+\centering
+\includegraphics[scale=0.06]{csche_logo.png} 
+\end{figure}
+
+\begin{block}
+
+\begin{center}
+\usebeamercolor{title in headline}{\Large{\inserttitle}\\[0.5ex]}
+\end{center}
+\end{block}
+
+\vspace{-0.2cm}
+\begin{center}
+\usebeamercolor{author in headline}{\small{\insertauthor}\\[1ex]}
+\end{center}
+
+
+\end{frame}
+
+%============================= Slide 2 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Presentation Outline}}
+\small
+
+\vspace{0.08cm}
+
+\begin{enumerate}\justifying
+  \setlength\itemsep{0pt}
+
+  \item \textbf{Introduction:} MPC, reinforcement learning, and safety motivation
+  \vfill
+
+  \item \textbf{Methodological background:} offset-free MPC pretraining and Lyapunov-based safety
+  \vfill
+
+  \item \textbf{Proposed framework:} RL action proposal, Lyapunov gate, and fallback MPC
+  \vfill
+
+  \item \textbf{Case study:} styrene polymerization CSTR
+  \vfill
+
+  \item \textbf{Results and discussion}
+  \vfill
+
+  \item \textbf{Conclusions and future work}
+
+\end{enumerate}
+
+\end{frame}
+
+%============================= Slide 3 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Linear MPC Is Practical, But Its Model Is Local}}
+\small
+
+\vspace{-0.18cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.43\textwidth}
+\begin{block}{Why MPC is a strong baseline}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.45ex}
+  \item Handles MIMO interactions and constraints.
+  \item Solves a familiar receding-horizon optimization problem.
+  \item Offset-free augmentation helps reject steady disturbances.
+\end{itemize}
+\end{block}
+
+\vspace{0.05cm}
+
+\begin{block}{Main limitation}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.45ex}
+  \item The fixed linear model is local to the identified region.
+  \item Away from nominal operation, mismatch can degrade tracking.
+\end{itemize}
+\end{block}
+
+\end{column}
+
+\begin{column}{0.54\textwidth}
+\centering
+\vspace{0.05cm}
+
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[x=0.86cm,y=0.86cm]
+  \draw[-{Latex[length=2.6mm]},line width=1.05pt] (0,0) -- (6.25,0)
+    node[below=3pt,font=\footnotesize] {operating region};
+  \draw[-{Latex[length=2.6mm]},line width=1.05pt] (0,0) -- (0,3.48)
+    node[left=3pt,font=\footnotesize,rotate=90,anchor=south] {process response};
+
+  \fill[maccgreen!17] (1.45,0.05) rectangle (2.95,3.00);
+  \draw[maccgreen!75!black,line width=1.1pt,dashed] (1.45,0.05) rectangle (2.95,3.00);
+  \node[align=center,font=\footnotesize,fill=white,draw=maccgreen!65!black,rounded corners=1.5pt,inner sep=2.4pt]
+    at (2.20,3.30) {identified\\[-0.25ex]region};
+
+  \draw[line width=1.75pt,maccblue]
+    plot[smooth] coordinates {(0.35,0.32) (0.80,0.70) (1.25,1.10)
+    (1.75,1.52) (2.25,1.90) (2.75,2.12) (3.25,2.18)
+    (3.80,2.10) (4.35,2.20) (4.90,2.55) (5.45,3.08)};
+
+  \draw[line width=1.5pt,maroon1,dashed] (0.65,0.60) -- (5.65,3.02);
+
+  \fill[black] (2.25,1.89) circle (1.9pt);
+  \node[fill=white,inner sep=1.5pt,font=\footnotesize,below right=-1mm and 1mm]
+    at (2.25,1.89) {nominal point};
+
+  \draw[maccred,line width=1.25pt,{Latex[length=2.1mm]}-{Latex[length=2.1mm]}]
+    (4.35,2.20) -- (4.35,2.42);
+  \draw[maccred,line width=1.25pt,{Latex[length=2.1mm]}-{Latex[length=2.1mm]}]
+    (5.08,2.83) -- (5.08,2.75);
+
+  \node[align=center,font=\footnotesize,fill=maccred!8,draw=maccred!80!black,
+    rounded corners=1.5pt,inner sep=2.4pt] at (4.62,1.48)
+    {prediction\\[-0.25ex]mismatch};
+  \node[align=left,font=\footnotesize,fill=white,inner sep=2.2pt,text=maccblue]
+    at (5.08,3.36) {nonlinear plant};
+  \node[align=left,font=\footnotesize,fill=white,inner sep=2.2pt,text=maroon1]
+    at (5.05,2.35) {linear MPC model};
+\end{tikzpicture}}
+
+\vspace{0.06cm}
+
+{\scriptsize Linear prediction is useful near the nominal region, but mismatch grows away from it.}\\[0.35ex]
+{\refnote{Qin and Badgwell, 2003; Mayne et al., 2000}}
+
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 4 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{RL Can Adapt, But Online Exploration Is Risky}}
+\small
+
+\vspace{-0.18cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.37\textwidth}
+\begin{block}{RL opportunity}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.35ex}
+  \item Learns from process data.
+  \item Adapts to model mismatch.
+  \item Can improve beyond MPC.
+\end{itemize}
+\end{block}
+
+\vspace{0.05cm}
+
+\begin{block}{Plant-safety issue}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.35ex}
+  \item Exploration can test unsafe inputs.
+  \item Unsafe inputs can violate constraints.
+  \item Actions must be checked before actuation.
+\end{itemize}
+\end{block}
+
+\end{column}
+
+\begin{column}{0.60\textwidth}
+\centering
+\vspace{-0.08cm}
+
+\includegraphics[width=0.99\linewidth,height=0.70\textheight,keepaspectratio,trim=25 65 30 75,clip]{rl_plant_risk_clean.png}
+
+\vspace{-0.02cm}
+
+{\scriptsize Direct online RL can send risky candidate actions to the plant unless a safety layer intervenes.}\\[0.35ex]
+{\refnote{Sutton and Barto, 2018; Garcia and Fernandez, 2015}}
+
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 5 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Imitation-Learning Pretraining Warm-Starts the RL Actor}}
+\scriptsize
+
+\vspace{-0.22cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.38\textwidth}
+\begin{block}{Idea}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.34ex}
+  \item Use OF-MPC as an expert controller in offline mode.
+  \item Collect expert transition tuples.
+  \item Initialize the actor by imitation before online RL.
+\end{itemize}
+\end{block}
+
+\vspace{0.03cm}
+
+\begin{block}{Behavior-cloning loss}
+\vspace{-0.12cm}
+\[
+s_i=\big[\hat z_i,\;y_{{\rm sp},i},\;u_{i-1}\big]
+\]
+\vspace{-0.28cm}
+\[
+\tau_i=(s_i,u_i^{\rm MPC},r_i,s_{i+1}),\quad
+\mathcal D_{\rm IL}=\{\tau_i\}_{i=1}^{N}
+\]
+\vspace{-0.27cm}
+\[
+e_i=\pi_{\theta}(s_i)-u_i^{\rm MPC}
+\]
+\vspace{-0.27cm}
+\[
+\mathcal L_{\rm BC}(\theta)=
+\frac{1}{N}\sum_{i=1}^{N}\operatorname{Huber}_{\delta}(e_i)
+\]
+\vspace{-0.20cm}
+\end{block}
+
+\vspace{-0.03cm}
+{\refnote{Hassanpour et al., 2024; Hamedi et al., 2026}}
+\end{column}
+
+\begin{column}{0.59\textwidth}
+\centering
+\vspace{-0.08cm}
+\resizebox{1.00\linewidth}{!}{%
+\begin{tikzpicture}[
+  stage/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,
+  inner sep=5.3pt,text width=1.96cm,minimum height=1.05cm},
+  stagem/.style={draw=maroon1,line width=1.15pt,rounded corners=2pt,align=center,fill=maroon1!6,
+  inner sep=5.3pt,text width=1.96cm,minimum height=1.05cm},
+  stageg/.style={draw=maccgreen!75!black,line width=1.15pt,rounded corners=2pt,align=center,fill=maccgreen!8,
+  inner sep=5.3pt,text width=1.96cm,minimum height=1.05cm},
+  arr/.style={-{Latex[length=3.1mm,width=2.1mm]},line width=1.55pt,draw=maccblue!90!black},
+  icon/.style={draw=maccblue,line width=0.75pt,fill=maccblue!7,rounded corners=1pt}
+]
+
+\node[stage] (sample) at (-0.05,2.05)
+  {\textbf{1. Sample}\\[-0.15ex]{\scriptsize $\hat z_i$, $y_{{\rm sp},i}$}\\[-0.15ex]{\scriptsize $u_{i-1}$}};
+\node[stagem] (mpc) at (2.85,2.05)
+  {\textbf{2. OF-MPC}\\[-0.15ex]{\scriptsize solve offline}\\[-0.15ex]{\scriptsize $u_i^{\rm MPC}$}};
+\node[stage] (data) at (5.75,2.05)
+  {\textbf{3. Buffer}\\[-0.15ex]{\scriptsize store tuples}\\[-0.15ex]{\scriptsize $(s_i,u_i,r_i,s_{i+1})$}};
+\node[stageg] (online) at (2.35,-0.72)
+  {\textbf{5. Online RL}\\[-0.15ex]{\scriptsize starts near}\\[-0.15ex]{\scriptsize MPC}};
+\node[stagem] (imitate) at (5.75,-0.72)
+  {\textbf{4. Imitate}\\[-0.15ex]{\scriptsize Huber BC}\\[-0.15ex]{\scriptsize $\pi_\theta(s_i)\approx u_i^{\rm MPC}$}};
+
+\draw[arr] (sample.east) -- (mpc.west);
+\draw[arr] (mpc.east) -- (data.west);
+\draw[arr] (data.south) -- (imitate.north);
+\draw[arr] (imitate.west) -- (online.east);
+
+\node[draw=maccblue,line width=0.9pt,rounded corners=2pt,fill=maccblue!5,align=center,
+  text width=7.55cm,inner sep=4.8pt] at (2.85,-2.60)
+  {\scriptsize \textbf{Warm start:} the actor begins from an MPC-like policy instead of random actions.};
+\end{tikzpicture}}
+
+\vspace{-0.02cm}
+\begin{block}{Purpose of this step}
+\raggedright
+Pretraining does not replace online learning; it gives the actor a practical starting policy before nonlinear-plant interaction.
+\end{block}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+% %============================= Slide 6 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Pretraining Gives a Good Start, But Online Safety Is Still Uncertified}}
+\footnotesize
+
+\vspace{-0.12cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.40\textwidth}
+\begin{block}{What pretraining gives}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.35ex}
+  \item Less random early exploration.
+  \item Starts the actor near a known controller.
+  \item Makes online RL more implementable.
+\end{itemize}
+\end{block}
+
+\vspace{0.04cm}
+
+\begin{block}{What remains uncertified}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.35ex}
+  \item Safety in unseen operating regions.
+  \item Hard input-output constraint satisfaction.
+  \item Lyapunov decrease and closed-loop stability.
+  \item Safe behavior after online actor updates.
+\end{itemize}
+\end{block}
+
+\end{column}
+
+\begin{column}{0.57\textwidth}
+\centering
+\vspace{-0.08cm}
+
+\resizebox{0.99\linewidth}{!}{%
+\begin{tikzpicture}[
+  actorG/.style={draw=maccgreen!75!black,line width=1.2pt,rounded corners=2pt,fill=maccgreen!8,align=center,text width=1.45cm,minimum height=0.82cm,font=\scriptsize},
+  actorR/.style={draw=maccred,line width=1.2pt,rounded corners=2pt,fill=maccred!7,align=center,text width=1.45cm,minimum height=0.82cm,font=\scriptsize},
+  plant/.style={draw=maccblue,line width=1.1pt,rounded corners=2pt,fill=maccblue!8,minimum width=1.00cm,minimum height=0.90cm},
+  zone/.style={draw=maccred,dashed,line width=1.15pt,rounded corners=5pt,fill=maccred!4,align=center,text width=1.88cm,minimum height=0.88cm,font=\scriptsize},
+  garr/.style={-{Latex[length=2.8mm,width=1.9mm]},line width=1.4pt,draw=maccgreen!75!black},
+  rarr/.style={-{Latex[length=2.8mm,width=1.9mm]},line width=1.4pt,draw=maccred},
+  noteG/.style={draw=maccgreen!75!black,rounded corners=2pt,fill=maccgreen!8,inner sep=4pt,align=center,font=\scriptsize,text width=5.70cm},
+  noteR/.style={draw=maccred,rounded corners=2pt,fill=maccred!7,inner sep=4pt,align=center,font=\scriptsize,text width=5.70cm}
+]
+\node[font=\small\bfseries,text=maccgreen!70!black] at (3.15,2.82)
+  {Before online updates: good starting policy};
+
+\node[actorG] (pre) at (0.55,1.95) {pretrained\\actor};
+\node[plant] (plant1) at (5.45,1.95) {};
+\draw[maccblue,line width=0.85pt] (5.45,2.33) -- (5.45,2.62);
+\draw[maccblue,line width=0.85pt] (5.16,1.72) -- (5.74,1.72);
+\draw[garr] (pre.east) -- node[above,font=\scriptsize] {MPC-like action} (plant1.west);
+
+\node[draw=maccgreen!75!black,circle,fill=white,line width=1.0pt,
+  font=\scriptsize\bfseries,text=maccgreen!75!black] at (6.26,1.95) {ok};
+
+\node[noteG] at (3.15,1.05)
+  {starts close to the demonstrated OF-MPC policy};
+
+\draw[black!30,line width=0.65pt] (0.05,0.38) -- (6.30,0.38);
+\node[font=\scriptsize\bfseries,fill=white,inner sep=1.5pt] at (3.15,0.38)
+  {online learning changes the actor};
+
+\node[font=\small\bfseries,text=maccred] at (3.15,-0.30)
+  {After online updates: action may be uncertified};
+
+\node[actorR] (upd) at (0.55,-1.25) {updated\\actor};
+\node[zone] (risk) at (3.15,-1.25) {unseen state\\or policy drift};
+\node[plant] (plant2) at (5.45,-1.25) {};
+
+\draw[maccblue,line width=0.85pt] (5.45,-0.87) -- (5.45,-0.58);
+\draw[maccblue,line width=0.85pt] (5.16,-1.48) -- (5.74,-1.48);
+\draw[rarr] (upd.east) -- (risk.west);
+\draw[rarr] (risk.east) -- (plant2.west);
+
+\draw[maccred,fill=maccred!12,line width=0.95pt]
+  (6.26,-0.78) -- (6.02,-1.22) -- (6.50,-1.22) -- cycle;
+\node[font=\scriptsize,text=maccred] at (6.26,-1.08) {!};
+
+\node[noteR] at (3.15,-2.25)
+  {constraints, Lyapunov decrease, and stability are not certified};
+\end{tikzpicture}}
+
+
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 7 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{RL Proposes the Move; the Lyapunov Layer Has Final Authority}}
+\footnotesize
+
+\vspace{-0.12cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.37\textwidth}
+\begin{block}{Control split}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.42ex}
+  \item \textbf{RL actor:} proposes a performance move.
+  \item \textbf{Safety gate:} checks Lyapunov contraction.
+  \item \textbf{Fallback LMPC:} replaces rejected actions.
+\end{itemize}
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{Key design choice}
+\justifying
+The learned policy is not trusted directly on the plant. The supervisor chooses the final input after certification.
+\end{block}
+
+\end{column}
+
+\begin{column}{0.60\textwidth}
+\centering
+\vspace{-0.08cm}
+\resizebox{1.04\linewidth}{!}{%
+\begin{tikzpicture}[
+  box/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,
+    inner sep=4.6pt,text width=1.78cm,minimum height=0.82cm,font=\scriptsize},
+  rl/.style={draw=maccgreen!75!black,line width=1.1pt,rounded corners=2pt,align=center,fill=maccgreen!8,
+    inner sep=4.6pt,text width=1.78cm,minimum height=0.84cm,font=\scriptsize},
+  gate/.style={draw=maroon1,line width=1.1pt,rounded corners=2pt,align=center,fill=maroon1!7,
+    inner sep=4.6pt,text width=1.78cm,minimum height=0.86cm,font=\scriptsize},
+  fall/.style={draw=maccred,line width=1.1pt,rounded corners=2pt,align=center,fill=maccred!8,
+    inner sep=4.6pt,text width=1.78cm,minimum height=0.84cm,font=\scriptsize},
+  arr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.18pt,draw=black!70},
+  garr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.28pt,draw=maccgreen!75!black},
+  rarr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.28pt,draw=maccred},
+  barr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.18pt,draw=maccblue}
+]
+
+\node[box] (obs) at (0.00,1.65) {observer +\\setpoint};
+\node[rl] (actor) at (2.20,1.65) {TD3 actor\\$u_{\rm RL}$};
+\node[gate] (gate) at (4.70,1.65) {Lyapunov\\gate};
+\node[box] (plant) at (7.45,1.65) {plant};
+
+\node[box] (target) at (2.20,-1.05) {local target\\$(x_s,u_s)$};
+\node[fall] (fallback) at (4.70,-1.05) {fallback\\LMPC};
+
+% Main RL path
+\draw[arr] (obs.east) -- (actor.west);
+\draw[garr] (actor.east) -- (gate.west);
+\draw[garr] (gate.east) -- node[above,font=\scriptsize] {accept} (plant.west);
+
+% Observer to local target
+\coordinate (targetin) at ($(target.west)+(-0.40,0)$);
+\coordinate (ot1) at ($(obs.south)+(0,-0.44)$);
+\path let \p1=(ot1), \p2=(targetin) in coordinate (ot2) at (\x1,\y2);
+\draw[barr] (obs.south) -- (ot1) -- (ot2) -- (targetin) -- (target.west);
+
+% Local target to fallback
+\draw[barr] (target.east) -- (fallback.west);
+
+% Local target to gate
+\coordinate (gateinfo) at ($(gate.west)+(0,-0.25)$);
+\coordinate (gateentry) at ($(gateinfo)+(-0.42,0)$);
+\coordinate (tg1) at ($(target.north)+(0,0.42)$);
+\path let \p1=(tg1), \p2=(gateentry) in coordinate (tg2) at (\x2,\y1);
+\draw[barr] (target.north) -- (tg1) -- (tg2) -- (gateentry) -- (gateinfo);
+
+% Gate to fallback
+\draw[rarr] (gate.south) -- node[right,font=\scriptsize] {fail} (fallback.north);
+
+% Fallback to plant
+\coordinate (plantin) at ($(plant.south)+(0,-0.36)$);
+\coordinate (fp1) at ($(fallback.east)+(0.48,0)$);
+\path let \p1=(fp1), \p2=(plantin) in coordinate (fp2) at (\x1,\y2);
+\draw[rarr] (fallback.east) -- (fp1) -- (fp2) -- (plantin) -- (plant.south);
+
+\node[draw=maccblue,line width=0.9pt,rounded corners=2pt,fill=maccblue!5,align=center,
+  text width=7.05cm,inner sep=4pt,font=\scriptsize] at (3.75,-2.82)
+  {The plant receives either the accepted RL action or the certified fallback action.};
+
+\end{tikzpicture}}
+
+\vspace{0.00cm}
+{\scriptsize \textbf{Framework:} RL is a proposal generator; certification decides what is actuated.}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 8 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Safety Check: One-Step Lyapunov Contraction}}
+\scriptsize
+
+\vspace{-0.12cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.39\textwidth}
+\begin{block}{Gate calculation}
+\vspace{-0.12cm}
+\[
+ e_k=\hat x_k-x_s,\qquad V_k=e_k^\top P_x e_k
+\]
+\vspace{-0.24cm}
+\[
+V_{k+1}^{\rm cand}\le \rho V_k+\epsilon_{\rm lyap},
+\qquad 0<\rho<1
+\]
+\vspace{-0.16cm}
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{Decision}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.36ex}
+  \item \textbf{Pass:} apply the candidate RL action.
+  \item \textbf{Fail:} replace it with fallback LMPC.
+\end{itemize}
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{Interpretation}
+\justifying
+The candidate is accepted only if the predicted next state moves toward the local target in the Lyapunov metric.
+\end{block}
+
+\vspace{0.03cm}
+\end{column}
+
+\begin{column}{0.58\textwidth}
+\centering
+\vspace{-0.07cm}
+\resizebox{1.02\linewidth}{!}{%
+\begin{tikzpicture}[
+  arrG/.style={-{Latex[length=2.7mm,width=1.9mm]},line width=1.40pt,draw=maccgreen!75!black},
+  arrR/.style={-{Latex[length=2.7mm,width=1.9mm]},line width=1.40pt,draw=maccred},
+  labG/.style={draw=maccgreen!75!black,rounded corners=2pt,fill=maccgreen!8,inner sep=4pt,font=\scriptsize,align=center},
+  labR/.style={draw=maccred,rounded corners=2pt,fill=maccred!8,inner sep=4pt,font=\scriptsize,align=center},
+  labB/.style={draw=maccblue,rounded corners=2pt,fill=maccblue!5,inner sep=4pt,font=\scriptsize,align=center}
+]
+\draw[maccblue!60,line width=0.95pt] (0,0) ellipse (3.15 and 1.80);
+\draw[maccblue!60,line width=0.95pt] (0,0) ellipse (2.12 and 1.20);
+\draw[maccblue!60,line width=0.95pt] (0,0) ellipse (1.18 and 0.66);
+\node[labB] at (0,-0.02) {local\\target $x_s$};
+
+\fill[black] (-2.35,0.90) circle (2.1pt);
+\node[font=\scriptsize,align=center] at (-2.64,1.36) {current\\$\hat x_k$};
+\fill[maccgreen!75!black] (-0.78,0.45) circle (2.1pt);
+\fill[maccred] (1.75,1.42) circle (2.1pt);
+
+\draw[arrG] (-2.35,0.90) -- node[above,font=\scriptsize] {candidate A} (-0.78,+0.45);
+\draw[arrR] (-2.35,0.90) -- node[above,sloped,font=\scriptsize] {candidate B} (1.75,1.42);
+
+\node[labG] at (-1.16,-2.05) {accept: $V$ decreases\\apply $u_{\rm RL}$};
+\node[labR] at (2.10,-2.05) {reject: not certified\\use LMPC};
+\draw[arrG] (-0.78,0.45) -- (-1.16,-1.65);
+\draw[arrR] (1.75,1.42) -- (2.10,-1.65);
+\node[font=\scriptsize,text=maccblue] at (2.88,1.78) {Lyapunov contours};
+\end{tikzpicture}}
+
+\vspace{0.00cm}
+{\scriptsize \textbf{Conceptual figure:} accepted actions move the state to a lower Lyapunov contour.}
+\end{column}
+\end{columns}
+\end{frame}
+
+%============================= Slide 9 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Rejected RL Actions Are Replaced by a Lyapunov MPC Move}}
+\footnotesize
+
+\vspace{-0.12cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.42\textwidth}
+\begin{block}{Two pieces are needed}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.42ex}
+  \item \textbf{Target selector:} computes a feasible local equilibrium from the current estimate and setpoint.
+  \item \textbf{Fallback LMPC:} computes a tracking move that satisfies the contraction condition.
+\end{itemize}
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{Compact fallback problem}
+\vspace{-0.10cm}
+\[
+\min \ J_{\rm track}+J_{\rm move}
+\]
+\vspace{-0.22cm}
+\[
+\text{s.t.}\quad
+u_{\min}\le u\le u_{\max},
+\]
+\[
+V_{1|k}\le \rho V_k+\epsilon_{\rm lyap}.
+\]
+\vspace{-0.18cm}
+\end{block}
+\end{column}
+
+\begin{column}{0.55\textwidth}
+\centering
+\vspace{-0.06cm}
+\resizebox{1.03\linewidth}{!}{%
+\begin{tikzpicture}[
+  box/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,
+    inner sep=4.6pt,text width=1.70cm,minimum height=0.76cm,font=\scriptsize},
+  target/.style={draw=maccblue,line width=1.05pt,rounded corners=2pt,align=center,fill=maccblue!7,
+    inner sep=4.6pt,text width=1.70cm,minimum height=0.82cm,font=\scriptsize},
+  fail/.style={draw=maccred,line width=1.05pt,rounded corners=2pt,align=center,fill=maccred!8,
+    inner sep=4.6pt,text width=1.70cm,minimum height=0.82cm,font=\scriptsize},
+  safe/.style={draw=maccgreen!75!black,line width=1.05pt,rounded corners=2pt,align=center,fill=maccgreen!8,
+    inner sep=4.6pt,text width=1.70cm,minimum height=0.82cm,font=\scriptsize},
+  arr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.18pt,draw=black!70},
+  barr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.22pt,draw=maccblue},
+  rarr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.22pt,draw=maccred},
+  garr/.style={-{Latex[length=2.6mm,width=1.8mm]},line width=1.22pt,draw=maccgreen!75!black}
+]
+
+\node[box] (estimate) at (0,1.55) {estimate\\$\hat x_k,\hat d_k$};
+\node[box] (sp) at (0,-0.05) {setpoint\\$y_{{\rm sp},k}$};
+\node[target] (selector) at (2.55,0.80) {target\\selector};
+\node[target] (local) at (5.00,0.80) {local target\\$(x_s,u_s)$};
+\node[fail] (reject) at (1.10,-1.78) {rejected\\$u_{\rm RL}$};
+\node[safe] (lmpc) at (3.45,-1.78) {fallback\\LMPC};
+\node[safe] (exec) at (5.85,-1.78) {safe move\\$u_{\rm exec}$};
+
+\draw[arr] (estimate.east) -- (selector.west);
+\draw[arr] (sp.east) -- (selector.west);
+\draw[barr] (selector.east) -- (local.west);
+\draw[barr] (local.south) -- ++(0,-0.55) -| (lmpc.north);
+\draw[rarr] (reject.east) -- (lmpc.west);
+\draw[garr] (lmpc.east) -- (exec.west);
+
+\node[draw=maccblue,line width=0.9pt,rounded corners=2pt,fill=maccblue!5,align=center,
+  text width=6.45cm,inner sep=4pt,font=\scriptsize] at (3.08,-3.10)
+  {Fallback is used only when the RL candidate cannot be certified by the gate.};
+\end{tikzpicture}}
+
+\vspace{0.00cm}
+{\scriptsize \textbf{Figure:} the target defines the reference for both the gate and fallback controller.}
+\end{column}
+\end{columns}
+\end{frame}
+
+%============================= Slide 10 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Reward Converts Tracking and Safety Feedback Into Learning}}
+\scriptsize
+
+\vspace{-0.12cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.40\textwidth}
+\begin{block}{Role of the reward}
+\justifying
+The reward is the scalar feedback used to update the actor. It should favor actions that improve performance and reduce the need for safety correction.
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{What the reward should encourage}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.35ex}
+  \item small output tracking error,
+  \item smooth input movement,
+  \item stronger attention near the setpoint,
+  \item fewer safety corrections by the supervisor.
+\end{itemize}
+\end{block}
+
+\vspace{0.04cm}
+\begin{block}{Interpretation}
+\justifying
+The actor is not rewarded only for tracking. It is also pushed toward actions that are easier for the safety layer to accept.
+\end{block}
+\end{column}
+
+\begin{column}{0.57\textwidth}
+\centering
+\vspace{-0.07cm}
+\resizebox{1.02\textwidth}{!}{%
+\begin{tikzpicture}[
+  comp/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,inner sep=4pt,
+    text width=2.50cm,minimum height=0.68cm,font=\scriptsize},
+  compG/.style={draw=maccgreen!75!black,line width=1.0pt,rounded corners=2pt,align=center,
+    fill=maccgreen!8,inner sep=4pt,text width=2.50cm,minimum height=0.68cm,font=\scriptsize},
+  compR/.style={draw=maccred,line width=1.0pt,rounded corners=2pt,align=center,
+    fill=maccred!8,inner sep=4pt,text width=2.50cm,minimum height=0.68cm,font=\scriptsize},
+  center/.style={draw=maroon1,line width=1.2pt,rounded corners=2pt,align=center,
+    fill=maroon1!7,inner sep=5pt,text width=1.82cm,minimum height=1.20cm,font=\scriptsize},
+  update/.style={draw=maccblue,line width=1.2pt,rounded corners=2pt,align=center,
+    fill=maccblue!7,inner sep=5pt,text width=1.92cm,minimum height=0.92cm,font=\scriptsize},
+  note/.style={draw=maccblue,line width=0.9pt,rounded corners=2pt,align=center,
+    fill=maccblue!5,inner sep=4.5pt,text width=6.70cm,font=\scriptsize},
+  arr/.style={-{Latex[length=2.5mm,width=1.7mm]},line width=1.15pt,draw=black!65},
+  garr/.style={-{Latex[length=2.5mm,width=1.7mm]},line width=1.15pt,draw=maccgreen!75!black},
+  rarr/.style={-{Latex[length=2.5mm,width=1.7mm]},line width=1.15pt,draw=maccred},
+  barr/.style={-{Latex[length=2.5mm,width=1.7mm]},line width=1.15pt,draw=maccblue}
+]
+
+\node[font=\small\bfseries,text=maroon1] at (3.25,2.15) {Reward construction};
+
+\node[comp] (track) at (0.72,1.30) {\textbf{Tracking}\\[-0.1ex]accuracy};
+\node[comp] (move) at (0.72,0.40) {\textbf{Smooth}\\[-0.1ex]input};
+\node[compG] (near) at (0.72,-0.50) {\textbf{Near-setpoint}\\[-0.1ex]focus};
+\node[compR] (corr) at (0.72,-1.40) {\textbf{Safety-correction}\\[-0.1ex]penalty};
+
+\node[center] (reward) at (3.55,-0.05) {scalar\\reward\\$r_k$};
+\node[update] (update) at (6.15,-0.05) {actor\\update};
+
+\draw[arr] (track.east) -- (reward.west);
+\draw[arr] (move.east) -- (reward.west);
+\draw[garr] (near.east) -- (reward.west);
+\draw[rarr] (corr.east) -- (reward.west);
+\draw[barr] (reward.east) -- node[above,font=\scriptsize] {TD3} (update.west);
+
+\node[note] at (3.45,-2.78)
+  {Learning goal: maintain tracking while proposing actions that require fewer safety corrections over training.};
+
+\end{tikzpicture}}
+
+\vspace{0.00cm}
+{\scriptsize \textbf{Figure:} the reward combines performance, smoothness, near-setpoint accuracy, and safety-intervention feedback.}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 11 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Replay Sampling Balances Rare Failures, Recent Data, and Coverage}}
+\scriptsize
+
+\vspace{-0.14cm}
+
+\begin{block}{Main idea}
+\justifying
+Online RL should not learn only from the latest trajectory. Mixed replay improves robustness by combining rare high-error events, the current operating regime, and broad historical coverage.
+\end{block}
+
+\vspace{0.02cm}
+
+\begin{center}
+\resizebox{0.96\textwidth}{!}{%
+\begin{tikzpicture}[
+  src/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,
+    inner sep=4pt,text width=1.75cm,minimum height=0.72cm,font=\scriptsize},
+  buffer/.style={draw=maccblue,line width=1.15pt,rounded corners=2pt,align=center,fill=maccblue!7,
+    inner sep=4pt,text width=2.15cm,minimum height=0.84cm,font=\scriptsize},
+  sampler/.style={draw=maroon1,line width=1.10pt,rounded corners=2pt,align=center,fill=maroon1!7,
+    inner sep=4pt,text width=2.35cm,minimum height=1.90cm,font=\scriptsize},
+  view/.style={draw=black!45,rounded corners=2pt,align=center,fill=white,
+    inner sep=3pt,text width=1.65cm,minimum height=0.42cm,font=\scriptsize},
+  update/.style={draw=maccgreen!75!black,line width=1.15pt,rounded corners=2pt,align=center,fill=maccgreen!8,
+    inner sep=4pt,text width=1.95cm,minimum height=0.86cm,font=\scriptsize},
+  note/.style={draw=maccblue,line width=0.9pt,rounded corners=2pt,align=center,fill=maccblue!5,
+    inner sep=4pt,text width=7.35cm,font=\scriptsize},
+  arr/.style={-{Latex[length=2.0mm]},line width=1.05pt,draw=black!70},
+  barr/.style={-{Latex[length=2.0mm]},line width=1.05pt,draw=maccblue}
+]
+
+\node[src] (trans) at (0.25,0.00) {executed\\transition};
+\node[buffer] (buffer) at (2.75,0.00) {online RL\\replay buffer};
+
+\node[sampler] (sampler) at (5.65,0.00) {\textbf{mixed replay sampler}};
+\node[view] (per) at (5.65,0.45) {PER};
+\node[view] (recent) at (5.65,0.00) {recent};
+\node[view] (uniform) at (5.65,-0.45) {uniform};
+
+\node[buffer] (batch) at (8.60,0.00) {mixed\\mini-batch};
+\node[update] (td3) at (11.10,0.00) {TD3 update\\critic + actor};
+
+\draw[arr] (trans.east) -- (buffer.west);
+\draw[barr] (buffer.east) -- (sampler.west);
+\draw[barr] (sampler.east) -- (batch.west);
+\draw[arr] (batch.east) -- (td3.west);
+
+\node[note] at (5.65,-1.55)
+  {Each training batch combines difficult transitions, current behavior, and older experience instead of relying only on the latest rollout.};
+
+\end{tikzpicture}}
+\end{center}
+
+\vspace{0.03cm}
+
+\begin{block}{Why three replay views?}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.32\textwidth}
+\centering
+\begin{beamercolorbox}[rounded=true,center,sep=4pt,wd=\linewidth]{block body}
+\textbf{PER}\\[0.3ex]
+revisits high-error and rare transitions
+\end{beamercolorbox}
+\end{column}
+
+\begin{column}{0.32\textwidth}
+\centering
+\begin{beamercolorbox}[rounded=true,center,sep=4pt,wd=\linewidth]{block body}
+\textbf{Recent}\\[0.3ex]
+keeps updates tied to the current regime
+\end{beamercolorbox}
+\end{column}
+
+\begin{column}{0.32\textwidth}
+\centering
+\begin{beamercolorbox}[rounded=true,center,sep=4pt,wd=\linewidth]{block body}
+\textbf{Uniform}\\[0.3ex]
+preserves broad operating coverage
+\end{beamercolorbox}
+\end{column}
+\end{columns}
+\end{block}
+
+\end{frame}
+
+%============================= Slide 12 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Online Procedure: Observe, Propose, Certify, Learn}}
+\scriptsize
+
+\vspace{-0.15cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.34\textwidth}
+\begin{block}{At each sampling time}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.42ex}
+  \item Update state and disturbance estimates.
+  \item Generate an RL candidate action.
+  \item Certify using Lyapunov contraction.
+  \item Execute accepted RL or fallback LMPC.
+  \item Store the transition and update TD3.
+\end{itemize}
+\end{block}
+\end{column}
+
+\begin{column}{0.63\textwidth}
+\centering
+\vspace{-0.02cm}
+\resizebox{1.01\linewidth}{!}{%
+\begin{tikzpicture}[
+  stepbox/.style={draw=black!55,rounded corners=2pt,align=center,fill=white,
+    inner sep=4.5pt,text width=1.58cm,minimum height=0.74cm,font=\scriptsize},
+  stepG/.style={draw=maccgreen!75!black,line width=1.05pt,rounded corners=2pt,align=center,fill=maccgreen!8,
+    inner sep=4.5pt,text width=1.58cm,minimum height=0.74cm,font=\scriptsize},
+  stepR/.style={draw=maccred,line width=1.05pt,rounded corners=2pt,align=center,fill=maccred!8,
+    inner sep=4.5pt,text width=1.58cm,minimum height=0.74cm,font=\scriptsize},
+  stepB/.style={draw=maccblue,line width=1.05pt,rounded corners=2pt,align=center,fill=maccblue!7,
+    inner sep=4.5pt,text width=1.58cm,minimum height=0.74cm,font=\scriptsize},
+  arr/.style={-{Latex[length=2.2mm]},line width=1.15pt,draw=black!70},
+  garr/.style={-{Latex[length=2.2mm]},line width=1.15pt,draw=maccgreen!75!black}
+]
+
+\node[stepbox] (s1) at (0,0) {1. estimate\\state};
+\node[stepG] (s2) at (2.25,0) {2. propose\\RL action};
+\node[stepB] (s3) at (4.50,0) {3. compute\\target};
+\node[stepR] (s4) at (6.75,0) {4. check\\Lyapunov};
+\node[stepbox] (s5) at (6.75,-1.58) {5. execute\\input};
+\node[stepB] (s6) at (4.50,-1.58) {6. reward\\+ replay};
+\node[stepG] (s7) at (2.25,-1.58) {7. update\\TD3};
+\node[stepbox] (plant) at (0,-1.58) {plant\\feedback};
+
+\draw[arr] (s1.east) -- (s2.west);
+\draw[arr] (s2.east) -- (s3.west);
+\draw[arr] (s3.east) -- (s4.west);
+\draw[garr] (s4.south) -- node[right,font=\scriptsize] {pass/fallback} (s5.north);
+\draw[arr] (s5.west) -- (s6.east);
+\draw[arr] (s6.west) -- (s7.east);
+\draw[arr] (s7.west) -- (plant.east);
+\draw[arr] (plant.north) -- (s1.south);
+
+\node[draw=maccblue,line width=0.9pt,rounded corners=2pt,fill=maccblue!5,align=center,
+  text width=7.00cm,inner sep=4pt,font=\scriptsize] at (3.38,-2.85)
+  {The safety decision is made before actuation; learning happens after the executed transition is observed.};
+\end{tikzpicture}}
+
+\vspace{0.06cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=0.99\linewidth]{block body}
+\textbf{BC window:} during the early online phase, the actor softly clones LMPC actions. This keeps the policy close to a certified controller while the replay buffer fills and the actor transitions to full TD3 updates.
+\end{beamercolorbox}
+\end{column}
+\end{columns}
+
+\vspace{0.08cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=\textwidth]{block body}
+\textbf{Main takeaway:} the online controller is an RL proposal embedded inside a certification-and-fallback loop.
+\end{beamercolorbox}
+\end{frame}
+
+%============================= Slide 13 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Case Study: Styrene Polymerization CSTR}}
+\scriptsize
+
+\vspace{-0.15cm}
+
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.47\textwidth}
+\centering
+\vspace{-0.02cm}
+\includegraphics[width=1.00\linewidth,height=0.66\textheight,keepaspectratio]{CSTR.png}
+
+\vspace{0.05cm}
+{\scriptsize \textbf{Process schematic:} jacketed polymerization CSTR with feed and coolant manipulation.}
+\end{column}
+
+\begin{column}{0.50\textwidth}
+\begin{block}{Why this process is a useful benchmark}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.55ex}
+  \item Nonlinear reactor dynamics couple polymer quality and temperature.
+  \item Input constraints and model mismatch make unsafe exploration undesirable.
+\end{itemize}
+\end{block}
+
+\vspace{0.08cm}
+
+\begin{block}{Control setup}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabular}{>{\bfseries}p{0.30\linewidth}p{0.61\linewidth}}
+Inputs & coolant flow \(Q_c\), monomer flow \(Q_m\) \\
+Outputs & intrinsic viscosity \(\eta\), reactor temperature \(T\) \\
+Objective & improve tracking with supervised final action selection
+\end{tabular}
+\end{block}
+
+\vspace{0.03cm}
+
+\begin{block}{Role in this presentation}
+\justifying
+Benchmark for fixed MPC, pretrained RL, and Lyapunov-supervised RL.
+\end{block}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+
+%============================= Slide 14 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Reward and Intervention Trends for the Two RL Runs}}
+\scriptsize
+
+\vspace{-0.28cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.705\textwidth}
+\centering
+\hspace*{-0.08cm}\resizebox{1.00\linewidth}{!}{\RewardInterventionFigure}
+\end{column}
+
+\begin{column}{0.275\textwidth}
+\centering
+\vspace{0.34cm}
+\fontsize{7.6}{9.0}\selectfont
+\renewcommand{\arraystretch}{1.26}
+\setlength{\tabcolsep}{2.2pt}
+
+\begin{beamercolorbox}[rounded=true,sep=2.8pt,wd=\linewidth]{block title}
+\centering\bfseries Summary metrics
+\end{beamercolorbox}
+\begin{beamercolorbox}[rounded=true,sep=4.2pt,wd=\linewidth]{block body}
+\resizebox{0.98\linewidth}{!}{%
+\begin{tabular}{lcc}
+\multicolumn{3}{c}{\bfseries Full run} \\
+\textbf{Metric} & \textbf{Cold} & \textbf{Pre} \\
+\hline
+Reward & -10.38 & {\color{maccgreen}\bfseries -4.07} \\
+RMSE & 0.284 & {\color{maccgreen}\bfseries 0.185} \\
+Interv. & {\color{maccgreen}\bfseries 1.19\%} & 3.53\% \\[0.8ex]
+\multicolumn{3}{c}{\bfseries Last episode} \\
+\textbf{Metric} & \textbf{Cold} & \textbf{Pre} \\
+\hline
+Reward & -3.33 & {\color{maccgreen}\bfseries -2.75} \\
+RMSE & 0.177 & {\color{maccgreen}\bfseries 0.153} \\
+Interv. & 0.38\% & {\color{maccgreen}\bfseries 0.13\%}
+\end{tabular}}
+\end{beamercolorbox}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 15 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{The Lyapunov Gate Enforces a Runtime Certificate}}
+\scriptsize
+
+\vspace{-0.30cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.715\textwidth}
+\centering
+\hspace*{-0.14cm}\resizebox{1.02\linewidth}{!}{\LyapunovCertificateFigure}
+\end{column}
+
+\begin{column}{0.265\textwidth}
+\fontsize{7.8}{8.8}\selectfont
+\begin{block}{Certificate check}
+\centering
+\renewcommand{\arraystretch}{1.18}
+\setlength{\tabcolsep}{3.0pt}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lc}
+\textbf{Case} & \textbf{Fail rate} \\
+Cold + gate & 0.10\% \\
+Pre + gate & 0.10\% \\
+Pre no gate & 29.17\%
+\end{tabular}}
+\end{block}
+
+\vspace{0.05cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=\linewidth]{block body}
+\centering
+\(\Delta V = V_{k+1}-(\rho V_k+\epsilon)\)\\[-0.2ex]
+\textbf{Fail} means \(\Delta V>0\).
+\end{beamercolorbox}
+
+\vspace{0.05cm}
+\begin{block}{Interpretation}
+\raggedright
+The top panel compares all runs on the same failure-rate scale. The bottom panel is only a zoom of the two gated runs. The gate keeps applied failures near zero; without it, the pre-trained policy often fails the Lyapunov test.
+\end{block}
+\end{column}
+
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 16 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Pre-Trained Evaluation: Tracking With Lyapunov Gate Activation}}
+\scriptsize
+
+\vspace{-0.22cm}
+\begin{center}
+\centering
+\resizebox{0.875\textwidth}{!}{\PretrainEpisodeGateFigure}
+\end{center}
+
+\vspace{-0.08cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=0.94\textwidth]{block body}
+\textbf{Importance:} the gate activates only at the setpoint transition, showing selective certification.
+\end{beamercolorbox}
+
+\end{frame}
+
+%============================= Slide 17 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Last-Episode Evaluation Compares All Three Controllers}}
+\scriptsize
+
+\vspace{-0.20cm}
+\begin{center}
+\centering
+\resizebox{0.86\textwidth}{!}{\LastEpisodeEvaluationFigure}
+\end{center}
+
+\vspace{-0.05cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=0.94\textwidth]{block body}
+\textbf{Takeaway:} pre-trained gated RL gives the best final-episode tracking through the setpoint transition.
+\end{beamercolorbox}
+
+\end{frame}
+
+%============================= Slide 18 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Error Distributions and Wall-Clock Time Across Training Windows}}
+\scriptsize
+
+\vspace{-0.24cm}
+\begin{center}
+\centering
+\resizebox{0.86\textwidth}{!}{\MetricBoxRuntimeFigure}
+\end{center}
+
+\vspace{-0.08cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=0.94\textwidth]{block body}
+\textbf{Takeaway:} pre-trained RL tightens errors, and both RL runs remain faster than LMPC.
+\end{beamercolorbox}
+
+\end{frame}
+
+%============================= Slide 19 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Pre-Training Improves Setpoint Tracking Across Episodes}}
+\scriptsize
+
+\vspace{-0.26cm}
+\begin{center}
+\resizebox{0.985\textwidth}{!}{\EpisodeTrackingSnapshotsFigure}
+\end{center}
+
+\vspace{-0.24cm}
+\begin{block}{Interpretation}
+\justifying
+Across early, middle, and later episodes, the pre-trained agent stays closer to both setpoint trajectories than the cold-start agent, especially after setpoint changes.
+\end{block}
+
+\end{frame}
+
+%============================= Slide 20 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Conclusions and Future Work}}
+\normalsize
+
+\vspace{-0.18cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.48\textwidth}
+\begin{block}{Conclusions}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.85ex}
+  \item Certified gate for RL actions.
+  \item Practical local guarantee from step-test data and a linear state-space model.
+  \item Pre-training improves tracking; LMPC fallback preserves safe actuation.
+\end{itemize}
+\end{block}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\begin{block}{Future work}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.85ex}
+  \item Pre-train from LMPC demonstrations.
+  \item Scale to a C2-splitter with output constraints and flooding/fault prevention.
+  \item Complete the stability proof.
+\end{itemize}
+\end{block}
+\end{column}
+
+\end{columns}
+
+\vfill
+\begin{beamercolorbox}[rounded=true,center,sep=5pt,wd=0.96\linewidth]{block body}
+{\LARGE \bfseries Thank you}
+\end{beamercolorbox}
+
+\end{frame}
+
+\iffalse
+
+%============================= Previous Result Slide Block ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Pretraining Gives the Best Main Tracking}}
+\scriptsize
+
+\vspace{-0.18cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.57\textwidth}
+\begin{block}{Main comparison: episode 1 excluded}
+\centering
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-1.02,-0.78) rectangle (4.65,4.35);
+  \foreach \y/\lab in {0/0,0.90/0.1,1.80/0.2,2.70/0.3,3.60/0.4}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (4.20,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (4.35,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.95);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.84,1.98) {Mean RMSE};
+  \node[font=\bfseries\scriptsize] at (2.18,-0.58) {Controller};
+  \foreach \x/\h/\val/\col/\lab in {0.55/3.40/0.378/black!75/LMPC,1.85/2.56/0.284/maccblue/Cold,3.15/1.67/0.185/maccorange/Pretrained}{
+    \draw[fill=\col,draw=\col,line width=0.8pt,rounded corners=1pt] (\x,0) rectangle ++(0.72,\h);
+    \node[font=\bfseries\scriptsize] at (\x+0.36,\h+0.22) {\val};
+    \node[font=\bfseries\tiny,align=center] at (\x+0.36,-0.34) {\lab};
+  }
+\end{tikzpicture}}
+\end{block}
+\end{column}
+
+\begin{column}{0.40\textwidth}
+\begin{block}{What changed}
+\renewcommand{\arraystretch}{1.18}
+\begin{tabular}{lcc}
+\textbf{Controller} & \textbf{RMSE} & \textbf{ms/step} \\
+Direct LMPC & 0.378 & 36.2 \\
+Cold + gate & 0.284 & 19.0 \\
+Pretrained + gate & \textbf{0.185} & 20.1
+\end{tabular}
+\end{block}
+
+\vspace{0.05cm}
+\begin{block}{Interpretation}
+\justifying
+The pretrained policy gives the best raw-setpoint tracking among the three certified controllers: about 51\% lower mean RMSE than direct LMPC and about 35\% lower than the cold-start safety-gated policy.
+\end{block}
+
+\vspace{0.05cm}
+\begin{beamercolorbox}[rounded=true,sep=4pt,wd=\linewidth]{block body}
+\textbf{Timing note:} wall-clock comparison is reported after the BC window using the logged mean seconds per step as a proxy.
+\end{beamercolorbox}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 15 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Gate Authority Separates Tracking Quality From Safety Burden}}
+\scriptsize
+
+\vspace{-0.17cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.54\textwidth}
+\begin{block}{Actual safety-gate intervention}
+\centering
+\resizebox{0.92\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-0.98,-0.70) rectangle (4.40,4.30);
+  \foreach \y/\lab in {0/0,0.80/1,1.60/2,2.40/3,3.20/4}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (4.00,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (4.15,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.85);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.82,1.93) {Intervention (\%)};
+  \foreach \x/\h/\val/\col/\lab in {0.82/0.95/1.19/maccblue/Cold,2.55/2.82/3.53/maccorange/Pretrained}{
+    \draw[fill=\col,draw=\col,line width=0.9pt,rounded corners=1pt] (\x,0) rectangle ++(0.88,\h);
+    \node[font=\bfseries\scriptsize] at (\x+0.44,\h+0.22) {\val\%};
+    \node[font=\bfseries\tiny,align=center] at (\x+0.44,-0.30) {\lab};
+  }
+\end{tikzpicture}}
+\end{block}
+\end{column}
+
+\begin{column}{0.43\textwidth}
+\begin{block}{Gate diagnostics}
+\renewcommand{\arraystretch}{1.20}
+\begin{tabular}{lcc}
+\textbf{Metric} & \textbf{Cold} & \textbf{Pretrained} \\
+Candidate executed & 98.81\% & 96.47\% \\
+Actual intervention & 1.19\% & 3.53\% \\
+Fallback penalty & 0.607 & 1.403
+\end{tabular}
+\end{block}
+
+\vspace{0.06cm}
+\begin{block}{Reading the result}
+\justifying
+Cold start is more conservative and needs fewer corrections. Pretraining tracks better, but the learned action is more often adjusted by the Lyapunov supervision layer. \textbf{Takeaway:} tracking improvement and gate compatibility are related, but they are not the same metric.
+\end{block}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 16 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{The Learning Story Changes After the BC Window}}
+\scriptsize
+
+\vspace{-0.16cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.62\textwidth}
+\begin{block}{Phase-wise raw-setpoint RMSE}
+\centering
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-1.08,-0.78) rectangle (6.20,4.42);
+  \foreach \y/\lab in {0/0,0.80/0.2,1.60/0.4,2.40/0.6,3.20/0.8}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (5.82,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (5.95,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.90);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.88,1.95) {Mean RMSE};
+  \node[font=\bfseries\scriptsize] at (2.95,-0.62) {Training phase};
+
+  \draw[maccblue,line width=2.4pt] (0.65,3.40) -- (2.05,1.02) -- (3.45,0.75) -- (4.85,0.66);
+  \draw[maccorange,line width=2.4pt] (0.65,1.17) -- (2.05,0.85) -- (3.45,0.70) -- (4.85,0.69);
+  \foreach \x/\y/\txt in {0.65/3.40/0.851,2.05/1.02/0.255,3.45/0.75/0.188,4.85/0.66/0.166}{
+    \filldraw[fill=maccblue,draw=white,line width=0.8pt] (\x,\y) circle (0.075);
+    \node[font=\bfseries\tiny,anchor=south] at (\x,\y+0.10) {\txt};
+  }
+  \foreach \x/\y/\txt in {0.65/1.17/0.292,2.05/0.85/0.213,3.45/0.70/0.174,4.85/0.69/0.173}{
+    \filldraw[fill=maccorange,draw=white,line width=0.8pt] (\x,\y) circle (0.075);
+    \node[font=\bfseries\tiny,anchor=north] at (\x,\y-0.10) {\txt};
+  }
+  \foreach \x/\lab in {0.65/{BC\\2--20},2.05/{handoff\\21--25},3.45/{online\\26--300},4.85/{last\\20}}{
+    \node[font=\bfseries\tiny,align=center] at (\x,-0.34) {\lab};
+  }
+  \draw[maccblue,line width=2.0pt] (5.25,3.55) -- (5.65,3.55);
+  \node[font=\bfseries\scriptsize,anchor=west] at (5.72,3.55) {Cold};
+  \draw[maccorange,line width=2.0pt] (5.25,3.23) -- (5.65,3.23);
+  \node[font=\bfseries\scriptsize,anchor=west] at (5.72,3.23) {Pretrained};
+\end{tikzpicture}}
+\end{block}
+\end{column}
+
+\begin{column}{0.35\textwidth}
+\begin{block}{What the phases show}
+\begin{itemize}\raggedright
+  \setlength\itemsep{0.45ex}
+  \item Cold start needs the BC window to recover from poor early tracking.
+  \item Pretraining starts closer to the final online policy.
+  \item After episode 26, both policies stabilize, with pretrained RL remaining lower on mean RMSE.
+\end{itemize}
+\end{block}
+
+\vspace{0.05cm}
+\begin{block}{Why episode 1 is removed}
+\justifying
+The first episode is an initialization transient. All reported curves and bars begin from episode 2 unless the final-episode tail is explicitly shown.
+\end{block}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+%============================= Slide 17 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Without the Gate, RL Tracks Better But Loses Certification}}
+\scriptsize
+
+\vspace{-0.17cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.50\textwidth}
+\begin{block}{Pretrained RL: with gate vs. without safety gate}
+\centering
+\resizebox{0.92\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-1.06,-0.75) rectangle (4.62,4.25);
+  \foreach \y/\lab in {0/0,0.90/0.05,1.80/0.10,2.70/0.15,3.60/0.20}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (4.22,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (4.36,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.90);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.88,1.95) {Mean RMSE};
+  \foreach \x/\h/\val/\col/\lab in {0.82/3.33/0.185/maccorange/With gate,2.60/3.02/0.168/maccgreen/No gate}{
+    \draw[fill=\col,draw=\col,line width=0.9pt,rounded corners=1pt] (\x,0) rectangle ++(0.90,\h);
+    \node[font=\bfseries\scriptsize] at (\x+0.45,\h+0.22) {\val};
+    \node[font=\bfseries\tiny,align=center] at (\x+0.45,-0.30) {\lab};
+  }
+\end{tikzpicture}}
+\end{block}
+\end{column}
+
+\begin{column}{0.47\textwidth}
+\begin{block}{Safety diagnostic, not a main baseline}
+\centering
+\resizebox{0.92\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-1.04,-0.75) rectangle (4.70,4.25);
+  \foreach \y/\lab in {0/0,0.72/6,1.44/12,2.16/18,2.88/24,3.60/30}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (4.30,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (4.45,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.90);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.86,1.95) {Gate burden (\%)};
+  \draw[fill=maccorange,draw=maccorange,line width=0.9pt,rounded corners=1pt] (0.80,0) rectangle ++(0.92,0.42);
+  \node[font=\bfseries\scriptsize] at (1.26,0.68) {3.53\%};
+  \node[font=\bfseries\tiny,align=center] at (1.26,-0.30) {actual\\gate};
+  \draw[fill=maccgreen,draw=maccgreen,line width=0.9pt,rounded corners=1pt] (2.70,0) rectangle ++(0.92,3.50);
+  \node[font=\bfseries\scriptsize] at (3.16,3.76) {29.17\%};
+  \node[font=\bfseries\tiny,align=center] at (3.16,-0.30) {would-be\\gate};
+\end{tikzpicture}}
+\end{block}
+\end{column}
+\end{columns}
+
+\vspace{-0.02cm}
+\begin{beamercolorbox}[rounded=true,sep=2pt,wd=\linewidth]{block body}
+\fontsize{7.2}{7.8}\selectfont
+\textbf{Naming:} the former ``mpc-only'' bundle is shown only as \textbf{pretrained RL without safety gate}; it is a diagnostic trace, not the certified controller result.
+\end{beamercolorbox}
+
+\end{frame}
+
+%============================= Slide 18 ============================
+\begin{frame}
+\setbeamertemplate{blocks}[rounded][shadow=false]
+\setbeamercolor{block body}{fg=black,bg=blockTint}
+\frametitle{\large \textbf{Final Offsets Show a Channel-Specific Trade-Off}}
+\scriptsize
+
+\vspace{-0.16cm}
+\begin{columns}[T,onlytextwidth]
+
+\begin{column}{0.61\textwidth}
+\begin{block}{Mean absolute offset over the final 100 steps}
+\centering
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[x=1cm,y=1cm]
+  \draw[fill=white,draw=black!25,line width=0.8pt,rounded corners=2pt] (-1.08,-0.78) rectangle (6.10,4.35);
+  \foreach \y/\lab in {0/0,0.80/0.004,1.60/0.008,2.40/0.012,3.20/0.016}{
+    \draw[black!12,line width=0.8pt] (0,\y) -- (5.70,\y);
+    \node[font=\bfseries\scriptsize,anchor=east] at (-0.12,\y) {\lab};
+  }
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (5.85,0);
+  \draw[-{Latex[length=2.2mm]},black!75,line width=1.15pt] (0,0) -- (0,3.90);
+  \node[rotate=90,font=\bfseries\scriptsize] at (-0.90,1.95) {Absolute offset};
+  \node[font=\bfseries\scriptsize] at (2.93,-0.58) {Controller and output channel};
+
+  \draw[fill=black!75,draw=black!75,line width=0.7pt,rounded corners=1pt] (0.55,0) rectangle ++(0.34,0.61);
+  \draw[fill=black!35,draw=black!75,line width=0.7pt,rounded corners=1pt] (0.94,0) rectangle ++(0.34,3.27);
+  \node[font=\bfseries\tiny,align=center] at (0.91,-0.34) {LMPC};
+
+  \draw[fill=maccblue,draw=maccblue,line width=0.7pt,rounded corners=1pt] (2.25,0) rectangle ++(0.34,2.54);
+  \draw[fill=maccblue!45,draw=maccblue,line width=0.7pt,rounded corners=1pt] (2.64,0) rectangle ++(0.34,0.68);
+  \node[font=\bfseries\tiny,align=center] at (2.61,-0.34) {Cold};
+
+  \draw[fill=maccorange,draw=maccorange,line width=0.7pt,rounded corners=1pt] (3.95,0) rectangle ++(0.34,2.56);
+  \draw[fill=maccorange!45,draw=maccorange,line width=0.7pt,rounded corners=1pt] (4.34,0) rectangle ++(0.34,2.58);
+  \node[font=\bfseries\tiny,align=center] at (4.31,-0.34) {Pretrained};
+
+  \draw[fill=black!75,draw=black!75,line width=0.6pt] (5.05,3.38) rectangle ++(0.22,0.14);
+  \node[font=\bfseries\scriptsize,anchor=west] at (5.35,3.50) {\(\eta\)};
+  \draw[fill=black!35,draw=black!75,line width=0.6pt] (5.05,3.02) rectangle ++(0.22,0.14);
+  \node[font=\bfseries\scriptsize,anchor=west] at (5.35,3.14) {\(T\)};
+\end{tikzpicture}}
+\end{block}
+\end{column}
+
+\begin{column}{0.36\textwidth}
+\begin{block}{Tail numbers}
+\renewcommand{\arraystretch}{1.20}
+\begin{tabular}{lcc}
+\textbf{Controller} & \(\boldsymbol{\eta}\) & \(\boldsymbol{T}\) \\
+Direct LMPC & \textbf{0.003} & 0.016 \\
+Cold + gate & 0.013 & \textbf{0.003} \\
+Pretrained + gate & 0.013 & 0.013
+\end{tabular}
+\end{block}
+
+\vspace{0.06cm}
+\begin{block}{Interpretation}
+\justifying
+The strongest episode-wide tracker is pretrained RL with the gate, but final offset is mixed: LMPC is best on \(\eta\), cold-start RL is best on \(T\), and pretrained RL is more balanced.
+\end{block}
+
+\vspace{0.06cm}
+\begin{block}{Next tuning target}
+\justifying
+Improve tail-offset behavior without making the learned action less compatible with the Lyapunov gate.
+\end{block}
+\end{column}
+\end{columns}
+
+\end{frame}
+
+
+\fi
+
+\end{document}

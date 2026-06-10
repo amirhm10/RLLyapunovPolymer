@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSChE 2026 - 15 Minute Speaker Notes</title>
+  <style>
+    :root {
+      --maroon: #7a003c;
+      --maroon-dim: #6c2b48;
+      --ink: #1f1f24;
+      --muted: #5b5962;
+      --paper: #fbfafc;
+      --panel: #f4f1f5;
+      --line: #d9d2da;
+      --blue: #1c4a75;
+      --green: #2c765c;
+      --red: #9c3a34;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Segoe UI", Arial, sans-serif;
+      line-height: 1.48;
+    }
+
+    header {
+      background: var(--maroon);
+      color: white;
+      padding: 28px 36px;
+      border-bottom: 6px solid var(--maroon-dim);
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.18;
+    }
+
+    header p {
+      margin: 0;
+      font-size: 15px;
+      opacity: 0.92;
+    }
+
+    main {
+      width: min(1100px, calc(100% - 36px));
+      margin: 24px auto 56px;
+    }
+
+    .guide,
+    .slide {
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 2px 12px rgba(31, 31, 36, 0.06);
+      margin: 18px 0;
+      overflow: hidden;
+    }
+
+    .guide {
+      padding: 20px 24px;
+    }
+
+    .guide h2,
+    .slide h2 {
+      margin: 0;
+      color: var(--maroon);
+    }
+
+    .guide ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    .slide-head {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: center;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 18px;
+    }
+
+    .num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 46px;
+      height: 34px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--maroon);
+      color: white;
+      font-weight: 700;
+    }
+
+    .slide h2 {
+      font-size: 21px;
+      line-height: 1.2;
+    }
+
+    .time {
+      font-weight: 700;
+      color: var(--blue);
+      white-space: nowrap;
+    }
+
+    .content {
+      padding: 18px 22px 20px;
+    }
+
+    .label {
+      margin: 0 0 6px;
+      color: var(--maroon-dim);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .script {
+      margin: 0 0 14px;
+      font-size: 18px;
+    }
+
+    .cue {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-left: 4px solid var(--green);
+      background: #f3faf7;
+      color: #23473a;
+      border-radius: 6px;
+      font-size: 15px;
+    }
+
+    .warn {
+      border-left-color: var(--red);
+      background: #fff5f4;
+      color: #5c2723;
+    }
+
+    .transition {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-left: 4px solid var(--blue);
+      background: #f3f7fc;
+      color: #243d59;
+      border-radius: 6px;
+      font-size: 15px;
+    }
+
+    .math {
+      font-family: Cambria, "Times New Roman", serif;
+      font-style: italic;
+    }
+
+    footer {
+      width: min(1100px, calc(100% - 36px));
+      margin: 0 auto 32px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media print {
+      body {
+        background: white;
+      }
+
+      header {
+        padding: 18px 24px;
+      }
+
+      main,
+      footer {
+        width: 100%;
+        margin: 0;
+      }
+
+      .guide,
+      .slide {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+
+      .slide {
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>15 Minute Speaker Notes</h1>
+    <p>Safe Reinforcement Learning Control via Offset-Free MPC Pre-Training and a Data-Driven Lyapunov Safety Layer</p>
+  </header>
+
+  <main>
+    <section class="guide">
+      <h2>How to Use These Notes</h2>
+      <ul>
+        <li>Target pace: about 45 seconds per slide on average. Spend more time on slides 7 to 9 and 14 to 15.</li>
+        <li>Main story: MPC is practical but local, RL can adapt but is unsafe alone, so the contribution is RL as a proposal generator with Lyapunov-certified final actuation.</li>
+        <li>Do not overclaim stability proof completion. Say "practical local guarantee" and "working on the stability proof."</li>
+        <li>When results begin, keep repeating the distinction: pretraining improves tracking, while the Lyapunov layer certifies or replaces actions before actuation.</li>
+      </ul>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">1</span>
+        <h2>Title</h2>
+        <span class="time">0:00-0:30</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Good morning. My name is A. H. Hamedi, and today I will present our work on safe reinforcement learning control using offset-free MPC pretraining and a data-driven Lyapunov safety layer. The main idea is simple: we want the learning controller to improve performance, but we do not want to directly trust every learned action on the plant.</p>
+        <p class="transition">Transition: "I will first set up the control problem, then show the safety architecture, and finally discuss the polymer CSTR results."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">2</span>
+        <h2>Presentation Outline</h2>
+        <span class="time">0:30-0:55</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The presentation has six parts. I will start with the motivation from MPC and reinforcement learning. Then I will describe the two background pieces: MPC pretraining and Lyapunov safety. After that, I will explain the proposed framework, apply it to the styrene polymerization CSTR, and close with the main results and future work.</p>
+        <p class="cue">Presenter cue: keep this slide short. Do not read every bullet slowly.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">3</span>
+        <h2>Linear MPC Is Practical, But Its Model Is Local</h2>
+        <span class="time">0:55-1:45</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Linear MPC is a very strong baseline for process control. It handles multivariable interactions, constraints, and receding-horizon optimization in a form that is familiar for implementation. Offset-free augmentation also helps reject steady disturbances. The limitation is that the linear model is identified locally. Near the nominal point it predicts well, but as the process moves away from that region, mismatch can grow and tracking can degrade. This is the opening for learning-based adaptation.</p>
+        <p class="cue">Point to figure: nominal region, nonlinear plant curve, linear model line, and mismatch away from nominal operation.</p>
+        <p class="transition">Transition: "RL can help with this mismatch, but direct online exploration creates a different problem."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">4</span>
+        <h2>RL Can Adapt, But Online Exploration Is Risky</h2>
+        <span class="time">1:45-2:25</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Reinforcement learning is attractive because it can learn from process data and adapt to nonlinear behavior or model mismatch. But in process control, exploration is not free. A bad action is not just a bad sample; it can violate input or output constraints, create unsafe operating conditions, or damage product quality. So the question is not only how to learn a better policy. The key question is how to keep final actuation safe while the policy is learning.</p>
+        <p class="cue">Emphasize: "bad action is not just a bad sample." This is a good line for the audience.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">5</span>
+        <h2>Imitation-Learning Pretraining Warm-Starts the RL Actor</h2>
+        <span class="time">2:25-3:15</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The first step is to avoid starting the RL actor from a random policy. We use offset-free MPC as an expert controller offline. From those trajectories, we collect transition tuples containing the state, the MPC action, the reward, and the next state. Then we train the actor with a Huber behavior-cloning loss so that the policy initially imitates the MPC action. This does not replace online learning. It simply gives the actor a practical starting point before interacting with the nonlinear plant.</p>
+        <p class="cue">Say "state includes the estimate, setpoint, and previous input." Keep the math quick unless asked.</p>
+        <p class="transition">Transition: "However, a good initial policy is still not a safety certificate."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">6</span>
+        <h2>Pretraining Gives a Good Start, But Online Safety Is Still Uncertified</h2>
+        <span class="time">3:15-3:55</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Pretraining reduces random early exploration and starts the actor close to a controller we already understand. But after online updates, the actor can drift. It can encounter states that were not well represented in the offline data. At that point, tracking may be good, but the action is still not certified for Lyapunov decrease or constraint-compatible actuation. This is why pretraining alone is not enough for the safety story.</p>
+        <p class="warn">Avoid saying "pretraining guarantees safety." It does not. It improves initialization and tracking behavior.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">7</span>
+        <h2>RL Proposes the Move; the Lyapunov Layer Has Final Authority</h2>
+        <span class="time">3:55-4:45</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">This slide is the core architecture. The RL actor proposes a candidate control move. But that candidate is not sent directly to the plant. First, the Lyapunov gate checks whether it satisfies the contraction condition relative to a local target. If the action passes, it is applied. If it fails, the fallback Lyapunov MPC computes a replacement action. So the plant receives either an accepted learned action or a certified fallback move. In other words, RL is a proposal generator, and the safety layer has final authority.</p>
+        <p class="cue">Presenter cue: slow down here. This is the main concept of the talk.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">8</span>
+        <h2>Safety Check: One-Step Lyapunov Contraction</h2>
+        <span class="time">4:45-5:35</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The safety check is a one-step Lyapunov contraction test. We compute the error between the current state estimate and the local target, and define a quadratic Lyapunov function <span class="math">V</span>. Then we predict the next state under the candidate action. The gate accepts the action only if the predicted next Lyapunov value is less than a contracted version of the current value, with a small tolerance. Visually, accepted actions move the state toward a lower Lyapunov contour. Failed actions are replaced.</p>
+        <p class="cue">Use the phrase: "This is a runtime certificate, not a reward term."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">9</span>
+        <h2>Rejected RL Actions Are Replaced by a Lyapunov MPC Move</h2>
+        <span class="time">5:35-6:25</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">When the candidate action fails the gate, the fallback controller solves a compact tracking problem. It balances tracking and input movement, respects the direct input bounds <span class="math">u_min &le; u &le; u_max</span>, and enforces the same Lyapunov contraction inequality. The target selector provides a feasible local equilibrium, and the fallback LMPC computes an action that pulls the predicted state back toward that target. This is how we keep the final action supervised even when the learned policy proposes something risky.</p>
+        <p class="cue">Important notation: say "direct input bounds," not "delta u bounds."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">10</span>
+        <h2>Reward Converts Tracking and Safety Feedback Into Learning</h2>
+        <span class="time">6:25-7:05</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The reward is designed to push the actor in two directions at the same time. First, it should improve tracking and avoid aggressive input movement. Second, it should learn actions that require fewer safety corrections. That means the policy is not only optimized for the tracking objective; it also receives feedback from the supervision layer. Over training, the actor should become more compatible with the Lyapunov gate.</p>
+        <p class="transition">Transition: "To learn from the important rare events, we also need the replay buffer to sample intelligently."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">11</span>
+        <h2>Replay Sampling Balances Rare Failures, Recent Data, and Coverage</h2>
+        <span class="time">7:05-7:45</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The online replay strategy mixes three views of the data. Prioritized replay revisits rare or high-error transitions. Recent replay keeps the update connected to the current operating regime. Uniform replay preserves broad coverage of the buffer. This is useful because safety-relevant events may be rare, but they are exactly the events the actor should learn from.</p>
+        <p class="cue">If time is tight, give only the three replay views and move on.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">12</span>
+        <h2>Online Procedure: Observe, Propose, Certify, Learn</h2>
+        <span class="time">7:45-8:30</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Putting the pieces together, each sampling time follows the same loop. We estimate the state and disturbance, propose an RL action, compute the local target, check the Lyapunov condition, execute either the accepted RL action or fallback LMPC action, and then store the transition for TD3 updates. During the early behavior-cloning window, the actor is softly kept close to LMPC while the replay buffer fills. The main point is that certification happens before actuation, and learning happens after the executed transition is observed.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">13</span>
+        <h2>Case Study: Styrene Polymerization CSTR</h2>
+        <span class="time">8:30-9:15</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The case study is a styrene polymerization CSTR. The manipulated inputs are coolant flow and monomer flow. The controlled outputs are intrinsic viscosity and reactor temperature. This is a useful benchmark because the reactor has nonlinear coupled dynamics, product quality is sensitive, and unsafe exploration is undesirable. We compare the fixed LMPC baseline, cold-start gated RL, pre-trained gated RL, and also a pre-trained no-gate diagnostic case for the safety analysis.</p>
+        <p class="cue">Say the outputs clearly: intrinsic viscosity and reactor temperature.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">14</span>
+        <h2>Reward and Intervention Trends for the Two RL Runs</h2>
+        <span class="time">9:15-10:05</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Here we compare cold-start and pre-trained RL. I am not comparing their reward directly with LMPC, because the reward is defined for the RL learning process. The pre-trained actor starts with a better reward trend and maintains lower full-run RMSE. In the full run, pretraining improves RMSE from about 0.284 to 0.185. The intervention picture is more nuanced: cold start has fewer interventions over the full run, but by the last episode the pre-trained run has both lower RMSE and fewer interventions. So the story is not simply "pretraining reduces every correction"; the story is that pretraining gives better tracking and eventually better compatibility near the final operating regime.</p>
+        <p class="cue">Point to the table: full-run RMSE improvement, then last-episode intervention improvement.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">15</span>
+        <h2>The Lyapunov Gate Enforces a Runtime Certificate</h2>
+        <span class="time">10:05-11:05</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">This slide is the main safety result. The top plot compares the contraction-test failure rate for the gated runs and the no-gate diagnostic run. With the gate active, the applied actions have failure rates close to zero, around 0.10 percent. But without the gate, the pre-trained policy would fail the Lyapunov test about 29 percent of the time. The bottom plot zooms in on the gated runs only, so we can see the small residual failure rates. The interpretation is that good tracking alone is not a certificate. The Lyapunov gate is what prevents unsafe candidate actions from becoming final plant actions.</p>
+        <p class="warn">Do not say "global stability is proven." Say "runtime contraction certificate" and "practical local guarantee."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">16</span>
+        <h2>Pre-Trained Evaluation: Tracking With Lyapunov Gate Activation</h2>
+        <span class="time">11:05-11:45</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">This is the last-episode pre-trained evaluation in time. The top two panels show the output tracking for intrinsic viscosity and temperature. The bottom panel shows when the Lyapunov gate activates. The important detail is that the gate activates only near the setpoint transition. That means the safety layer is not constantly overriding the policy. It intervenes selectively when the transition creates a candidate action that needs certification or replacement.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">17</span>
+        <h2>Last-Episode Evaluation Compares All Three Controllers</h2>
+        <span class="time">11:45-12:25</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">Now we compare the last episode across LMPC, cold-start gated RL, and pre-trained gated RL. All three controllers respond to the setpoint change, but the RL policies, especially the pre-trained one, stay closer to the desired outputs after the transition. This supports the tracking side of the story: pretraining gives the strongest final-episode tracking, while the gate ensures that the final applied actions are still supervised.</p>
+        <p class="cue">Do not oversell. Say "single-run final-episode comparison" if asked.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">18</span>
+        <h2>Error Distributions and Wall-Clock Time Across Training Windows</h2>
+        <span class="time">12:25-13:10</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">The box plots summarize MAE and RMSE over multiple training windows. The main pattern is that pre-trained RL gives tighter error distributions across most windows, while cold start catches up later. On the right, the runtime comparison shows that both RL runs are faster per step than LMPC in this implementation. So the proposed approach improves tracking behavior while keeping the online policy evaluation computationally light; the safety overhead is handled through the supervisor and fallback mechanism.</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">19</span>
+        <h2>Pre-Training Improves Setpoint Tracking Across Episodes</h2>
+        <span class="time">13:10-13:50</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">This slide shows representative early, middle, and later episodes. In episode 5, the cold-start agent is still noisy and has larger deviations. By episode 80, both policies have improved, but pretraining remains smoother. By episode 160, the two are closer, yet the pre-trained output still tracks the setpoint more tightly, especially after setpoint changes. This is the intuitive visual evidence behind the distribution results.</p>
+        <p class="transition">Transition: "I will close by separating what we have shown from what remains future work."</p>
+      </div>
+    </section>
+
+    <section class="slide">
+      <div class="slide-head">
+        <span class="num">20</span>
+        <h2>Conclusions and Future Work</h2>
+        <span class="time">13:50-15:00</span>
+      </div>
+      <div class="content">
+        <p class="label">Read aloud</p>
+        <p class="script">To conclude, the main contribution is a supervised RL control architecture where the learned actor proposes actions, but a Lyapunov gate certifies or replaces them before actuation. The certificate is practical and local: it uses step-test data and a linear state-space model. In the polymer CSTR case study, pretraining improves tracking, and the LMPC fallback preserves safe actuation when the learned action is not certified. For future work, we want to pretrain the agents using LMPC demonstrations instead of offset-free MPC, scale the method to a C2-splitter distillation column with output constraints and flooding or fault prevention, and complete the stability proof. Thank you, and I would be happy to take questions.</p>
+        <p class="cue">Final emphasis: "RL proposes, Lyapunov certifies, LMPC backs up."</p>
+      </div>
+    </section>
+
+    <section class="guide">
+      <h2>Backup Lines for Q&amp;A</h2>
+      <ul>
+        <li><strong>If asked about stability:</strong> "At this stage the implementation provides a runtime contraction certificate under the local identified model. Completing the formal stability proof is part of the future work."</li>
+        <li><strong>If asked why no-gate matters:</strong> "It is a diagnostic case. It shows what the pre-trained policy would have proposed without final-action supervision."</li>
+        <li><strong>If asked why reward is not compared to LMPC:</strong> "The RL reward includes learning-specific terms, so I use reward only to compare the RL runs. For LMPC, I compare tracking metrics and runtime."</li>
+        <li><strong>If asked about episode 1:</strong> "The analysis focuses on post-initial behavior to avoid the initialization transient dominating the distributions."</li>
+        <li><strong>If asked about industrial relevance:</strong> "The architecture is designed for settings where a learned policy can improve performance, but final plant actions must still be supervised by a model-based safety layer."</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    Speaker notes generated for a 15 minute CSChE 2026 presentation. Total planned speaking time: 15:00.
+  </footer>
+</body>
+</html>

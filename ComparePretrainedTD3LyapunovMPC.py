@@ -10,6 +10,9 @@ from utils.lmpc_td3_workflow import (
     run_pretrained_lmpc_comparison,
 )
 
+DEFAULT_ACTOR_LAYER_SIZES = [256, 256, 256]
+DEFAULT_CRITIC_LAYER_SIZES = [256, 256, 256]
+
 
 def parse_layer_sizes(value: str) -> tuple[int, ...]:
     values = [part.strip() for part in str(value).split(",") if part.strip()]

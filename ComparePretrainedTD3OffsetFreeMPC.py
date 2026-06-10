@@ -11,8 +11,8 @@ from utils.of_mpc_td3_workflow import (
 )
 
 
-DEFAULT_ACTOR_LAYER_SIZES = [512, 512, 512, 512, 512]
-DEFAULT_CRITIC_LAYER_SIZES = [512, 512, 512, 512, 512]
+DEFAULT_ACTOR_LAYER_SIZES = [256, 256, 256]
+DEFAULT_CRITIC_LAYER_SIZES = [256, 256, 256]
 
 
 def parse_layer_sizes(value: str) -> tuple[int, ...]:
