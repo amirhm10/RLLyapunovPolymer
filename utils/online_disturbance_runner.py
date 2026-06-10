@@ -102,7 +102,7 @@ MAX_ACTION = 1.0
 POLICY_DELAY = 2
 BATCH_SIZE = 256
 STD_START = 0.0
-STD_END = 0.01
+STD_END = 0.005
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 
@@ -323,7 +323,7 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         "bc_actor_updates_per_step": 4,
         "bc_exploration_std": exploration_std,
         "full_rl_exploration_std_start": exploration_std,
-        "full_rl_exploration_std_end": 0.01,
+        "full_rl_exploration_std_end": 0.005,
         "full_rl_exploration_decay_mode": "linear",
         "bc_teacher_policy": teacher_source,
         "bc_behavior_source": "policy_with_lmpc_teacher_demo",

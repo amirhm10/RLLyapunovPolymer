@@ -122,6 +122,24 @@ $$
 \dim(s)=13,\qquad \dim(a)=2.
 $$
 
+## Disturbance Profile
+
+The disturbance-only runners call `generate_setpoints_training_rl_gradually(...)` with `force_final_test=False` and the default generated disturbance profile. For 300 episodes and two 400-step setpoint blocks per episode, this gives
+
+$$
+n_{\mathrm{steps}} = 300 \times 2 \times 400 = 240000 .
+$$
+
+The disturbance schedule is:
+
+- $Q_i$: linearly ramped from $108.0$ to $102.6$, i.e. $0.95$ of nominal.
+- $Q_s$: linearly ramped from $459.0$ to $481.95$, i.e. $1.05$ of nominal.
+- $hA$: linearly ramped from $1.05\times 10^6$ to $9.66\times 10^5$ over the first half of the run, then held at $0.92$ of nominal.
+
+![Disturbance profile](figures/2026-06-10_online_disturbance_runner/disturbance_profile.png)
+
+The plotting script is `analysis/plot_online_disturbance_profile.py`.
+
 ## Direct LMPC And OF-MPC Objectives
 
 The OF-MPC baseline uses the offset-free MPC solver with
@@ -241,6 +259,16 @@ Current defaults:
 | default episodes | 300 |
 | forced final test episode | false |
 
+Core TD3 and Lyapunov constants:
+
+| Quantity | Value | Meaning |
+|---|---:|---|
+| TD3 discount factor $\gamma_{\mathrm{TD3}}$ | 0.99 | bootstrapped critic target discount |
+| TD3 policy delay | 2 | actor and target updates every second critic update |
+| Direct LMPC contraction $\rho$ | 0.99 | first-step Lyapunov contraction factor |
+| Direct LMPC $\epsilon$ | $5\times 10^{-3}$ | practical contraction tolerance |
+| Lyapunov numerical tolerance | $10^{-10}$ | candidate/gate feasibility tolerance |
+
 ### Warmup
 
 Current warmup length is zero, so no pure warmup phase actually runs by default.
@@ -263,6 +291,15 @@ bc_behavior_source = "policy_with_lmpc_teacher_demo"
 ```
 
 Despite the name of the phase, this means the behavior action is still the policy action with Gaussian exploration. The teacher action is computed and stored as a supervised actor demo. The replay buffer stores the executed action, while the actor demo buffer stores the teacher action.
+
+So the critic and actor learn from different objects during BC:
+
+- The critic sees replay transitions with the actually executed action, post-gate reward, next state, and done flag.
+- The critic update is TD-style but critic-only: `train_step(actor_update=False)`.
+- The actor does not run the TD3 policy-gradient update during BC.
+- The actor is trained by supervised BC updates toward the teacher demo action through `train_actor_bc_step()`.
+- If the safety gate is active, the replay action is the gate-executed action; the actor demo target is still the teacher action.
+- If no gate is active, the replay action is the policy/no-gate action; the actor demo target is still the teacher action.
 
 Per step during BC:
 
@@ -318,8 +355,8 @@ Current Gaussian exploration settings:
 
 | Runner family | BC std | Full RL std start | Full RL std end |
 |---|---:|---:|---:|
-| pretrained | 0.02 | 0.02 | 0.01 |
-| cold-start | 0.20 | 0.20 | 0.01 |
+| pretrained | 0.02 | 0.02 | 0.005 |
+| cold-start | 0.20 | 0.20 | 0.005 |
 
 TD3 target-policy smoothing:
 
@@ -369,7 +406,7 @@ To reduce cold-start aggressiveness:
 ```python
 "bc_exploration_std": 0.05
 "full_rl_exploration_std_start": 0.05
-"full_rl_exploration_std_end": 0.01
+"full_rl_exploration_std_end": 0.005
 ```
 
 To add a true warmup phase:
@@ -396,4 +433,3 @@ This preserves direct policy execution while still providing actor demo supervis
 4. The `fallback_rate` comparison field counts Direct LMPC fallback modes, not every intervention-like hold-prev event. For safety-gate activity, prefer `actual_intervention_rate`, `n_target_fail_hold_prev`, `n_fallback_mpc_verified`, and `n_fallback_mpc_unverified`.
 5. The affine input scaler can produce scaled values outside $[0,1]$ for the physical input limits. This is consistent in the active code path but should be remembered when interpreting action magnitudes.
 6. Smoke runs with very short setpoint blocks can trigger governed-reference target failures. Full 400-step blocks are the intended comparison setting.
-
