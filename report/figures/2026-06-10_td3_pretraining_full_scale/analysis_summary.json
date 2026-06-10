@@ -1,0 +1,224 @@
+{
+  "artifact_paths": {
+    "of_pretraining": "results/PretrainOFMPC/20260610_005048",
+    "lmpc_pretraining": "results/PretrainLMPC/20260610_005100",
+    "of_comparison": "results/PretrainOFMPCComparison/20260610_154032",
+    "lmpc_comparison": "results/PretrainLMPCComparison/20260610_173925"
+  },
+  "training": {
+    "of_mpc": {
+      "buffer_size": 2100000,
+      "mpc_samples": 2000000,
+      "steady_samples": 100000,
+      "elapsed_hours": 14.809259617972222,
+      "actor_first": 0.058033166792101805,
+      "actor_last": 3.876603235091482e-07,
+      "actor_last_over_first": 6.6799787938146424e-06,
+      "critic_first": 937.8993442085193,
+      "critic_last": 146.81059804571242,
+      "critic_last_over_first": 0.15653129405864327
+    },
+    "lmpc": {
+      "buffer_size": 2100000,
+      "lmpc_samples": 2000000,
+      "steady_samples": 100000,
+      "elapsed_hours": 16.792879126611112,
+      "actor_first": 0.058671048115222224,
+      "actor_last": 7.86772965100993e-05,
+      "actor_last_over_first": 0.0013409901312072597,
+      "critic_first": 940.1679625046503,
+      "critic_last": 127.75615854096912,
+      "critic_last_over_first": 0.13588652627624206,
+      "acceptance_rate": 0.9917533348886545,
+      "solve_success_rate": 0.9955909480311808,
+      "attempted_total": 2117462,
+      "accepted_total": 2100000,
+      "broad_failure_reasons": {
+        "tracking:optimal:bound_violation": 3,
+        "tracking:optimal:dyn_residual": 4911,
+        "tracking:optimal:first_step_contraction": 15,
+        "tracking:optimal_inaccurate:bound_violation": 1,
+        "tracking:optimal_inaccurate:dyn_residual": 21,
+        "tracking:optimal_inaccurate:first_step_contraction": 4385
+      }
+    }
+  },
+  "metrics": [
+    {
+      "mode": "disturb",
+      "controller": "OF-TD3",
+      "reward_mean": -3.7841278436623274,
+      "mean_rmse": 0.3594492770918236,
+      "eta_rmse": 0.18011019227155955,
+      "T_rmse": 0.5387883619120877,
+      "eta_iae": 113.47605212537674,
+      "T_iae": 470.40025991846767,
+      "mean_abs_du": 0.6679236620496853,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "disturb",
+      "controller": "OF-MPC",
+      "reward_mean": -3.773174151477416,
+      "mean_rmse": 0.35693801978575973,
+      "eta_rmse": 0.1800516509069018,
+      "T_rmse": 0.5338243886646177,
+      "eta_iae": 112.70026518436758,
+      "T_iae": 451.9529561445975,
+      "mean_abs_du": 0.6775973171439029,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "disturb",
+      "controller": "LMPC-TD3",
+      "reward_mean": -6.176795954840879,
+      "mean_rmse": 0.513404448417481,
+      "eta_rmse": 0.22370931117853113,
+      "T_rmse": 0.8030995856564308,
+      "eta_iae": 240.84494021321584,
+      "T_iae": 948.5802964250076,
+      "mean_abs_du": 1.8331784452671642,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "disturb",
+      "controller": "Direct LMPC",
+      "reward_mean": -3.789466625721908,
+      "mean_rmse": 0.3564539752987755,
+      "eta_rmse": 0.18055850703295376,
+      "T_rmse": 0.5323494435645972,
+      "eta_iae": 114.98339441220298,
+      "T_iae": 450.3777259716527,
+      "mean_abs_du": 0.6933206356368085,
+      "solver_success_rate": 1.0,
+      "contraction_satisfied_rate": 1.0,
+      "diagnostic_unsafe_count": 0.0
+    },
+    {
+      "mode": "nominal",
+      "controller": "OF-TD3",
+      "reward_mean": -3.8511283413601167,
+      "mean_rmse": 0.35624905149106817,
+      "eta_rmse": 0.18233690173261044,
+      "T_rmse": 0.5301612012495259,
+      "eta_iae": 109.92767584228488,
+      "T_iae": 426.2359790872266,
+      "mean_abs_du": 0.6535482036538091,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "nominal",
+      "controller": "OF-MPC",
+      "reward_mean": -3.7648226597451275,
+      "mean_rmse": 0.35543215153350416,
+      "eta_rmse": 0.17996280109707058,
+      "T_rmse": 0.5309015019699377,
+      "eta_iae": 100.99803995749792,
+      "T_iae": 399.1360938808047,
+      "mean_abs_du": 0.6460897659523879,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "nominal",
+      "controller": "LMPC-TD3",
+      "reward_mean": -6.093239600852119,
+      "mean_rmse": 0.45139697065180695,
+      "eta_rmse": 0.22883463380039565,
+      "T_rmse": 0.6739593075032183,
+      "eta_iae": 222.92870017589792,
+      "T_iae": 596.9802073766612,
+      "mean_abs_du": 1.6400626326637404,
+      "solver_success_rate": null,
+      "contraction_satisfied_rate": null,
+      "diagnostic_unsafe_count": null
+    },
+    {
+      "mode": "nominal",
+      "controller": "Direct LMPC",
+      "reward_mean": -3.765128579613028,
+      "mean_rmse": 0.35533840072287715,
+      "eta_rmse": 0.17998090694008176,
+      "T_rmse": 0.5306958945056726,
+      "eta_iae": 100.94817022282298,
+      "T_iae": 398.58053038009973,
+      "mean_abs_du": 0.6461691247539624,
+      "solver_success_rate": 1.0,
+      "contraction_satisfied_rate": 1.0,
+      "diagnostic_unsafe_count": 0.0
+    }
+  ],
+  "matched_gaps": [
+    {
+      "mode": "nominal",
+      "comparison": "OF-TD3 vs OF-MPC",
+      "metric": "mean_rmse",
+      "percent_gap": 0.2298328820393747
+    },
+    {
+      "mode": "nominal",
+      "comparison": "OF-TD3 vs OF-MPC",
+      "metric": "mean_abs_du",
+      "percent_gap": 1.1543965087307722
+    },
+    {
+      "mode": "nominal",
+      "comparison": "LMPC-TD3 vs Direct LMPC",
+      "metric": "mean_rmse",
+      "percent_gap": 27.032983131998837
+    },
+    {
+      "mode": "nominal",
+      "comparison": "LMPC-TD3 vs Direct LMPC",
+      "metric": "mean_abs_du",
+      "percent_gap": 153.81321543151978
+    },
+    {
+      "mode": "disturb",
+      "comparison": "OF-TD3 vs OF-MPC",
+      "metric": "mean_rmse",
+      "percent_gap": 0.7035555661935887
+    },
+    {
+      "mode": "disturb",
+      "comparison": "OF-TD3 vs OF-MPC",
+      "metric": "mean_abs_du",
+      "percent_gap": -1.4276407018540724
+    },
+    {
+      "mode": "disturb",
+      "comparison": "LMPC-TD3 vs Direct LMPC",
+      "metric": "mean_rmse",
+      "percent_gap": 44.03106263218176
+    },
+    {
+      "mode": "disturb",
+      "comparison": "LMPC-TD3 vs Direct LMPC",
+      "metric": "mean_abs_du",
+      "percent_gap": 164.4055796180662
+    }
+  ],
+  "figures": [
+    "report/figures/2026-06-10_td3_pretraining_full_scale/loss_curves_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/rollout_metric_bars_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/matched_baseline_gap_bars_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/lmpc_label_feasibility_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/rollout_outputs_nominal_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/rollout_inputs_nominal_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/rollout_outputs_disturb_full_scale.png",
+    "report/figures/2026-06-10_td3_pretraining_full_scale/rollout_inputs_disturb_full_scale.png"
+  ],
+  "tables": {
+    "compact_metrics_csv": "report/figures/2026-06-10_td3_pretraining_full_scale/compact_metrics.csv",
+    "matched_gaps_csv": "report/figures/2026-06-10_td3_pretraining_full_scale/matched_gaps.csv"
+  }
+}
