@@ -87,7 +87,7 @@ The Direct LMPC expert uses:
 - hard Lyapunov tracking mode
 - first-step contraction enabled
 - `rho_lyap = 0.99`
-- `lyap_eps = 1e-9`
+- `lyap_eps = 5e-3`
 - `use_target_output_for_tracking = False`
 - `use_target_on_solver_fail = False`
 
@@ -259,33 +259,34 @@ Static validation passed for:
 python -m py_compile PretrainTD3LyapunovMPC.py ComparePretrainedTD3LyapunovMPC.py utils/lmpc_td3_workflow.py TD3Agent/agent.py
 ```
 
-Smoke pretraining was run with 2 broad LMPC labels, 2 near-steady labels, and one actor/critic epoch. The generated bundle was:
+After aligning the Lyapunov contraction tolerance with `DirectLyapunovMPC.py`, smoke pretraining was run with 1 broad LMPC label, 1 near-steady label, and one actor/critic epoch. The generated bundle was:
 
 ```text
-results/PretrainLMPC/20260609_192848/
+results/PretrainLMPCEpsSmoke/20260609_194353/
 ```
 
 Observed corrected smoke diagnostics:
 
-- accepted labels: `4`
-- attempted candidates: `4`
+- `config.json` recorded `rho_lyap = 0.99` and `lyap_eps = 0.005`
+- accepted labels: `2`
+- attempted candidates: `2`
 - total acceptance rate: `1.0`
 - broad acceptance rate: `1.0`
 - steady acceptance rate: `1.0`
 - actor BC loss entries: `1`
 - critic TD loss entries: `1`
-- actor BC loss: `0.0594`
-- critic TD loss: `182.21`
+- actor BC loss: `0.0620`
+- critic TD loss: `215.22`
 
 This confirms artifact writing and non-empty loss arrays. It is too small to say anything meaningful about final closed-loop performance.
 
 A short nominal comparison was run for this smoke checkpoint:
 
 ```text
-results/PretrainLMPCComparison/20260609_192911/
+results/PretrainLMPCEpsComparisonSmoke/20260609_194410/
 ```
 
-The metrics file contains TD3, Direct LMPC, and OF-MPC records. The Direct LMPC baseline had target success rate `1.0` and contraction satisfaction rate `1.0` on this short nominal run. The OF-MPC diagnostic baseline had target success rate `1.0`, contraction satisfaction rate `0.85`, and three diagnostic unsafe steps. The baseline cache filenames now include the MPC objective-weight token, for example `_q5_1_r1_1`, so older `[12,6]` smoke baselines are not silently reused.
+The metrics file contains TD3, Direct LMPC, and OF-MPC records. The Direct LMPC baseline had target success rate `1.0` and contraction satisfaction rate `1.0` on this short nominal run. The OF-MPC diagnostic baseline had target success rate `1.0`, contraction satisfaction rate `0.95`, and one diagnostic unsafe step. The baseline cache filenames now include the MPC objective-weight token and Lyapunov contraction token, for example `_q5_1_r1_1_rho0p99_eps0p005`, so older `[12,6]` or stricter-epsilon smoke baselines are not silently reused.
 
 Failure handling was also tested by requesting 3 broad labels with only 3 candidate attempts. The run failed clearly after accepting 1 of 3 labels and wrote diagnostics:
 
@@ -304,7 +305,7 @@ results/PretrainOFMPCSmoke/20260609_191259/
 - Broad random candidates can be rejected by hard LMPC. Acceptance rate must be monitored before committing to a large production run.
 - The current V1 label generator is sequential. This avoids pickling CVXPY solver objects but is slower than OF-MPC replay generation.
 - Offline LMPC pretraining uses the one-step MPC quadratic reward. Online RL training uses the shaped relative-QR reward and should remain separate from the MPC/LMPC objective weights.
-- The plan uses `lyap_eps = 1e-9`, which is stricter than the currently converted Direct Lyapunov runners that use `lyap_eps = 5e-3`.
+- The LMPC pretraining and comparison workflows now use the same proof-track contraction setting as `DirectLyapunovMPC.py`: `rho_lyap = 0.99`, `lyap_eps = 5e-3`.
 - The smoke checkpoint is intentionally tiny and should not be interpreted as evidence of policy quality.
 
 ## Next Experiment

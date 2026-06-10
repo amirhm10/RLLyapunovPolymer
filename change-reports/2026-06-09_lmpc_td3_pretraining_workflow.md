@@ -86,5 +86,5 @@ results/PretrainOFMPCSmoke/20260609_191259/
 ## Notes
 
 - The LMPC label generator is currently sequential because CVXPY solver objects are not passed through joblib workers.
-- The implementation follows the requested strict `lyap_eps = 1e-9`; this is stricter than the converted Direct Lyapunov runners that currently use `lyap_eps = 5e-3`.
+- The implementation was later aligned with the active Direct Lyapunov runners to use `rho_lyap = 0.99` and `lyap_eps = 5e-3`; see the paired 2026-06-09 Lyapunov-config alignment change report.
 - Existing local user edits in `PretrainTD3OffsetFreeMPC.py` and `ComparePretrainedTD3OffsetFreeMPC.py` were not reverted.

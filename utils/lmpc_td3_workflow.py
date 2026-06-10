@@ -72,7 +72,7 @@ SU_MPC = np.array([1.0, 1.0], dtype=float)
 RDU_MPC = np.array([1.0, 1.0], dtype=float)
 
 RHO_LYAP = 0.99
-LYAP_EPS = 1.0e-9
+LYAP_EPS = 5.0e-3
 SLACK_PENALTY = 1.0e6
 TARGET_MODE = "governed_reference"
 LYAPUNOV_MODE = "hard"
@@ -892,20 +892,26 @@ def _baseline_cache_path(
 ) -> Path:
     timing = "after" if bool(disturbance_after_step) else "before"
     weights = _weights_cache_token(QY_MPC, RDU_MPC)
+    lyap = _lyapunov_cache_token(RHO_LYAP, LYAP_EPS)
     return cache_dir / (
         f"{controller}_{mode}_n{int(n_tests)}_len{int(set_points_len)}_"
-        f"disturb_{timing}_{weights}.pickle"
+        f"disturb_{timing}_{weights}_{lyap}.pickle"
     )
 
 
-def _weights_cache_token(q_diag: np.ndarray, r_diag: np.ndarray) -> str:
-    def format_value(value: float) -> str:
-        text = f"{float(value):.6g}"
-        return text.replace("-", "m").replace(".", "p")
+def _format_cache_value(value: float) -> str:
+    text = f"{float(value):.6g}"
+    return text.replace("-", "m").replace(".", "p")
 
-    q_token = "_".join(format_value(value) for value in np.asarray(q_diag, dtype=float).reshape(-1))
-    r_token = "_".join(format_value(value) for value in np.asarray(r_diag, dtype=float).reshape(-1))
+
+def _weights_cache_token(q_diag: np.ndarray, r_diag: np.ndarray) -> str:
+    q_token = "_".join(_format_cache_value(value) for value in np.asarray(q_diag, dtype=float).reshape(-1))
+    r_token = "_".join(_format_cache_value(value) for value in np.asarray(r_diag, dtype=float).reshape(-1))
     return f"q{q_token}_r{r_token}"
+
+
+def _lyapunov_cache_token(rho_lyap: float, lyap_eps: float) -> str:
+    return f"rho{_format_cache_value(rho_lyap)}_eps{_format_cache_value(lyap_eps)}"
 
 
 def _save_rollout_payload(path: Path, payload: dict[str, Any]) -> None:
