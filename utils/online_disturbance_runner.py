@@ -336,7 +336,15 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
     }
 
 
-def _build_reward(data_min: np.ndarray, data_max: np.ndarray, n_inputs: int) -> tuple[dict[str, Any], Any]:
+def _build_reward(
+    data_min: np.ndarray,
+    data_max: np.ndarray,
+    n_inputs: int,
+    *,
+    fallback_penalty_enabled: bool,
+) -> tuple[dict[str, Any], Any]:
+    gamma_fallback = 3.0 if fallback_penalty_enabled else 0.0
+    fallback_event_penalty = 10.0 if fallback_penalty_enabled else 0.0
     return make_reward_fn_relative_QR(
         data_min=data_min,
         data_max=data_max,
@@ -352,8 +360,8 @@ def _build_reward(data_min: np.ndarray, data_max: np.ndarray, n_inputs: int) -> 
         gate="geom",
         lam_in=3.0,
         bonus_kind="quadratic",
-        gamma_fallback=3.0,
-        fallback_event_penalty=10.0,
+        gamma_fallback=gamma_fallback,
+        fallback_event_penalty=fallback_event_penalty,
         R_fallback_diag=RDU_REWARD_DIAG,
         maintenance_band_scale=0.5,
         maintenance_move_weight=0.0,
@@ -418,7 +426,12 @@ def build_disturbance_context() -> DisturbanceContext:
         NP=PREDICT_H,
         NC=CONT_H,
     )
-    reward_config, reward_fn = _build_reward(data_min, data_max, n_inputs)
+    reward_config, reward_fn = _build_reward(
+        data_min,
+        data_max,
+        n_inputs,
+        fallback_penalty_enabled=False,
+    )
     target_config = governed_reference_case_spec(
         QY_MPC_DIAG,
         case_name="governed_reference",
@@ -589,6 +602,12 @@ def run_online_td3_disturbance_preset(
 
     set_seed(int(seed))
     context = build_disturbance_context()
+    reward_config, reward_fn = _build_reward(
+        context.system_data["data_min"],
+        context.system_data["data_max"],
+        context.dimensions.inputs_number,
+        fallback_penalty_enabled=bool(preset.safety_gate),
+    )
     agent, resolved_agent_path, checkpoint_arch = _agent_for_preset(
         preset,
         context=context,
@@ -634,6 +653,13 @@ def run_online_td3_disturbance_preset(
         "Rdu_mpc_diag": RDU_MPC_DIAG.copy(),
         "Qy_reward_diag": QY_REWARD_DIAG.copy(),
         "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
+        "reward_config": dict(reward_config),
+        "reward_fallback_penalty_enabled": bool(preset.safety_gate),
+        "reward_fallback_penalty_activation_rule": (
+            "fallback_active when Direct LMPC safety gate changes the TD3 candidate action"
+            if preset.safety_gate
+            else "disabled; no-safety-gate runs log diagnostics only and never apply fallback penalties"
+        ),
         "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
         "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
         "rho_lyap": RHO_LYAP,
@@ -665,7 +691,7 @@ def run_online_td3_disturbance_preset(
         qi_change=QI_CHANGE,
         qs_change=QS_CHANGE,
         ha_change=HA_CHANGE,
-        reward_fn=context.reward_fn,
+        reward_fn=reward_fn,
         mode=PLANT_MODE,
         rho_lyap=RHO_LYAP,
         lyap_eps=LYAP_EPS,
@@ -704,7 +730,7 @@ def run_online_td3_disturbance_preset(
             "phase_plot_boundaries": _phase_plot_boundaries(episodes, set_points_len),
             "start_plot_idx": 10,
             "agent_path": resolved_agent_path,
-            "reward_config": context.reward_config,
+            "reward_config": reward_config,
             "actor_losses": agent.actor_losses,
             "critic_losses": agent.critic_losses,
             "timing": timing,
@@ -768,6 +794,8 @@ def _base_direct_config(study_name: str, episodes: int, set_points_len: int, see
         "Rdu_mpc_diag": RDU_MPC_DIAG.copy(),
         "Qy_reward_diag": QY_REWARD_DIAG.copy(),
         "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
+        "reward_fallback_penalty_enabled": False,
+        "reward_fallback_penalty_activation_rule": "disabled for MPC-only baselines",
         "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
         "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
     }
@@ -846,6 +874,7 @@ def run_direct_lmpc_disturbance(
         "target_mode": case_spec["target_mode"],
         "lyapunov_mode": case_spec["lyapunov_mode"],
         "target_config": dict(case_spec["target_config"]),
+        "reward_config": dict(context.reward_config),
     }
 
     print(f"Running {study_name} into {study_root}")
@@ -952,6 +981,7 @@ def run_offset_free_mpc_disturbance(
         "lyapunov_mode": "diagnostic_only",
         "target_config": dict(case_spec["target_config"]),
         "diagnostic_lmpc_enabled": True,
+        "reward_config": dict(context.reward_config),
     }
 
     print(f"Running {study_name} into {study_root}")
@@ -1094,4 +1124,3 @@ def main_direct_lmpc_disturbance(argv: list[str] | None = None) -> dict[str, Any
 
 def main_offset_free_mpc_disturbance(argv: list[str] | None = None) -> dict[str, Any]:
     return _main_direct_baseline("offset_free_mpc", argv)
-
