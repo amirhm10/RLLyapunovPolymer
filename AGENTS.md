@@ -96,6 +96,11 @@ Notebook cells often import modules directly, so keep public function names stab
 - `xhatdhat` denotes the augmented observer state: physical state estimate plus disturbance estimate.
 - Setpoint schedules are usually generated with `generate_setpoints_training_rl_gradually(...)`.
 - For governed-reference/direct Lyapunov work, be precise about stability language. The current controller enforces model-based practical first-step Lyapunov contraction around a moving governed steady target `(x_s, u_s, y_s)`, not a global nonlinear asymptotic stability proof to the raw setpoint. Reports, papers, and slides should explicitly account for target movement or phrase the result as practical/recursive Lyapunov contraction.
+- Keep controller objectives and RL rewards explicitly separated in all future runners and scripts:
+  - MPC and Direct LMPC optimization objectives use the MPC penalties `Q = [5, 1]` and `R`/`Rdu = [1, 1]`.
+  - Offline TD3 pretraining rewards use the one-step MPC quadratic stage cost with the same `Q = [5, 1]` and `R = [1, 1]`, because there is no closed-loop rollout reward shaping in the replay-label phase.
+  - Online RL training/evaluation may use the shaped reward family with its own reward weights, currently `Q_reward = [12, 6]` and `R_reward = [1, 1]`, plus fallback/event/bonus terms. These reward-shaping parameters must not overwrite MPC, OF-MPC, LMPC, target-selector, or safety-gate objective weights.
+  - Reports and configs should record both controller objective weights and RL reward weights when both are present.
 
 Before editing controller logic, confirm whether each variable is:
 
