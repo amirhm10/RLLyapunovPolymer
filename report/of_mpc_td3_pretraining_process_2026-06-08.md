@@ -154,7 +154,18 @@ The TD3 pretraining stages are:
 1. Behavioral cloning of the OF-MPC first move.
 2. Critic TD warm-up under the cloned actor.
 
-The actor and critic hidden layers are `[512, 512, 512, 512, 512]` for compatibility with the current `Lyapunov_polymer` checkpoints and runners.
+For clean OF-MPC-versus-LMPC expert-label comparisons, the LMPC pretraining helper has been aligned to the OF-MPC TD3 optimizer and TD-target defaults:
+
+- `gamma = 0.995`
+- `actor_lr = 1e-4`
+- `critic_lr = 1e-4`
+- `policy_delay = 4`
+- `target_policy_smoothing_noise_std = 0.2`
+- `noise_clip = 0.5`
+
+The `policy_delay` setting is not active inside the offline `pretrain_from_buffer(...)` actor-BC and frozen-actor critic warm-up loops, because that routine does not run delayed actor TD3 updates. It is still saved as agent metadata and becomes relevant if the same constructed checkpoint is later used for online TD3 updates.
+
+The current OF-MPC and LMPC pretraining runners use actor and critic hidden layers `[256, 256, 256]` by default. The layer sizes remain CLI-overridable for loading or generating checkpoints with older architectures.
 
 ## Default Workload
 
@@ -166,8 +177,8 @@ The pretraining runner has one production default configuration, matching the or
 - `actor_epochs = 1000`
 - `critic_epochs = 500`
 - `pretrain_batch_size = 8192`
-- actor hidden layers `[512, 512, 512, 512, 512]`
-- critic hidden layers `[512, 512, 512, 512, 512]`
+- actor hidden layers `[256, 256, 256]`
+- critic hidden layers `[256, 256, 256]`
 
 There is no `smoke` preset and no `legacy-full` preset. Smoke runs are explicit overrides only:
 

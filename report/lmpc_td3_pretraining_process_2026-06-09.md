@@ -168,6 +168,17 @@ The LMPC pretraining runner now keeps the editable production defaults at the to
 - actor hidden layers: `[256, 256, 256]`
 - critic hidden layers: `[256, 256, 256]`
 
+For clean OF-MPC-versus-LMPC scale-up comparisons, the LMPC TD3 constructor now matches the OF-MPC TD3 constructor:
+
+- `gamma = 0.995`
+- `actor_lr = 1e-4`
+- `critic_lr = 1e-4`
+- `policy_delay = 4`
+- `target_policy_smoothing_noise_std = 0.2`
+- `noise_clip = 0.5`
+
+The `policy_delay` value is not active during offline actor behavioral cloning or frozen-actor critic warm-up, but it remains part of the constructed/saved TD3 agent and is relevant when the checkpoint is used for later online TD3 updates.
+
 The runner exposes CLI overrides for all workload sizes, label-parallelism settings, architecture values, seed, device, and output root.
 
 LMPC label generation is parallelized at the candidate-batch level. The parent process samples candidate states and owns the replay buffer. Each `loky` worker builds its own Direct LMPC solver from serializable matrices, labels its assigned candidates, and returns plain NumPy transitions plus diagnostics. This avoids passing a live CVXPY problem or mutating the replay buffer across processes.
