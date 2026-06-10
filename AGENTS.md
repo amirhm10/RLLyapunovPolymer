@@ -10,6 +10,18 @@ This repository is a notebook-driven research codebase for polymer CSTR control.
 
 For Lyapunov work, the preferred implementation is now the consolidated `Lyapunov/` directory.
 
+## Sibling Repository Boundary
+This code repository is tightly coupled to the companion paper workspace, but the two folders must be treated as separate write targets:
+
+- Code repo: `C:\Users\hamediaa\Desktop\Lyapunov_polymer`
+- Paper workspace: `C:\Users\hamediaa\Desktop\Lyapunov Paper`
+
+Use this repository for controller code, simulations, experiment runners, result exports, plotting utilities, and code-side reports. Use the paper workspace for manuscript prose, paper memory, literature packets, citation ledgers, figure/table registries, and paper workflow notes.
+
+Before editing, infer the intended target from explicit paths, the active IDE file, and the artifact type. If a request is ambiguous or could touch both folders, state which repo will be edited before making changes, and ask if the write target is still unclear.
+
+Do not write into the paper workspace from a code task unless Amir explicitly requests a paper update. Treat the paper workspace as read-only context when the requested work is code, controller, simulation, or experiment work.
+
 ## Current State
 - This folder is a Git repository and is connected to a GitHub remote.
 - `README.md` is still minimal.
