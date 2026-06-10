@@ -249,7 +249,7 @@ def make_lmpc_td3_agent(
         action_dim=dimensions.action_dim,
         actor_hidden=list(actor_hidden),
         critic_hidden=list(critic_hidden),
-        gamma=0.995,
+        gamma=0.99,
         actor_lr=1e-4,
         critic_lr=3e-4,
         batch_size=256,

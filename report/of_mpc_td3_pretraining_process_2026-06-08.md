@@ -156,7 +156,7 @@ The TD3 pretraining stages are:
 
 For clean OF-MPC-versus-LMPC expert-label comparisons, the LMPC pretraining helper has been aligned to the OF-MPC TD3 optimizer and TD-target defaults:
 
-- `gamma = 0.995`
+- `gamma = 0.99`
 - `actor_lr = 1e-4`
 - `critic_lr = 3e-4`
 - `policy_delay = 4`
@@ -164,6 +164,8 @@ For clean OF-MPC-versus-LMPC expert-label comparisons, the LMPC pretraining help
 - `noise_clip = 0.1`
 
 The `policy_delay` setting is not active inside the offline `pretrain_from_buffer(...)` actor-BC and frozen-actor critic warm-up loops, because that routine does not run delayed actor TD3 updates. It is still saved as agent metadata and becomes relevant if the same constructed checkpoint is later used for online TD3 updates.
+
+The `gamma = 0.99` value matches the active Direct Lyapunov online RL runners. This makes the pretrained critic handoff less sensitive to long-horizon model/observer mismatch than the older `0.995` setting.
 
 The current OF-MPC and LMPC pretraining runners use actor and critic hidden layers `[256, 256, 256]` by default. The layer sizes remain CLI-overridable for loading or generating checkpoints with older architectures.
 

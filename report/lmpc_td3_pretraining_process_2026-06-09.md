@@ -170,7 +170,7 @@ The LMPC pretraining runner now keeps the editable production defaults at the to
 
 For clean OF-MPC-versus-LMPC scale-up comparisons, the LMPC TD3 constructor now matches the OF-MPC TD3 constructor:
 
-- `gamma = 0.995`
+- `gamma = 0.99`
 - `actor_lr = 1e-4`
 - `critic_lr = 3e-4`
 - `policy_delay = 4`
@@ -178,6 +178,8 @@ For clean OF-MPC-versus-LMPC scale-up comparisons, the LMPC TD3 constructor now 
 - `noise_clip = 0.1`
 
 The `policy_delay` value is not active during offline actor behavioral cloning or frozen-actor critic warm-up, but it remains part of the constructed/saved TD3 agent and is relevant when the checkpoint is used for later online TD3 updates.
+
+The `gamma = 0.99` value matches the active Direct Lyapunov online RL runners. This makes the pretrained critic handoff less sensitive to long-horizon model/observer mismatch than the older `0.995` setting.
 
 The runner exposes CLI overrides for all workload sizes, label-parallelism settings, architecture values, seed, device, and output root.
 
