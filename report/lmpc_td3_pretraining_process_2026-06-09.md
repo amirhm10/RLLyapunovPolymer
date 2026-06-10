@@ -172,6 +172,10 @@ The runner exposes CLI overrides for all workload sizes, label-parallelism setti
 
 LMPC label generation is parallelized at the candidate-batch level. The parent process samples candidate states and owns the replay buffer. Each `loky` worker builds its own Direct LMPC solver from serializable matrices, labels its assigned candidates, and returns plain NumPy transitions plus diagnostics. This avoids passing a live CVXPY problem or mutating the replay buffer across processes.
 
+During label generation, the workflow prints OF-MPC-style candidate chunk progress, for example `Processing broad LMPC candidate chunk 1/20`. The chunk count is based on the maximum allowed candidate attempts, so the run can finish earlier if enough accepted labels are collected.
+
+The CVXPY warning `Solution may be inaccurate` is suppressed during LMPC pretraining label solves to keep long-run logs readable. Solver statuses, target stages, failure keys, and success rates are still saved in `label_diagnostics.json`, so the warning is not used as the diagnostic channel.
+
 Because a parallel worker batch may finish after the requested accepted-label count is already reached, diagnostics distinguish kept replay labels from extra successful solves:
 
 - `acceptance_rate`: accepted replay labels divided by attempted candidates

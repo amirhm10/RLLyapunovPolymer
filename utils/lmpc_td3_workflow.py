@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import time
+import warnings
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -306,6 +307,14 @@ def _failure_key(target_info: dict[str, Any], step_info: dict[str, Any]) -> str:
     return f"tracking:{status}:{message}"
 
 
+def _ignore_cvxpy_inaccurate_solution_warning() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Solution may be inaccurate.*",
+        category=UserWarning,
+    )
+
+
 def _label_candidate(
     *,
     system_data: dict[str, Any],
@@ -318,49 +327,51 @@ def _label_candidate(
     u_prev: np.ndarray,
     step_idx: int,
 ) -> tuple[bool, dict[str, Any], dict[str, np.ndarray] | None]:
-    step_context = prepare_direct_output_disturbance_step(
-        LMPC_obj=lmpc.lmpc_obj,
-        x0_aug=x_aug,
-        y_sp_k=y_sp,
-        u_prev_dev=u_prev,
-        u_dev_min=lmpc.u_dev_min,
-        u_dev_max=lmpc.u_dev_max,
-        target_mode=TARGET_MODE,
-        target_config=lmpc.target_config,
-        target_H=None,
-        x_target_prev_success=None,
-        r_cmd_prev_success=None,
-        step_idx=step_idx,
-        y_prev_scaled=None,
-        plant_mode=None,
-        disturbance_after_step=None,
-        use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
-        slack_penalty=SLACK_PENALTY,
-        rho_lyap=RHO_LYAP,
-        lyap_eps=LYAP_EPS,
-    )
-    target_info = step_context["target_info"]
-    step_info = step_context["step_info"]
-    u_apply, _ic_next, step_info = solve_direct_tracking_from_target(
-        LMPC_obj=lmpc.lmpc_obj,
-        x0_aug=x_aug,
-        y_sp_k=y_sp,
-        u_prev_dev=u_prev,
-        target_info=target_info,
-        step_info=step_info,
-        IC_opt=lmpc.ic_opt.copy(),
-        bnds=lmpc.bnds,
-        u_dev_min=lmpc.u_dev_min,
-        u_dev_max=lmpc.u_dev_max,
-        rho_lyap=RHO_LYAP,
-        lyap_eps=LYAP_EPS,
-        lyapunov_mode=LYAPUNOV_MODE,
-        use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
-        use_target_on_solver_fail=USE_TARGET_ON_SOLVER_FAIL,
-        slack_penalty=SLACK_PENALTY,
-        first_step_contraction_on=FIRST_STEP_CONTRACTION_ON,
-        solver_options={"warm_start": True},
-    )
+    with warnings.catch_warnings():
+        _ignore_cvxpy_inaccurate_solution_warning()
+        step_context = prepare_direct_output_disturbance_step(
+            LMPC_obj=lmpc.lmpc_obj,
+            x0_aug=x_aug,
+            y_sp_k=y_sp,
+            u_prev_dev=u_prev,
+            u_dev_min=lmpc.u_dev_min,
+            u_dev_max=lmpc.u_dev_max,
+            target_mode=TARGET_MODE,
+            target_config=lmpc.target_config,
+            target_H=None,
+            x_target_prev_success=None,
+            r_cmd_prev_success=None,
+            step_idx=step_idx,
+            y_prev_scaled=None,
+            plant_mode=None,
+            disturbance_after_step=None,
+            use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
+            slack_penalty=SLACK_PENALTY,
+            rho_lyap=RHO_LYAP,
+            lyap_eps=LYAP_EPS,
+        )
+        target_info = step_context["target_info"]
+        step_info = step_context["step_info"]
+        u_apply, _ic_next, step_info = solve_direct_tracking_from_target(
+            LMPC_obj=lmpc.lmpc_obj,
+            x0_aug=x_aug,
+            y_sp_k=y_sp,
+            u_prev_dev=u_prev,
+            target_info=target_info,
+            step_info=step_info,
+            IC_opt=lmpc.ic_opt.copy(),
+            bnds=lmpc.bnds,
+            u_dev_min=lmpc.u_dev_min,
+            u_dev_max=lmpc.u_dev_max,
+            rho_lyap=RHO_LYAP,
+            lyap_eps=LYAP_EPS,
+            lyapunov_mode=LYAPUNOV_MODE,
+            use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
+            use_target_on_solver_fail=USE_TARGET_ON_SOLVER_FAIL,
+            slack_penalty=SLACK_PENALTY,
+            first_step_contraction_on=FIRST_STEP_CONTRACTION_ON,
+            solver_options={"warm_start": True},
+        )
     diagnostic = {
         "target_success": bool(target_info.get("success", False)),
         "target_stage": target_info.get("solve_stage"),
@@ -535,14 +546,22 @@ def _generate_lmpc_label_subset(
     wall_start = time.perf_counter()
     backend = str(parallel_backend).lower()
     use_parallel = backend != "sequential" and int(label_n_jobs) != 1
+    candidate_chunk_size = int(candidate_chunk_size)
+    max_chunk_count = max(1, int(np.ceil(max_attempts / max(1, candidate_chunk_size))))
+    chunk_idx = 0
 
     while accepted < requested and attempted < max_attempts:
         remaining_attempts = max_attempts - attempted
         remaining_labels = max(0, requested - accepted)
         draw_count = min(
-            int(candidate_chunk_size),
+            candidate_chunk_size,
             remaining_attempts,
             max(int(worker_batch_size), remaining_labels),
+        )
+        chunk_idx += 1
+        print(
+            f"Processing {kind} LMPC candidate chunk {chunk_idx}/{max_chunk_count} "
+            f"(size={draw_count}, accepted={accepted}/{requested}, attempted={attempted}/{max_attempts})"
         )
         x_batch, y_batch, u_batch = _sample_candidates(
             system_data["min_max_dict"],
