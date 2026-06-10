@@ -109,6 +109,8 @@ STD_DECAY_MODE = "exp"
 PRETRAINED_SMOOTHING_STD = 0.01
 COLD_START_SMOOTHING_STD = 0.1
 NOISE_CLIP = 0.01
+PRETRAINED_EXPLORATION_STD_START = 0.02
+COLD_START_EXPLORATION_STD_START = 0.1
 
 WARMUP_EPISODES = 0
 BC_TEACHER_EPISODES = 20
@@ -315,7 +317,11 @@ def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
 def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str, Any]:
     if teacher_source not in {"direct_lyapunov_mpc", "offset_free_mpc"}:
         raise ValueError(f"Unsupported teacher source: {teacher_source!r}")
-    exploration_std = 0.02 if pretrained else 0.2
+    exploration_std = (
+        PRETRAINED_EXPLORATION_STD_START
+        if pretrained
+        else COLD_START_EXPLORATION_STD_START
+    )
     return {
         "episode_unit": "cycle",
         "warmup_buffer_only_episodes": WARMUP_EPISODES,

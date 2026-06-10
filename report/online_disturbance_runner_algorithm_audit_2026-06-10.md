@@ -361,7 +361,7 @@ Current Gaussian exploration settings:
 | Runner family | BC std | Full RL std start | Full RL std end |
 |---|---:|---:|---:|
 | pretrained | 0.02 | 0.02 | 0.005 |
-| cold-start | 0.20 | 0.20 | 0.005 |
+| cold-start | 0.10 | 0.10 | 0.005 |
 
 TD3 target-policy smoothing:
 

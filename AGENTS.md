@@ -93,10 +93,16 @@ If a change only concerns the standard Lyapunov path, do not start from those fi
 These are the main active experiment entrypoints in the repository root:
 
 - `DirectLyapunovMPC.py`
-- `DirectLyapunovSafetyGateRL_Pretrained.py`
-- `DirectLyapunovSafetyGateRL_ColdStart.py`
+- `OnlineTD3_LMPCPretrained_SafetyGate.py`
+- `OnlineTD3_OFMPCPretrained_SafetyGate.py`
+- `OnlineTD3_LMPCPretrained_NoSafetyGate.py`
+- `OnlineTD3_OFMPCPretrained_NoSafetyGate.py`
+- `OnlineTD3_ColdStart_SafetyGate.py`
+- `OnlineTD3_ColdStart_NoSafetyGate.py`
+- `DirectLyapunovMPC_DisturbanceRunner.py`
+- `OffsetFreeMPC_DisturbanceRunner.py`
 
-Legacy notebooks are archived under `archive/` and should not be used as active entrypoints unless explicitly restored.
+Legacy notebooks and compatibility runner wrappers are archived under `archive/` and should not be used as active entrypoints unless explicitly restored.
 
 Notebook cells often import modules directly, so keep public function names stable unless the notebook code is updated too.
 
