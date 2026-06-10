@@ -172,10 +172,10 @@ For clean OF-MPC-versus-LMPC scale-up comparisons, the LMPC TD3 constructor now 
 
 - `gamma = 0.995`
 - `actor_lr = 1e-4`
-- `critic_lr = 1e-4`
+- `critic_lr = 3e-4`
 - `policy_delay = 4`
-- `target_policy_smoothing_noise_std = 0.2`
-- `noise_clip = 0.5`
+- `target_policy_smoothing_noise_std = 0.05`
+- `noise_clip = 0.1`
 
 The `policy_delay` value is not active during offline actor behavioral cloning or frozen-actor critic warm-up, but it remains part of the constructed/saved TD3 agent and is relevant when the checkpoint is used for later online TD3 updates.
 

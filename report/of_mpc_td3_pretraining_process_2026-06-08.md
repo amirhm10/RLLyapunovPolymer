@@ -158,10 +158,10 @@ For clean OF-MPC-versus-LMPC expert-label comparisons, the LMPC pretraining help
 
 - `gamma = 0.995`
 - `actor_lr = 1e-4`
-- `critic_lr = 1e-4`
+- `critic_lr = 3e-4`
 - `policy_delay = 4`
-- `target_policy_smoothing_noise_std = 0.2`
-- `noise_clip = 0.5`
+- `target_policy_smoothing_noise_std = 0.05`
+- `noise_clip = 0.1`
 
 The `policy_delay` setting is not active inside the offline `pretrain_from_buffer(...)` actor-BC and frozen-actor critic warm-up loops, because that routine does not run delayed actor TD3 updates. It is still saved as agent metadata and becomes relevant if the same constructed checkpoint is later used for online TD3 updates.
 
