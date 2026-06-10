@@ -116,6 +116,10 @@ Setpoint deviation scaler bounds used in the TD3 state:
 | output 0 | -4.918 | 5.008 |
 | output 1 | -4.612 | 3.065 |
 
+The online runner now checks this scaling contract at startup. The TD3 feature scaler must remain the broad pretraining envelope `[[2.8, 320.0], [5.0, 326.0]]`, while the rollout setpoints remain the direct comparison scenario `[[4.5, 324.0], [3.4, 321.0]]`. If the TD3 scaler is accidentally replaced by the direct two-setpoint rollout scenario, the runner raises before training.
+
+The BC Gaussian standard deviation is in normalized actor-action coordinates. For the current action bounds, `0.02` corresponds to about one percent of the full normalized input span, or roughly `0.20` and `0.15` in controller deviation coordinates for the two inputs.
+
 The online TD3 dimension check is:
 
 $$
@@ -371,6 +375,16 @@ TD3 target-policy smoothing:
 | cold-start | 0.10 | 0.01 |
 
 Parameter-noise exploration is implemented in the training loop but not enabled by the new runner configs. To enable it, change the relevant phase noise field, such as `full_rl_behavior_noise`, to `"parameter"` and tune the `parameter_noise_*` fields.
+
+## Live Reward Interpretation
+
+The console now prints three reward quantities at each cycle boundary:
+
+- `avg. reward`: the actual training reward used by TD3.
+- `avg. reward_no_penalty`: the same shaped tracking reward before safety-gate fallback/event penalties.
+- `avg. fallback penalty`: the average safety-gate penalty charged in that cycle.
+
+This matters because no-gate runners have fallback penalties disabled by construction, while safety-gate runners subtract the event and correction penalty whenever the Direct LMPC gate changes the candidate action. Therefore a no-gate run can show a much better raw reward while still reporting a nonzero `diagnostic_unsafe` or would-activate rate. In that case the interpretation is not a scaling failure: it means the no-gate candidate tracks better under the shaped reward but fails the model-based Direct LMPC contraction diagnostic on those steps.
 
 ## What To Change If Needed
 

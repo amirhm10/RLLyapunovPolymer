@@ -449,6 +449,45 @@ def _annotate_reward_info(info, reward_components):
     return info
 
 
+def _block_reward_summary(rewards, info_storage, start, stop):
+    reward_avg = float(np.mean(rewards[start:stop])) if stop > start else float("nan")
+    infos = list(info_storage[start:stop])
+
+    def _info_mean(key, fallback_key=None, default=np.nan):
+        values = []
+        for info in infos:
+            if key in info:
+                values.append(info.get(key))
+            elif fallback_key is not None and fallback_key in info:
+                values.append(info.get(fallback_key))
+            else:
+                values.append(default)
+        if not values:
+            return float("nan")
+        arr = np.asarray(values, dtype=float)
+        if np.all(np.isnan(arr)):
+            return float("nan")
+        return float(np.nanmean(arr))
+
+    return {
+        "reward": reward_avg,
+        "reward_no_penalty": _info_mean("reward_no_penalty", fallback_key="reward_base"),
+        "fallback_penalty": _info_mean("fallback_penalty", default=0.0),
+    }
+
+
+def _print_block_reward_summary(sub_episode, rewards, info_storage, start, stop):
+    summary = _block_reward_summary(rewards, info_storage, start, stop)
+    message = f"Sub_Episode: {sub_episode} | avg. reward: {summary['reward']}"
+    if np.isfinite(summary["reward_no_penalty"]) or np.isfinite(summary["fallback_penalty"]):
+        message += (
+            f" | avg. reward_no_penalty: {summary['reward_no_penalty']}"
+            f" | avg. fallback penalty: {summary['fallback_penalty']}"
+        )
+    print(message)
+    return summary["reward"]
+
+
 def _coerce_supplied_lyapunov_matrix(P_lyap, n_x, n_aug):
     P_lyap = np.asarray(P_lyap, float)
     P_lyap = 0.5 * (P_lyap + P_lyap.T)
@@ -1759,8 +1798,9 @@ def run_rl_train(
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
-                avg_rewards.append(float(np.mean(rewards[start:k + 1])))
-                print("Sub_Episode:", sub_changes[k], "| avg. reward:", avg_rewards[-1])
+                avg_rewards.append(
+                    _print_block_reward_summary(sub_changes[k], rewards, lyap_info_storage, start, k + 1)
+                )
 
                 block_ratio = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 total_ratio = total_filtered / total_checked if total_checked > 0 else 0.0
@@ -2089,10 +2129,11 @@ def run_rl_train(
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
-                avg_rewards.append(float(np.mean(rewards[start:k + 1])))
+                avg_rewards.append(
+                    _print_block_reward_summary(sub_changes[k], rewards, lyap_info_storage, start, k + 1)
+                )
                 diagnostic_rate = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 total_diagnostic_rate = total_filtered / total_checked if total_checked > 0 else 0.0
-                print("Sub_Episode:", sub_changes[k], "| avg. reward:", avg_rewards[-1])
                 print(
                     "MPC-only diagnostic Lyapunov gate would activate in block:",
                     filtered_in_block, "/", checked_in_block,
@@ -2586,14 +2627,15 @@ def run_rl_train(
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
-                avg_rewards.append(float(np.mean(rewards[start:k + 1])))
+                avg_rewards.append(
+                    _print_block_reward_summary(sub_changes[k], rewards, lyap_info_storage, start, k + 1)
+                )
                 accepted_in_block = checked_in_block - fallback_in_block
                 block_accept_ratio = accepted_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 block_fallback_ratio = fallback_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 total_accept_ratio = (
                     (total_checked - total_fallback_mpc) / total_checked if total_checked > 0 else 0.0
                 )
-                print("Sub_Episode:", sub_changes[k], "| avg. reward:", avg_rewards[-1])
                 print(
                     "Direct gate accepted in block:",
                     accepted_in_block, "/", checked_in_block,
@@ -3104,8 +3146,9 @@ def run_rl_train(
 
         if k in sub_changes:
             start = max(0, k - time_in_sub_episodes + 1)
-            avg_rewards.append(float(np.mean(rewards[start:k + 1])))
-            print("Sub_Episode:", sub_changes[k], "| avg. reward:", avg_rewards[-1])
+            avg_rewards.append(
+                _print_block_reward_summary(sub_changes[k], rewards, lyap_info_storage, start, k + 1)
+            )
 
             block_ratio = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
             total_ratio = total_filtered / total_checked if total_checked > 0 else 0.0

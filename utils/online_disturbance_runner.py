@@ -67,6 +67,7 @@ from utils.of_mpc_td3_workflow import (
     set_seed,
 )
 from utils.path_helpers import repo_path, resolve_repo_path
+from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS
 from utils.scaling_helpers import apply_min_max
 
 
@@ -304,6 +305,62 @@ def _write_direct_episode_table(debug_dir: str | Path, bundle: dict[str, Any]) -
     path = Path(debug_dir) / "episode_table.csv"
     _write_csv(path, _episode_records_from_direct_bundle(bundle))
     return path
+
+
+def _td3_online_hparams(agent: TD3Agent) -> dict[str, Any]:
+    return {
+        "gamma": float(agent.gamma),
+        "actor_lr": float(agent.actor_lr),
+        "critic_lr": float(agent.critic_lr),
+        "batch_size": int(agent.batch_size),
+        "policy_delay": int(agent.policy_delay),
+        "target_policy_smoothing_noise_std": float(agent.t_std),
+        "noise_clip": float(agent.noise_clip),
+        "tau": float(agent.tau),
+        "max_action": float(agent.max_action),
+        "actor_hidden": list(agent.actor_hidden),
+        "critic_hidden": list(agent.critic_hidden),
+    }
+
+
+def _scaling_contract(setup: Any, context: DisturbanceContext) -> dict[str, Any]:
+    system_data = context.system_data
+    min_max_dict = system_data["min_max_dict"]
+    n_inputs = int(context.dimensions.inputs_number)
+    data_min = system_data["data_min"]
+    data_max = system_data["data_max"]
+    y_ss_scaled = apply_min_max(setup.steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
+    expected_range = DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS.copy()
+    actual_range = np.asarray(system_data.get("setpoint_range_y_used"), dtype=float)
+    expected_range_scaled_dev = apply_min_max(expected_range, data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
+    expected_y_sp_min = np.min(expected_range_scaled_dev, axis=0)
+    expected_y_sp_max = np.max(expected_range_scaled_dev, axis=0)
+
+    if not np.allclose(actual_range, expected_range, rtol=0.0, atol=1e-12):
+        raise RuntimeError(
+            "TD3 setpoint feature scaler mismatch. Online TD3 checkpoints expect "
+            f"{expected_range.tolist()}, got {actual_range.tolist()}."
+        )
+    if not np.allclose(min_max_dict["y_sp_min"], expected_y_sp_min, rtol=0.0, atol=1e-10):
+        raise RuntimeError("TD3 y_sp_min does not match the expected broad setpoint scaler envelope.")
+    if not np.allclose(min_max_dict["y_sp_max"], expected_y_sp_max, rtol=0.0, atol=1e-10):
+        raise RuntimeError("TD3 y_sp_max does not match the expected broad setpoint scaler envelope.")
+    if np.any(context.y_sp_scenario < min_max_dict["y_sp_min"] - 1e-10) or np.any(
+        context.y_sp_scenario > min_max_dict["y_sp_max"] + 1e-10
+    ):
+        raise RuntimeError("Online rollout setpoints are outside the TD3 setpoint feature scaler envelope.")
+
+    return {
+        "state_bounds_source": system_data.get("state_bounds_source"),
+        "setpoint_bounds_source": system_data.get("setpoint_bounds_source"),
+        "td3_setpoint_scaler_y_phys": actual_range.copy(),
+        "rollout_setpoint_y_phys": DIRECT_TWO_SETPOINT_Y_PHYS.copy(),
+        "y_sp_min": np.asarray(min_max_dict["y_sp_min"], dtype=float).copy(),
+        "y_sp_max": np.asarray(min_max_dict["y_sp_max"], dtype=float).copy(),
+        "rollout_y_sp_scaled_deviation": np.asarray(context.y_sp_scenario, dtype=float).copy(),
+        "u_min_dev": np.asarray(min_max_dict["u_min"], dtype=float).copy(),
+        "u_max_dev": np.asarray(min_max_dict["u_max"], dtype=float).copy(),
+    }
 
 
 def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
@@ -608,6 +665,7 @@ def run_online_td3_disturbance_preset(
 
     set_seed(int(seed))
     context = build_disturbance_context()
+    scaling_contract = _scaling_contract(context.setup, context)
     reward_config, reward_fn = _build_reward(
         context.system_data["data_min"],
         context.system_data["data_max"],
@@ -673,6 +731,8 @@ def run_online_td3_disturbance_preset(
         "training_phase_config": dict(training_phase_config),
         "initial_agent_path": resolved_agent_path,
         "checkpoint_architecture": checkpoint_arch,
+        "online_td3_hparams": _td3_online_hparams(agent),
+        "scaling_contract": scaling_contract,
     }
 
     print(f"Running {preset.study_name} into {study_root}")
