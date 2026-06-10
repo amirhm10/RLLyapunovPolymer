@@ -1,5 +1,3 @@
-"""Compatibility wrapper for the disturbance-only LMPC-pretrained safety-gate runner."""
-
 from utils.online_disturbance_runner import main_lmpc_pretrained_safety_gate
 
 

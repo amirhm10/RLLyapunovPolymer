@@ -1,5 +1,3 @@
-"""Compatibility wrapper for the disturbance-only cold-start safety-gate runner."""
-
 from utils.online_disturbance_runner import main_cold_start_safety_gate
 
 

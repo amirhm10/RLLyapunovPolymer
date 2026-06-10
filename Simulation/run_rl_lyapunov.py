@@ -1010,6 +1010,7 @@ def run_rl_train(
     disturbance_after_step=True,
     training_phase_config=None,
     diagnostic_lmpc_obj=None,
+    teacher_mpc_obj=None,
     performance_guard_config=None,
     residual_rl_config=None,
     force_final_test=True,
@@ -1089,6 +1090,20 @@ def run_rl_train(
         bnds=bnds,
         cons=cons,
     )
+    teacher_MPC_obj = MPC_obj if teacher_mpc_obj is None else teacher_mpc_obj
+    if teacher_mpc_obj is None or teacher_mpc_obj is MPC_obj:
+        teacher_fallback_ic = fallback_ic
+        teacher_mpc_bnds = mpc_bnds
+        teacher_mpc_cons = mpc_cons
+    else:
+        teacher_fallback_ic, teacher_mpc_bnds, teacher_mpc_cons = _normalize_mpc_fallback_setup(
+            MPC_obj=teacher_MPC_obj,
+            u_min=u_min,
+            u_max=u_max,
+            IC_opt=IC_opt,
+            bnds=bnds,
+            cons=cons,
+        )
 
     if Qy_track_diag is None:
         Qy_track_diag = _default_output_weights(MPC_obj)
@@ -1264,6 +1279,7 @@ def run_rl_train(
         rl_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k], y_sp_k, u_prev_dev)
         precomputed_direct_step_context = None
         step_fallback_ic = fallback_ic
+        step_teacher_fallback_ic = teacher_fallback_ic
         offset_free_teacher_info = None
         offset_free_teacher_u_dev = None
         teacher_action = None
@@ -1354,18 +1370,21 @@ def run_rl_train(
                 action = None
         elif needs_teacher_action and teacher_source == "offset_free_mpc":
             teacher_u_dev, teacher_info = solve_offset_free_mpc_candidate(
-                MPC_obj=MPC_obj,
+                MPC_obj=teacher_MPC_obj,
                 y_sp=y_sp_k,
                 u_prev_dev=u_prev_dev,
                 x0_model=xhat_aug_store[:, k],
-                IC_opt=step_fallback_ic,
-                bnds=mpc_bnds,
-                cons=mpc_cons,
+                IC_opt=step_teacher_fallback_ic,
+                bnds=teacher_mpc_bnds,
+                cons=teacher_mpc_cons,
                 return_debug=True,
             )
             if teacher_info.get("IC_opt_next") is not None:
-                step_fallback_ic = np.asarray(teacher_info["IC_opt_next"], float).reshape(-1).copy()
-                fallback_ic = step_fallback_ic.copy()
+                step_teacher_fallback_ic = np.asarray(teacher_info["IC_opt_next"], float).reshape(-1).copy()
+                teacher_fallback_ic = step_teacher_fallback_ic.copy()
+                if teacher_mpc_obj is None or teacher_mpc_obj is MPC_obj:
+                    step_fallback_ic = step_teacher_fallback_ic.copy()
+                    fallback_ic = step_fallback_ic.copy()
             if teacher_u_dev is None:
                 teacher_u_dev = np.clip(u_prev_dev, u_min, u_max)
             else:
@@ -1447,13 +1466,13 @@ def run_rl_train(
                 if residual_baseline_dev is None:
                     try:
                         baseline_u, baseline_info = solve_offset_free_mpc_candidate(
-                            MPC_obj=MPC_obj,
+                            MPC_obj=teacher_MPC_obj,
                             y_sp=y_sp_k,
                             u_prev_dev=u_prev_dev,
                             x0_model=xhat_aug_store[:, k],
-                            IC_opt=step_fallback_ic,
-                            bnds=mpc_bnds,
-                            cons=mpc_cons,
+                            IC_opt=step_teacher_fallback_ic,
+                            bnds=teacher_mpc_bnds,
+                            cons=teacher_mpc_cons,
                             return_debug=True,
                         )
                     except Exception as exc:
@@ -1462,7 +1481,10 @@ def run_rl_train(
                     if baseline_u is not None:
                         residual_baseline_dev = np.clip(np.asarray(baseline_u, float).reshape(-1), u_min, u_max)
                         if baseline_info.get("IC_opt_next") is not None:
-                            step_fallback_ic = np.asarray(baseline_info["IC_opt_next"], float).reshape(-1).copy()
+                            step_teacher_fallback_ic = np.asarray(baseline_info["IC_opt_next"], float).reshape(-1).copy()
+                            teacher_fallback_ic = step_teacher_fallback_ic.copy()
+                            if teacher_mpc_obj is None or teacher_mpc_obj is MPC_obj:
+                                step_fallback_ic = step_teacher_fallback_ic.copy()
             if residual_baseline_dev is None:
                 residual_baseline_dev = u_prev_dev.copy()
                 baseline_policy = "previous_input"

@@ -1,0 +1,1097 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import shutil
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from pprint import pprint
+from typing import Any
+
+import numpy as np
+import torch
+
+from TD3Agent.agent import TD3Agent
+from TD3Agent.reward_functions import make_reward_fn_relative_QR
+from Simulation.mpc import MpcSolver
+from Simulation.run_rl_lyapunov import run_rl_train
+from Lyapunov.direct_lyapunov_mpc import (
+    build_direct_lyapunov_run_bundle,
+    design_direct_lyapunov_mpc_solver,
+    make_direct_lyapunov_comparison_record,
+    run_direct_output_disturbance_lyapunov_mpc,
+    run_offset_free_mpc_with_direct_diagnostics,
+    save_direct_lyapunov_comparison_artifacts,
+    save_direct_lyapunov_debug_artifacts,
+)
+from Lyapunov.safety_debug import (
+    build_safety_filter_run_bundle,
+    make_safety_filter_comparison_record,
+    save_safety_filter_comparison_artifacts,
+    save_safety_filter_debug_artifacts,
+)
+from utils.direct_lyapunov_study import (
+    DIRECT_DISTURBANCE_N_TESTS,
+    DIRECT_DISTURBANCE_SEED,
+    DIRECT_DISTURBANCE_SETPOINT_LEN,
+    DIRECT_TWO_SETPOINT_Y_PHYS,
+    direct_disturbance_test_cycle,
+    governed_reference_case_spec,
+)
+from utils.lmpc_td3_workflow import (
+    latest_lmpc_pretrained_checkpoint,
+    resolve_checkpoint_layers,
+)
+from utils.of_mpc_td3_workflow import (
+    CONTROL_HORIZON,
+    HA_CHANGE,
+    NOMINAL_HA,
+    NOMINAL_QI,
+    NOMINAL_QS,
+    PREDICT_HORIZON,
+    QI_CHANGE,
+    QS_CHANGE,
+    TD3Dimensions,
+    U_MAX_PHYS,
+    U_MIN_PHYS,
+    build_polymer_setup,
+    compute_td3_dimensions,
+    latest_pretrained_checkpoint as latest_of_mpc_pretrained_checkpoint,
+    load_of_mpc_system_data,
+    make_observer_gain,
+    make_polymer_system,
+    set_seed,
+)
+from utils.path_helpers import repo_path, resolve_repo_path
+from utils.scaling_helpers import apply_min_max
+
+
+PLANT_MODE = "disturb"
+DISTURBANCE_AFTER_STEP = False
+FORCE_FINAL_TEST = False
+USE_TARGET_OUTPUT_FOR_TRACKING = False
+
+PREDICT_H = PREDICT_HORIZON
+CONT_H = CONTROL_HORIZON
+RHO_LYAP = 0.99
+LYAP_EPS = 5e-3
+LYAP_TOL = 1e-10
+SLACK_PENALTY = 1e6
+
+QY_MPC_DIAG = np.array([5.0, 1.0], dtype=float)
+SU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
+RDU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
+QY_REWARD_DIAG = np.array([12.0, 6.0], dtype=float)
+RDU_REWARD_DIAG = np.array([1.0, 1.0], dtype=float)
+
+U_PREV_PENALTY_WEIGHT = 0.0
+XS_PREV_PENALTY_WEIGHT = 0.0
+
+DEFAULT_ACTOR_LAYER_SIZES = (256, 256, 256)
+DEFAULT_CRITIC_LAYER_SIZES = (256, 256, 256)
+BUFFER_CAPACITY = 40000
+ACTOR_LR = 5e-5
+CRITIC_LR = 5e-4
+GAMMA = 0.99
+TAU = 0.005
+MAX_ACTION = 1.0
+POLICY_DELAY = 2
+BATCH_SIZE = 256
+STD_START = 0.0
+STD_END = 0.01
+STD_DECAY_RATE = 0.99992
+STD_DECAY_MODE = "exp"
+
+PRETRAINED_SMOOTHING_STD = 0.01
+COLD_START_SMOOTHING_STD = 0.1
+NOISE_CLIP = 0.01
+
+WARMUP_EPISODES = 0
+BC_TEACHER_EPISODES = 20
+HANDOFF_EPISODES = 5
+
+
+@dataclass(frozen=True)
+class OnlineTD3Preset:
+    key: str
+    study_name: str
+    label: str
+    safety_gate: bool
+    pretrain_source: str | None
+    teacher_source: str
+
+
+@dataclass(frozen=True)
+class DisturbanceContext:
+    setup: Any
+    system_data: dict[str, Any]
+    dimensions: TD3Dimensions
+    y_sp_scenario: np.ndarray
+    observer_gain: np.ndarray
+    lmpc_obj: Any
+    of_mpc_obj: MpcSolver
+    ic_opt_template: np.ndarray
+    bnds: tuple[tuple[float, float], ...]
+    cons: tuple
+    u_dev_min: np.ndarray
+    u_dev_max: np.ndarray
+    reward_config: dict[str, Any]
+    reward_fn: Any
+    target_config: dict[str, Any]
+
+
+ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
+    "lmpc_pretrained_safety_gate": OnlineTD3Preset(
+        key="lmpc_pretrained_safety_gate",
+        study_name="OnlineTD3_LMPCPretrained_SafetyGate",
+        label="LMPC-pretrained online TD3 with Direct LMPC safety gate",
+        safety_gate=True,
+        pretrain_source="lmpc",
+        teacher_source="direct_lyapunov_mpc",
+    ),
+    "ofmpc_pretrained_safety_gate": OnlineTD3Preset(
+        key="ofmpc_pretrained_safety_gate",
+        study_name="OnlineTD3_OFMPCPretrained_SafetyGate",
+        label="OF-MPC-pretrained online TD3 with Direct LMPC safety gate",
+        safety_gate=True,
+        pretrain_source="of_mpc",
+        teacher_source="offset_free_mpc",
+    ),
+    "lmpc_pretrained_no_safety_gate": OnlineTD3Preset(
+        key="lmpc_pretrained_no_safety_gate",
+        study_name="OnlineTD3_LMPCPretrained_NoSafetyGate",
+        label="LMPC-pretrained online TD3 without safety intervention",
+        safety_gate=False,
+        pretrain_source="lmpc",
+        teacher_source="direct_lyapunov_mpc",
+    ),
+    "ofmpc_pretrained_no_safety_gate": OnlineTD3Preset(
+        key="ofmpc_pretrained_no_safety_gate",
+        study_name="OnlineTD3_OFMPCPretrained_NoSafetyGate",
+        label="OF-MPC-pretrained online TD3 without safety intervention",
+        safety_gate=False,
+        pretrain_source="of_mpc",
+        teacher_source="offset_free_mpc",
+    ),
+    "cold_start_safety_gate": OnlineTD3Preset(
+        key="cold_start_safety_gate",
+        study_name="OnlineTD3_ColdStart_SafetyGate",
+        label="Cold-start online TD3 with Direct LMPC safety gate",
+        safety_gate=True,
+        pretrain_source=None,
+        teacher_source="direct_lyapunov_mpc",
+    ),
+    "cold_start_no_safety_gate": OnlineTD3Preset(
+        key="cold_start_no_safety_gate",
+        study_name="OnlineTD3_ColdStart_NoSafetyGate",
+        label="Cold-start online TD3 without safety intervention",
+        safety_gate=False,
+        pretrain_source=None,
+        teacher_source="direct_lyapunov_mpc",
+    ),
+}
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating, np.integer, np.bool_)):
+        return value.item()
+    if isinstance(value, Path):
+        return os.fspath(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(_jsonable(payload), handle, indent=2)
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                fieldnames.append(key)
+                seen.add(key)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: _jsonable(value) for key, value in row.items()})
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _mirror_primary_debug_files(debug_dir: str | Path, study_root: Path) -> None:
+    debug_path = Path(debug_dir)
+    for filename in ("summary.json", "step_table.csv", "episode_table.csv", "arrays.npz"):
+        _link_or_copy(debug_path / filename, study_root / filename)
+
+
+def _episode_records_from_direct_bundle(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    n_steps = int(bundle.get("nFE", 0))
+    episode_len = int(bundle.get("time_in_sub_episodes", 0))
+    rewards = np.asarray(bundle.get("rewards", []), dtype=float).reshape(-1)
+    info_storage = list(bundle.get("direct_info_storage", []))
+    if episode_len <= 0:
+        episode_len = max(n_steps, 1)
+
+    rows: list[dict[str, Any]] = []
+    n_episodes = int(np.ceil(n_steps / float(episode_len))) if n_steps > 0 else 0
+    for episode_idx in range(n_episodes):
+        start = int(episode_idx * episode_len)
+        stop = int(min((episode_idx + 1) * episode_len, n_steps))
+        infos = info_storage[start:stop]
+        reward_slice = rewards[start:stop]
+
+        def count_true(*keys: str) -> int:
+            total = 0
+            for info in infos:
+                if any(bool(info.get(key, False)) for key in keys):
+                    total += 1
+            return total
+
+        rows.append(
+            {
+                "episode": episode_idx + 1,
+                "step_start": start,
+                "step_end_exclusive": stop,
+                "n_steps": stop - start,
+                "reward_mean": None if reward_slice.size == 0 else float(np.nanmean(reward_slice)),
+                "reward_sum": None if reward_slice.size == 0 else float(np.nansum(reward_slice)),
+                "solver_success_count": count_true("success", "solver_success"),
+                "target_success_count": count_true("target_success"),
+                "hard_contraction_count": count_true(
+                    "hard_contraction_satisfied",
+                    "first_step_contraction_satisfied",
+                    "final_lyap_ok",
+                ),
+                "diagnostic_unsafe_count": count_true("diagnostic_unsafe"),
+                "actual_intervention_count": count_true("actual_intervention_active", "actual_intervention"),
+            }
+        )
+    return rows
+
+
+def _write_direct_episode_table(debug_dir: str | Path, bundle: dict[str, Any]) -> Path:
+    path = Path(debug_dir) / "episode_table.csv"
+    _write_csv(path, _episode_records_from_direct_bundle(bundle))
+    return path
+
+
+def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
+    time_in_sub_episodes = int(DIRECT_TWO_SETPOINT_Y_PHYS.shape[0]) * int(set_points_len)
+    return np.array(
+        [(WARMUP_EPISODES + BC_TEACHER_EPISODES) * time_in_sub_episodes],
+        dtype=int,
+    )
+
+
+def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str, Any]:
+    if teacher_source not in {"direct_lyapunov_mpc", "offset_free_mpc"}:
+        raise ValueError(f"Unsupported teacher source: {teacher_source!r}")
+    exploration_std = 0.02 if pretrained else 0.2
+    return {
+        "episode_unit": "cycle",
+        "warmup_buffer_only_episodes": WARMUP_EPISODES,
+        "behavior_clone_teacher_episodes": BC_TEACHER_EPISODES,
+        "bc_actor_updates_per_step": 4,
+        "bc_exploration_std": exploration_std,
+        "full_rl_exploration_std_start": exploration_std,
+        "full_rl_exploration_std_end": 0.01,
+        "full_rl_exploration_decay_mode": "linear",
+        "bc_teacher_policy": teacher_source,
+        "bc_behavior_source": "policy_with_lmpc_teacher_demo",
+        "handoff_episodes": HANDOFF_EPISODES,
+        "handoff_blend": "linear",
+        "warmup_behavior_source": teacher_source,
+        "warmup_behavior_noise": "none",
+        "bc_behavior_noise": "gaussian",
+        "full_rl_behavior_noise": "gaussian",
+    }
+
+
+def _build_reward(data_min: np.ndarray, data_max: np.ndarray, n_inputs: int) -> tuple[dict[str, Any], Any]:
+    return make_reward_fn_relative_QR(
+        data_min=data_min,
+        data_max=data_max,
+        n_inputs=n_inputs,
+        k_rel=np.array([0.0015, 0.00015], dtype=float),
+        band_floor_phys=np.array([0.003, 0.035], dtype=float),
+        Q_diag=QY_REWARD_DIAG,
+        R_diag=RDU_REWARD_DIAG,
+        tau_frac=0.5,
+        gamma_out=1.0,
+        gamma_in=3.0,
+        beta=1.0,
+        gate="geom",
+        lam_in=3.0,
+        bonus_kind="quadratic",
+        gamma_fallback=3.0,
+        fallback_event_penalty=10.0,
+        R_fallback_diag=RDU_REWARD_DIAG,
+        maintenance_band_scale=0.5,
+        maintenance_move_weight=0.0,
+        jitter_weight=0.0,
+        dwell_bonus=0.0,
+    )
+
+
+def build_disturbance_context() -> DisturbanceContext:
+    setup = build_polymer_setup()
+    system_data = load_of_mpc_system_data(
+        setup,
+        setpoint_y_phys=DIRECT_TWO_SETPOINT_Y_PHYS.copy(),
+    )
+    a_aug = system_data["A_aug"]
+    b_aug = system_data["B_aug"]
+    c_aug = system_data["C_aug"]
+    data_min = system_data["data_min"]
+    data_max = system_data["data_max"]
+    dimensions = compute_td3_dimensions(a_aug, b_aug, c_aug)
+    n_inputs = int(dimensions.inputs_number)
+
+    y_sp_scenario = apply_min_max(
+        DIRECT_TWO_SETPOINT_Y_PHYS,
+        data_min[n_inputs:],
+        data_max[n_inputs:],
+    ) - apply_min_max(
+        setup.steady_states["y_ss"],
+        data_min[n_inputs:],
+        data_max[n_inputs:],
+    )
+    observer_gain = make_observer_gain(a_aug, c_aug)
+
+    u_ss = apply_min_max(setup.steady_states["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
+    u_min_scaled = apply_min_max(U_MIN_PHYS, data_min[:n_inputs], data_max[:n_inputs])
+    u_max_scaled = apply_min_max(U_MAX_PHYS, data_min[:n_inputs], data_max[:n_inputs])
+    u_dev_min = u_min_scaled - u_ss
+    u_dev_max = u_max_scaled - u_ss
+    bnds = tuple((float(lo), float(hi)) for lo, hi in zip(u_dev_min, u_dev_max)) * CONT_H
+    ic_opt_template = np.zeros(n_inputs * CONT_H, dtype=float)
+
+    lmpc_obj = design_direct_lyapunov_mpc_solver(
+        A_aug=a_aug,
+        B_aug=b_aug,
+        C_aug=c_aug,
+        Qy_diag=QY_MPC_DIAG,
+        NP=PREDICT_H,
+        NC=CONT_H,
+        Su_diag=SU_MPC_DIAG,
+        u_min=u_dev_min,
+        u_max=u_dev_max,
+        Rdu_diag=RDU_MPC_DIAG,
+        terminal_set_on=True,
+        terminal_alpha_scale=1.0,
+    )
+    of_mpc_obj = MpcSolver(
+        a_aug,
+        b_aug,
+        c_aug,
+        Q_out=QY_MPC_DIAG,
+        R_in=RDU_MPC_DIAG,
+        NP=PREDICT_H,
+        NC=CONT_H,
+    )
+    reward_config, reward_fn = _build_reward(data_min, data_max, n_inputs)
+    target_config = governed_reference_case_spec(
+        QY_MPC_DIAG,
+        case_name="governed_reference",
+        u_ref_weight=U_PREV_PENALTY_WEIGHT,
+        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
+    )["target_config"]
+
+    return DisturbanceContext(
+        setup=setup,
+        system_data=system_data,
+        dimensions=dimensions,
+        y_sp_scenario=y_sp_scenario,
+        observer_gain=observer_gain,
+        lmpc_obj=lmpc_obj,
+        of_mpc_obj=of_mpc_obj,
+        ic_opt_template=ic_opt_template,
+        bnds=bnds,
+        cons=(),
+        u_dev_min=u_dev_min,
+        u_dev_max=u_dev_max,
+        reward_config=reward_config,
+        reward_fn=reward_fn,
+        target_config=target_config,
+    )
+
+
+def _resolve_pretrained_checkpoint(source: str, agent_path: str | None) -> Path:
+    if source not in {"lmpc", "of_mpc"}:
+        raise ValueError(f"Unsupported pretrained source: {source!r}")
+    if agent_path:
+        candidate = resolve_repo_path(agent_path)
+        if not candidate.exists():
+            raise FileNotFoundError(f"TD3 checkpoint not found: {candidate}")
+        return candidate
+
+    env_names = (
+        ("LMPC_PRETRAINED_TD3_AGENT_PATH", "PRETRAINED_TD3_AGENT_PATH")
+        if source == "lmpc"
+        else ("OFMPC_PRETRAINED_TD3_AGENT_PATH", "PRETRAINED_TD3_AGENT_PATH")
+    )
+    for env_name in env_names:
+        requested = os.environ.get(env_name)
+        if requested:
+            candidate = resolve_repo_path(requested)
+            if not candidate.exists():
+                raise FileNotFoundError(f"{env_name} points to a missing TD3 checkpoint: {candidate}")
+            return candidate
+
+    latest = latest_lmpc_pretrained_checkpoint() if source == "lmpc" else latest_of_mpc_pretrained_checkpoint()
+    if latest is not None:
+        return latest
+
+    fallback = repo_path("Data", "agent_2507171027.pkl")
+    if fallback.exists():
+        return fallback
+    raise FileNotFoundError(
+        f"No generated {source} TD3 checkpoint found and fallback checkpoint is missing: {fallback}"
+    )
+
+
+def _make_td3_agent(
+    *,
+    dimensions: TD3Dimensions,
+    actor_layers: tuple[int, ...],
+    critic_layers: tuple[int, ...],
+    smoothing_std: float,
+    set_points_len: int,
+) -> TD3Agent:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return TD3Agent(
+        state_dim=int(dimensions.state_dim),
+        action_dim=int(dimensions.action_dim),
+        actor_hidden=list(actor_layers),
+        critic_hidden=list(critic_layers),
+        gamma=GAMMA,
+        actor_lr=ACTOR_LR,
+        critic_lr=CRITIC_LR,
+        batch_size=BATCH_SIZE,
+        policy_delay=POLICY_DELAY,
+        target_policy_smoothing_noise_std=float(smoothing_std),
+        noise_clip=NOISE_CLIP,
+        max_action=MAX_ACTION,
+        tau=TAU,
+        std_start=STD_START,
+        std_end=STD_END,
+        std_decay_rate=STD_DECAY_RATE,
+        std_decay_mode=STD_DECAY_MODE,
+        buffer_size=BUFFER_CAPACITY,
+        device=device,
+        actor_freeze=0 * int(set_points_len),
+    )
+
+
+def _agent_for_preset(
+    preset: OnlineTD3Preset,
+    *,
+    context: DisturbanceContext,
+    set_points_len: int,
+    agent_path: str | None,
+) -> tuple[TD3Agent, str | None, dict[str, Any] | None]:
+    checkpoint_arch = None
+    resolved_agent_path: str | None = None
+    smoothing_std = PRETRAINED_SMOOTHING_STD if preset.pretrain_source else COLD_START_SMOOTHING_STD
+    actor_layers = DEFAULT_ACTOR_LAYER_SIZES
+    critic_layers = DEFAULT_CRITIC_LAYER_SIZES
+
+    if preset.pretrain_source is not None:
+        checkpoint_path = _resolve_pretrained_checkpoint(preset.pretrain_source, agent_path)
+        actor_layers, critic_layers, checkpoint_arch = resolve_checkpoint_layers(
+            checkpoint_path=checkpoint_path,
+            actor_override=None,
+            critic_override=None,
+            dimensions=context.dimensions,
+        )
+        resolved_agent_path = os.fspath(checkpoint_path)
+
+    agent = _make_td3_agent(
+        dimensions=context.dimensions,
+        actor_layers=tuple(actor_layers),
+        critic_layers=tuple(critic_layers),
+        smoothing_std=smoothing_std,
+        set_points_len=set_points_len,
+    )
+    if resolved_agent_path is not None:
+        agent.load(resolved_agent_path)
+    return agent, resolved_agent_path, checkpoint_arch
+
+
+def _study_root(study_name: str, timestamp: str | None = None) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if timestamp is None else str(timestamp)
+    root = repo_path("results", study_name, timestamp)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _timing_metadata(start_time: float, *, n_steps: int, episode_len: int) -> dict[str, Any]:
+    elapsed = float(time.perf_counter() - start_time)
+    n_episodes = int(np.ceil(n_steps / float(episode_len))) if episode_len > 0 else 0
+    return {
+        "wall_clock_seconds": elapsed,
+        "wall_clock_seconds_per_episode": None if n_episodes <= 0 else elapsed / float(n_episodes),
+        "wall_clock_seconds_per_step": None if n_steps <= 0 else elapsed / float(n_steps),
+        "wall_clock_steps_per_second": None if elapsed <= 0.0 else n_steps / elapsed,
+        "wall_clock_n_steps": int(n_steps),
+        "wall_clock_n_episodes": int(n_episodes),
+    }
+
+
+def run_online_td3_disturbance_preset(
+    preset_key: str,
+    *,
+    episodes: int = DIRECT_DISTURBANCE_N_TESTS,
+    set_points_len: int = DIRECT_DISTURBANCE_SETPOINT_LEN,
+    seed: int = DIRECT_DISTURBANCE_SEED,
+    save_plots: bool = True,
+    agent_path: str | None = None,
+) -> dict[str, Any]:
+    if preset_key not in ONLINE_TD3_PRESETS:
+        known = ", ".join(sorted(ONLINE_TD3_PRESETS))
+        raise ValueError(f"Unknown online TD3 preset {preset_key!r}. Known presets: {known}")
+    preset = ONLINE_TD3_PRESETS[preset_key]
+    episodes = int(episodes)
+    set_points_len = int(set_points_len)
+    if episodes <= 0:
+        raise ValueError("episodes must be positive.")
+    if set_points_len <= 0:
+        raise ValueError("set_points_len must be positive.")
+
+    set_seed(int(seed))
+    context = build_disturbance_context()
+    agent, resolved_agent_path, checkpoint_arch = _agent_for_preset(
+        preset,
+        context=context,
+        set_points_len=set_points_len,
+        agent_path=agent_path,
+    )
+    study_root = _study_root(preset.study_name)
+    test_cycle = direct_disturbance_test_cycle(episodes)
+    training_phase_config = _training_phase_config(
+        teacher_source=preset.teacher_source,
+        pretrained=preset.pretrain_source is not None,
+    )
+    projection_backend = "direct_accept_or_fallback" if preset.safety_gate else "mpc_only_diagnostic"
+    case_mpc_obj = context.lmpc_obj
+    teacher_mpc_obj = None
+    if preset.teacher_source == "offset_free_mpc":
+        if preset.safety_gate:
+            teacher_mpc_obj = context.of_mpc_obj
+        else:
+            case_mpc_obj = context.of_mpc_obj
+
+    case_config = {
+        "study_name": preset.study_name,
+        "case_name": preset.study_name,
+        "label": preset.label,
+        "controller_mode": "td3_safety_gate" if preset.safety_gate else "td3_no_safety_gate",
+        "projection_backend": projection_backend,
+        "safety_gate_active": bool(preset.safety_gate),
+        "pretrain_source": preset.pretrain_source,
+        "teacher_source": preset.teacher_source,
+        "target_mode": "governed_reference",
+        "target_config": dict(context.target_config),
+        "plant_mode": PLANT_MODE,
+        "n_tests": episodes,
+        "n_episodes": episodes,
+        "set_points_len": set_points_len,
+        "force_final_test": FORCE_FINAL_TEST,
+        "disturbance_after_step": DISTURBANCE_AFTER_STEP,
+        "use_target_output_for_tracking": USE_TARGET_OUTPUT_FOR_TRACKING,
+        "seed": int(seed),
+        "Qy_mpc_diag": QY_MPC_DIAG.copy(),
+        "Su_mpc_diag": SU_MPC_DIAG.copy(),
+        "Rdu_mpc_diag": RDU_MPC_DIAG.copy(),
+        "Qy_reward_diag": QY_REWARD_DIAG.copy(),
+        "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
+        "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
+        "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
+        "rho_lyap": RHO_LYAP,
+        "lyap_eps": LYAP_EPS,
+        "training_phase_config": dict(training_phase_config),
+        "initial_agent_path": resolved_agent_path,
+        "checkpoint_architecture": checkpoint_arch,
+    }
+
+    print(f"Running {preset.study_name} into {study_root}")
+    timer_start = time.perf_counter()
+    results = run_rl_train(
+        system=make_polymer_system(context.setup),
+        y_sp_scenario=context.y_sp_scenario,
+        n_tests=episodes,
+        set_points_len=set_points_len,
+        steady_states=context.setup.steady_states,
+        min_max_dict=context.system_data["min_max_dict"],
+        agent=agent,
+        MPC_obj=case_mpc_obj,
+        L=context.observer_gain,
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        warm_start=0,
+        test_cycle=test_cycle,
+        nominal_qi=NOMINAL_QI,
+        nominal_qs=NOMINAL_QS,
+        nominal_ha=NOMINAL_HA,
+        qi_change=QI_CHANGE,
+        qs_change=QS_CHANGE,
+        ha_change=HA_CHANGE,
+        reward_fn=context.reward_fn,
+        mode=PLANT_MODE,
+        rho_lyap=RHO_LYAP,
+        lyap_eps=LYAP_EPS,
+        lyap_tol=LYAP_TOL,
+        seed=int(seed),
+        use_lyap=bool(preset.safety_gate),
+        IC_opt=context.ic_opt_template.copy(),
+        bnds=context.bnds,
+        cons=context.cons,
+        reuse_mpc_solution_as_ic=False,
+        reset_system_on_entry=True,
+        projection_backend=projection_backend,
+        first_step_contraction_on=True,
+        direct_target_mode="governed_reference",
+        direct_target_config=dict(context.target_config),
+        direct_tracking_use_target_output=USE_TARGET_OUTPUT_FOR_TRACKING,
+        diagnostic_lmpc_obj=context.lmpc_obj,
+        teacher_mpc_obj=teacher_mpc_obj,
+        disturbance_after_step=DISTURBANCE_AFTER_STEP,
+        training_phase_config=training_phase_config,
+        force_final_test=FORCE_FINAL_TEST,
+    )
+    timing = _timing_metadata(timer_start, n_steps=int(results[5]), episode_len=int(results[6]))
+    case_config.update(timing)
+
+    bundle = build_safety_filter_run_bundle(
+        source=preset.study_name,
+        results=results,
+        steady_states=context.setup.steady_states,
+        config=case_config,
+        min_max_dict=context.system_data["min_max_dict"],
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        extra={
+            "delta_t": context.setup.delta_t,
+            "phase_plot_boundaries": _phase_plot_boundaries(episodes, set_points_len),
+            "start_plot_idx": 10,
+            "agent_path": resolved_agent_path,
+            "reward_config": context.reward_config,
+            "actor_losses": agent.actor_losses,
+            "critic_losses": agent.critic_losses,
+            "timing": timing,
+        },
+    )
+    debug_dir = save_safety_filter_debug_artifacts(
+        bundle=bundle,
+        directory=study_root,
+        prefix_name=preset.study_name,
+        save_plots=save_plots,
+    )
+    trained_agent_path = agent.save(debug_dir, prefix="trained_agent", include_optim=False)
+    bundle["extra"]["trained_agent_path"] = trained_agent_path
+    bundle["config"]["trained_agent_path"] = trained_agent_path
+
+    record = make_safety_filter_comparison_record(preset.study_name, bundle, debug_dir)
+    record.update(timing)
+    record["trained_agent_path"] = trained_agent_path
+    comparison_artifacts = save_safety_filter_comparison_artifacts(
+        [record],
+        {preset.study_name: bundle},
+        os.fspath(study_root),
+        save_plots=save_plots,
+    )
+    _mirror_primary_debug_files(debug_dir, study_root)
+    _write_json(study_root / "record.json", record)
+    run_summary = {
+        "study_name": preset.study_name,
+        "case_name": preset.study_name,
+        "result_root": os.fspath(study_root),
+        "debug_dir": debug_dir,
+        "comparison_artifacts": comparison_artifacts,
+        "record_json": os.fspath(study_root / "record.json"),
+        "trained_agent_path": trained_agent_path,
+        "config": case_config,
+    }
+    _write_json(study_root / "run_summary.json", run_summary)
+    print(f"Completed {preset.study_name}")
+    pprint(record)
+    return run_summary
+
+
+def _base_direct_config(study_name: str, episodes: int, set_points_len: int, seed: int) -> dict[str, Any]:
+    return {
+        "study_name": study_name,
+        "plant_mode": PLANT_MODE,
+        "n_tests": int(episodes),
+        "n_episodes": int(episodes),
+        "set_points_len": int(set_points_len),
+        "force_final_test": FORCE_FINAL_TEST,
+        "disturbance_after_step": DISTURBANCE_AFTER_STEP,
+        "use_target_output_for_tracking": USE_TARGET_OUTPUT_FOR_TRACKING,
+        "seed": int(seed),
+        "predict_h": PREDICT_H,
+        "cont_h": CONT_H,
+        "rho_lyap": RHO_LYAP,
+        "lyap_eps": LYAP_EPS,
+        "slack_penalty": SLACK_PENALTY,
+        "Qy_mpc_diag": QY_MPC_DIAG.copy(),
+        "Su_mpc_diag": SU_MPC_DIAG.copy(),
+        "Rdu_mpc_diag": RDU_MPC_DIAG.copy(),
+        "Qy_reward_diag": QY_REWARD_DIAG.copy(),
+        "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
+        "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
+        "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
+    }
+
+
+def _save_direct_baseline_outputs(
+    *,
+    study_root: Path,
+    study_name: str,
+    case_name: str,
+    bundle: dict[str, Any],
+    save_plots: bool,
+) -> dict[str, Any]:
+    debug_dir = save_direct_lyapunov_debug_artifacts(
+        bundle,
+        directory=study_root,
+        prefix_name=case_name,
+        save_plots=save_plots,
+    )
+    _write_direct_episode_table(debug_dir, bundle)
+    record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
+    comparison_artifacts = save_direct_lyapunov_comparison_artifacts(
+        [record],
+        {case_name: bundle},
+        os.fspath(study_root),
+        save_plots=save_plots,
+    )
+    _mirror_primary_debug_files(debug_dir, study_root)
+    _write_json(study_root / "record.json", record)
+    run_summary = {
+        "study_name": study_name,
+        "case_name": case_name,
+        "result_root": os.fspath(study_root),
+        "debug_dir": debug_dir,
+        "comparison_artifacts": comparison_artifacts,
+        "record_json": os.fspath(study_root / "record.json"),
+        "config": bundle.get("config", {}),
+    }
+    _write_json(study_root / "run_summary.json", run_summary)
+    pprint(record)
+    return run_summary
+
+
+def run_direct_lmpc_disturbance(
+    *,
+    episodes: int = DIRECT_DISTURBANCE_N_TESTS,
+    set_points_len: int = DIRECT_DISTURBANCE_SETPOINT_LEN,
+    seed: int = DIRECT_DISTURBANCE_SEED,
+    save_plots: bool = True,
+) -> dict[str, Any]:
+    episodes = int(episodes)
+    set_points_len = int(set_points_len)
+    if episodes <= 0:
+        raise ValueError("episodes must be positive.")
+    if set_points_len <= 0:
+        raise ValueError("set_points_len must be positive.")
+
+    set_seed(int(seed))
+    context = build_disturbance_context()
+    study_name = "DirectLMPCDisturbance"
+    case_name = "direct_lmpc_disturbance"
+    study_root = _study_root(study_name)
+    case_spec = governed_reference_case_spec(
+        QY_MPC_DIAG,
+        case_name=case_name,
+        controller_mode="direct_lyapunov_mpc",
+        lyapunov_mode="hard",
+        label="Direct LMPC disturbance baseline",
+        u_ref_weight=U_PREV_PENALTY_WEIGHT,
+        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
+    )
+    case_config = {
+        **_base_direct_config(study_name, episodes, set_points_len, seed),
+        "case_name": case_name,
+        "controller_mode": "direct_lyapunov_mpc",
+        "target_mode": case_spec["target_mode"],
+        "lyapunov_mode": case_spec["lyapunov_mode"],
+        "target_config": dict(case_spec["target_config"]),
+    }
+
+    print(f"Running {study_name} into {study_root}")
+    timer_start = time.perf_counter()
+    results = run_direct_output_disturbance_lyapunov_mpc(
+        system=make_polymer_system(context.setup),
+        LMPC_obj=context.lmpc_obj,
+        y_sp_scenario=context.y_sp_scenario,
+        n_tests=episodes,
+        set_points_len=set_points_len,
+        steady_states=context.setup.steady_states,
+        IC_opt=context.ic_opt_template.copy(),
+        bnds=context.bnds,
+        L=context.observer_gain,
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        test_cycle=direct_disturbance_test_cycle(episodes),
+        reward_fn=context.reward_fn,
+        nominal_qi=NOMINAL_QI,
+        nominal_qs=NOMINAL_QS,
+        nominal_ha=NOMINAL_HA,
+        qi_change=QI_CHANGE,
+        qs_change=QS_CHANGE,
+        ha_change=HA_CHANGE,
+        target_mode=case_spec["target_mode"],
+        lyapunov_mode=case_spec["lyapunov_mode"],
+        target_config=dict(case_spec["target_config"]),
+        target_H=None,
+        mode=PLANT_MODE,
+        disturbance_after_step=DISTURBANCE_AFTER_STEP,
+        use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
+        skip_terminal_if_alpha_small=True,
+        alpha_terminal_min=1e-8,
+        use_target_on_solver_fail=False,
+        rho_lyap=RHO_LYAP,
+        lyap_eps=LYAP_EPS,
+        slack_penalty=SLACK_PENALTY,
+        first_step_contraction_on=True,
+        reset_system_on_entry=True,
+        solver_options={"warm_start": True},
+        force_final_test=FORCE_FINAL_TEST,
+    )
+    timing = _timing_metadata(
+        timer_start,
+        n_steps=int(results["nFE"]),
+        episode_len=int(results["time_in_sub_episodes"]),
+    )
+    case_config.update(timing)
+    bundle = build_direct_lyapunov_run_bundle(
+        source=case_name,
+        results=results,
+        steady_states=context.setup.steady_states,
+        config=case_config,
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        extra={
+            "reward_config": context.reward_config,
+            "min_max_dict": context.system_data["min_max_dict"],
+            "timing": timing,
+        },
+    )
+    return _save_direct_baseline_outputs(
+        study_root=study_root,
+        study_name=study_name,
+        case_name=case_name,
+        bundle=bundle,
+        save_plots=save_plots,
+    )
+
+
+def run_offset_free_mpc_disturbance(
+    *,
+    episodes: int = DIRECT_DISTURBANCE_N_TESTS,
+    set_points_len: int = DIRECT_DISTURBANCE_SETPOINT_LEN,
+    seed: int = DIRECT_DISTURBANCE_SEED,
+    save_plots: bool = True,
+) -> dict[str, Any]:
+    episodes = int(episodes)
+    set_points_len = int(set_points_len)
+    if episodes <= 0:
+        raise ValueError("episodes must be positive.")
+    if set_points_len <= 0:
+        raise ValueError("set_points_len must be positive.")
+
+    set_seed(int(seed))
+    context = build_disturbance_context()
+    study_name = "OffsetFreeMPCDisturbance"
+    case_name = "offset_free_mpc_disturbance"
+    study_root = _study_root(study_name)
+    case_spec = governed_reference_case_spec(
+        QY_MPC_DIAG,
+        case_name=case_name,
+        controller_mode="offset_free_mpc",
+        lyapunov_mode="diagnostic_only",
+        label="Offset-free MPC disturbance baseline with Direct LMPC diagnostics",
+        u_ref_weight=U_PREV_PENALTY_WEIGHT,
+        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
+    )
+    case_config = {
+        **_base_direct_config(study_name, episodes, set_points_len, seed),
+        "case_name": case_name,
+        "controller_mode": "offset_free_mpc",
+        "target_mode": case_spec["target_mode"],
+        "lyapunov_mode": "diagnostic_only",
+        "target_config": dict(case_spec["target_config"]),
+        "diagnostic_lmpc_enabled": True,
+    }
+
+    print(f"Running {study_name} into {study_root}")
+    timer_start = time.perf_counter()
+    results = run_offset_free_mpc_with_direct_diagnostics(
+        system=make_polymer_system(context.setup),
+        MPC_obj=context.of_mpc_obj,
+        diagnostic_LMPC_obj=context.lmpc_obj,
+        y_sp_scenario=context.y_sp_scenario,
+        n_tests=episodes,
+        set_points_len=set_points_len,
+        steady_states=context.setup.steady_states,
+        IC_opt=context.ic_opt_template.copy(),
+        bnds=context.bnds,
+        L=context.observer_gain,
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        test_cycle=direct_disturbance_test_cycle(episodes),
+        reward_fn=context.reward_fn,
+        nominal_qi=NOMINAL_QI,
+        nominal_qs=NOMINAL_QS,
+        nominal_ha=NOMINAL_HA,
+        qi_change=QI_CHANGE,
+        qs_change=QS_CHANGE,
+        ha_change=HA_CHANGE,
+        target_mode=case_spec["target_mode"],
+        target_config=dict(case_spec["target_config"]),
+        target_H=None,
+        mode=PLANT_MODE,
+        disturbance_after_step=DISTURBANCE_AFTER_STEP,
+        use_target_output_for_tracking=USE_TARGET_OUTPUT_FOR_TRACKING,
+        rho_lyap=RHO_LYAP,
+        lyap_eps=LYAP_EPS,
+        first_step_contraction_on=True,
+        reset_system_on_entry=True,
+        solver_options={"warm_start": True},
+        force_final_test=FORCE_FINAL_TEST,
+    )
+    timing = _timing_metadata(
+        timer_start,
+        n_steps=int(results["nFE"]),
+        episode_len=int(results["time_in_sub_episodes"]),
+    )
+    case_config.update(timing)
+    bundle = build_direct_lyapunov_run_bundle(
+        source=case_name,
+        results=results,
+        steady_states=context.setup.steady_states,
+        config=case_config,
+        data_min=context.system_data["data_min"],
+        data_max=context.system_data["data_max"],
+        extra={
+            "reward_config": context.reward_config,
+            "min_max_dict": context.system_data["min_max_dict"],
+            "timing": timing,
+        },
+    )
+    return _save_direct_baseline_outputs(
+        study_root=study_root,
+        study_name=study_name,
+        case_name=case_name,
+        bundle=bundle,
+        save_plots=save_plots,
+    )
+
+
+def build_online_arg_parser(description: str, *, include_agent_path: bool = False) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--episodes", type=int, default=DIRECT_DISTURBANCE_N_TESTS)
+    parser.add_argument("--set-points-len", type=int, default=DIRECT_DISTURBANCE_SETPOINT_LEN)
+    parser.add_argument("--seed", type=int, default=DIRECT_DISTURBANCE_SEED)
+    parser.add_argument("--save-plots", dest="save_plots", action="store_true", default=True)
+    parser.add_argument("--no-save-plots", dest="save_plots", action="store_false")
+    if include_agent_path:
+        parser.add_argument("--agent-path", default=None)
+    return parser
+
+
+def _main_online(preset_key: str, argv: list[str] | None = None) -> dict[str, Any]:
+    preset = ONLINE_TD3_PRESETS[preset_key]
+    parser = build_online_arg_parser(
+        preset.label,
+        include_agent_path=preset.pretrain_source is not None,
+    )
+    args = parser.parse_args(argv)
+    return run_online_td3_disturbance_preset(
+        preset_key,
+        episodes=args.episodes,
+        set_points_len=args.set_points_len,
+        seed=args.seed,
+        save_plots=args.save_plots,
+        agent_path=getattr(args, "agent_path", None),
+    )
+
+
+def _main_direct_baseline(kind: str, argv: list[str] | None = None) -> dict[str, Any]:
+    if kind not in {"direct_lmpc", "offset_free_mpc"}:
+        raise ValueError(f"Unknown baseline kind: {kind!r}")
+    parser = build_online_arg_parser(
+        "Direct LMPC disturbance baseline" if kind == "direct_lmpc" else "Offset-free MPC disturbance baseline",
+        include_agent_path=False,
+    )
+    args = parser.parse_args(argv)
+    runner = run_direct_lmpc_disturbance if kind == "direct_lmpc" else run_offset_free_mpc_disturbance
+    return runner(
+        episodes=args.episodes,
+        set_points_len=args.set_points_len,
+        seed=args.seed,
+        save_plots=args.save_plots,
+    )
+
+
+def main_lmpc_pretrained_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("lmpc_pretrained_safety_gate", argv)
+
+
+def main_ofmpc_pretrained_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("ofmpc_pretrained_safety_gate", argv)
+
+
+def main_lmpc_pretrained_no_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("lmpc_pretrained_no_safety_gate", argv)
+
+
+def main_ofmpc_pretrained_no_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("ofmpc_pretrained_no_safety_gate", argv)
+
+
+def main_cold_start_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("cold_start_safety_gate", argv)
+
+
+def main_cold_start_no_safety_gate(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_online("cold_start_no_safety_gate", argv)
+
+
+def main_direct_lmpc_disturbance(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_direct_baseline("direct_lmpc", argv)
+
+
+def main_offset_free_mpc_disturbance(argv: list[str] | None = None) -> dict[str, Any]:
+    return _main_direct_baseline("offset_free_mpc", argv)
+
