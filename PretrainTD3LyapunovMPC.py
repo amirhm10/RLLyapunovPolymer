@@ -14,11 +14,13 @@ DEFAULT_LMPC_SAMPLES = DEFAULT_MPC_SAMPLES
 DEFAULT_STEADY_SAMPLES = 100_000
 DEFAULT_CHUNK_SIZE = 100_000
 DEFAULT_CANDIDATE_CHUNK_SIZE = DEFAULT_CHUNK_SIZE
-DEFAULT_WORKER_BATCH_SIZE = 32
 DEFAULT_MAX_ATTEMPT_MULTIPLIER = 5.0
 DEFAULT_ACTOR_EPOCHS = 1000
 DEFAULT_CRITIC_EPOCHS = 500
 DEFAULT_PRETRAIN_BATCH_SIZE = 8192
+DEFAULT_WORKER_BATCH_SIZE = DEFAULT_PRETRAIN_BATCH_SIZE
+DEFAULT_LABEL_N_JOBS = -1
+DEFAULT_PARALLEL_BACKEND = "loky"
 
 DEFAULT_ACTOR_LAYER_SIZES = [256, 256, 256]
 DEFAULT_CRITIC_LAYER_SIZES = [256, 256, 256]
@@ -64,13 +66,25 @@ def parse_args() -> argparse.Namespace:
         "--worker-batch-size",
         type=int,
         default=DEFAULT_WORKER_BATCH_SIZE,
-        help="Accepted transitions flushed to replay storage per batch.",
+        help="Candidate rows per parallel labeling task and replay flush threshold.",
     )
     parser.add_argument(
         "--max-attempt-multiplier",
         type=float,
         default=DEFAULT_MAX_ATTEMPT_MULTIPLIER,
         help="Maximum candidate attempts per requested accepted label.",
+    )
+    parser.add_argument(
+        "--label-n-jobs",
+        type=int,
+        default=DEFAULT_LABEL_N_JOBS,
+        help="Joblib workers for LMPC label generation. Use -1 for all cores, 1 for sequential.",
+    )
+    parser.add_argument(
+        "--parallel-backend",
+        choices=["loky", "threading", "multiprocessing", "sequential"],
+        default=DEFAULT_PARALLEL_BACKEND,
+        help="Joblib backend for LMPC label generation. Use sequential to disable joblib.",
     )
     parser.add_argument(
         "--actor-epochs",
@@ -125,6 +139,8 @@ def main() -> None:
         candidate_chunk_size=int(args.candidate_chunk_size),
         worker_batch_size=int(args.worker_batch_size),
         max_attempt_multiplier=float(args.max_attempt_multiplier),
+        label_n_jobs=int(args.label_n_jobs),
+        parallel_backend=str(args.parallel_backend),
         actor_epochs=int(args.actor_epochs),
         critic_epochs=int(args.critic_epochs),
         pretrain_batch_size=int(args.pretrain_batch_size),
@@ -141,6 +157,8 @@ def main() -> None:
     print(f"Candidate chunk size: {config.candidate_chunk_size}")
     print(f"Worker batch size: {config.worker_batch_size}")
     print(f"Max attempt multiplier: {config.max_attempt_multiplier}")
+    print(f"Label n_jobs: {config.label_n_jobs}")
+    print(f"Parallel backend: {config.parallel_backend}")
     print(f"Actor epochs: {config.actor_epochs}")
     print(f"Critic epochs: {config.critic_epochs}")
     print(f"Pretrain batch size: {config.pretrain_batch_size}")

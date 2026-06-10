@@ -21,8 +21,10 @@ Updated `PretrainTD3LyapunovMPC.py` so the main workload and architecture defaul
   - `DEFAULT_CRITIC_LAYER_SIZES = [256, 256, 256]`
 
 - Kept LMPC-specific runner defaults near the same block:
-  - `DEFAULT_WORKER_BATCH_SIZE = 32`
+  - `DEFAULT_WORKER_BATCH_SIZE = DEFAULT_PRETRAIN_BATCH_SIZE`
   - `DEFAULT_MAX_ATTEMPT_MULTIPLIER = 5.0`
+  - `DEFAULT_LABEL_N_JOBS = -1`
+  - `DEFAULT_PARALLEL_BACKEND = "loky"`
 
 - Updated `report/lmpc_td3_pretraining_process_2026-06-09.md` to describe the new runner-local defaults.
 
@@ -45,6 +47,9 @@ The help text shows:
 - `--lmpc-samples` default `2000000`
 - `--steady-samples` default `100000`
 - `--candidate-chunk-size` default `100000`
+- `--worker-batch-size` default `8192`
+- `--label-n-jobs` default `-1`
+- `--parallel-backend` default `loky`
 - `--actor-epochs` default `1000`
 - `--critic-epochs` default `500`
 - `--pretrain-batch-size` default `8192`

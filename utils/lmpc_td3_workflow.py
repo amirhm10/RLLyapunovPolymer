@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from joblib import Parallel, delayed
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -84,14 +85,16 @@ DISTURBANCE_AFTER_STEP = False
 U_PREV_PENALTY_WEIGHT = 0.0
 XS_PREV_PENALTY_WEIGHT = 0.0
 
-DEFAULT_LMPC_SAMPLES = 100_000
-DEFAULT_STEADY_SAMPLES = 10_000
-DEFAULT_CANDIDATE_CHUNK_SIZE = 512
-DEFAULT_WORKER_BATCH_SIZE = 32
+DEFAULT_LMPC_SAMPLES = 2_000_000
+DEFAULT_STEADY_SAMPLES = 100_000
+DEFAULT_CANDIDATE_CHUNK_SIZE = 100_000
+DEFAULT_WORKER_BATCH_SIZE = 8192
 DEFAULT_MAX_ATTEMPT_MULTIPLIER = 5.0
-DEFAULT_ACTOR_EPOCHS = 500
-DEFAULT_CRITIC_EPOCHS = 200
-DEFAULT_PRETRAIN_BATCH_SIZE = 4096
+DEFAULT_LABEL_N_JOBS = -1
+DEFAULT_PARALLEL_BACKEND = "loky"
+DEFAULT_ACTOR_EPOCHS = 1000
+DEFAULT_CRITIC_EPOCHS = 500
+DEFAULT_PRETRAIN_BATCH_SIZE = 8192
 DEFAULT_ACTOR_LAYER_SIZES = (256, 256, 256)
 DEFAULT_CRITIC_LAYER_SIZES = (256, 256, 256)
 
@@ -113,6 +116,8 @@ class LMPCPretrainingRunConfig:
     candidate_chunk_size: int = DEFAULT_CANDIDATE_CHUNK_SIZE
     worker_batch_size: int = DEFAULT_WORKER_BATCH_SIZE
     max_attempt_multiplier: float = DEFAULT_MAX_ATTEMPT_MULTIPLIER
+    label_n_jobs: int = DEFAULT_LABEL_N_JOBS
+    parallel_backend: str = DEFAULT_PARALLEL_BACKEND
     actor_epochs: int = DEFAULT_ACTOR_EPOCHS
     critic_epochs: int = DEFAULT_CRITIC_EPOCHS
     pretrain_batch_size: int = DEFAULT_PRETRAIN_BATCH_SIZE
@@ -150,6 +155,11 @@ def validate_lmpc_pretraining_config(config: LMPCPretrainingRunConfig) -> None:
         raise ValueError("worker_batch_size must be positive.")
     if config.max_attempt_multiplier <= 0:
         raise ValueError("max_attempt_multiplier must be positive.")
+    if config.label_n_jobs == 0:
+        raise ValueError("label_n_jobs must be -1, 1, or a positive worker count.")
+    allowed_backends = {"loky", "threading", "multiprocessing", "sequential"}
+    if str(config.parallel_backend).lower() not in allowed_backends:
+        raise ValueError(f"parallel_backend must be one of {sorted(allowed_backends)}.")
     if config.actor_epochs < 0 or config.critic_epochs < 0:
         raise ValueError("actor_epochs and critic_epochs must be nonnegative.")
     if config.actor_epochs + config.critic_epochs <= 0:
@@ -413,6 +423,69 @@ def _flush_transitions(agent: TD3Agent, transitions: list[dict[str, np.ndarray]]
     transitions.clear()
 
 
+def _label_candidate_batch_local(
+    *,
+    system_data: dict[str, Any],
+    setup: PolymerSetup,
+    dimensions: TD3Dimensions,
+    lmpc: LMPCComponents,
+    reward_fn: Any,
+    x_batch: np.ndarray,
+    y_batch: np.ndarray,
+    u_batch: np.ndarray,
+    step_start: int,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    batch_count = int(x_batch.shape[0])
+    for local_idx in range(batch_count):
+        success, diagnostic, transition = _label_candidate(
+            system_data=system_data,
+            setup=setup,
+            dimensions=dimensions,
+            lmpc=lmpc,
+            reward_fn=reward_fn,
+            x_aug=x_batch[local_idx, :],
+            y_sp=y_batch[local_idx, :],
+            u_prev=u_batch[local_idx, :],
+            step_idx=int(step_start + local_idx),
+        )
+        items.append(
+            {
+                "success": bool(success),
+                "diagnostic": diagnostic,
+                "transition": transition,
+            }
+        )
+    return {"attempted": batch_count, "items": items}
+
+
+def _label_candidate_batch_worker(
+    *,
+    system_data: dict[str, Any],
+    setup: PolymerSetup,
+    dimensions: TD3Dimensions,
+    x_batch: np.ndarray,
+    y_batch: np.ndarray,
+    u_batch: np.ndarray,
+    step_start: int,
+) -> dict[str, Any]:
+    # Each worker owns its CVXPY-backed LMPC object. Passing the live solver
+    # from the parent process through loky is fragile and can corrupt state.
+    lmpc = make_lmpc_components(system_data)
+    _reward_config, reward_fn = make_lmpc_offline_reward()
+    return _label_candidate_batch_local(
+        system_data=system_data,
+        setup=setup,
+        dimensions=dimensions,
+        lmpc=lmpc,
+        reward_fn=reward_fn,
+        x_batch=x_batch,
+        y_batch=y_batch,
+        u_batch=u_batch,
+        step_start=step_start,
+    )
+
+
 def _generate_lmpc_label_subset(
     *,
     agent: TD3Agent,
@@ -426,6 +499,8 @@ def _generate_lmpc_label_subset(
     candidate_chunk_size: int,
     worker_batch_size: int,
     max_attempt_multiplier: float,
+    label_n_jobs: int,
+    parallel_backend: str,
 ) -> dict[str, Any]:
     requested = int(requested)
     if requested <= 0:
@@ -440,21 +515,35 @@ def _generate_lmpc_label_subset(
             "target_stage_counts": {},
             "tracking_status_counts": {},
             "sample_records": [],
+            "discarded_successes": 0,
+            "successful_solves": 0,
+            "solve_success_rate": None,
+            "label_n_jobs": int(label_n_jobs),
+            "parallel_backend": str(parallel_backend),
+            "worker_batch_size": int(worker_batch_size),
         }
 
     max_attempts = max(requested, int(np.ceil(requested * float(max_attempt_multiplier))))
     accepted = 0
     attempted = 0
+    discarded_successes = 0
     failure_reasons: Counter[str] = Counter()
     target_stage_counts: Counter[str] = Counter()
     tracking_status_counts: Counter[str] = Counter()
     sample_records: list[dict[str, Any]] = []
     pending: list[dict[str, np.ndarray]] = []
     wall_start = time.perf_counter()
+    backend = str(parallel_backend).lower()
+    use_parallel = backend != "sequential" and int(label_n_jobs) != 1
 
     while accepted < requested and attempted < max_attempts:
         remaining_attempts = max_attempts - attempted
-        draw_count = min(int(candidate_chunk_size), remaining_attempts)
+        remaining_labels = max(0, requested - accepted)
+        draw_count = min(
+            int(candidate_chunk_size),
+            remaining_attempts,
+            max(int(worker_batch_size), remaining_labels),
+        )
         x_batch, y_batch, u_batch = _sample_candidates(
             system_data["min_max_dict"],
             draw_count,
@@ -464,49 +553,87 @@ def _generate_lmpc_label_subset(
             input_dim=system_data["B_aug"].shape[1],
         )
 
-        for row_idx in range(draw_count):
-            if accepted >= requested:
-                break
-            attempted += 1
-            success, diagnostic, transition = _label_candidate(
-                system_data=system_data,
-                setup=setup,
-                dimensions=dimensions,
-                lmpc=lmpc,
-                reward_fn=reward_fn,
-                x_aug=x_batch[row_idx, :],
-                y_sp=y_batch[row_idx, :],
-                u_prev=u_batch[row_idx, :],
-                step_idx=attempted - 1,
+        task_batch_size = max(1, int(worker_batch_size))
+        task_ranges = [
+            (start, min(start + task_batch_size, draw_count))
+            for start in range(0, draw_count, task_batch_size)
+        ]
+        if use_parallel:
+            batch_results = Parallel(n_jobs=int(label_n_jobs), backend=backend)(
+                delayed(_label_candidate_batch_worker)(
+                    system_data=system_data,
+                    setup=setup,
+                    dimensions=dimensions,
+                    x_batch=x_batch[start:end, :],
+                    y_batch=y_batch[start:end, :],
+                    u_batch=u_batch[start:end, :],
+                    step_start=attempted + start,
+                )
+                for start, end in task_ranges
             )
-            target_stage_counts[str(diagnostic.get("target_stage"))] += 1
-            tracking_status_counts[str(diagnostic.get("status"))] += 1
-            if success and transition is not None:
-                accepted += 1
-                pending.append(transition)
-                if len(sample_records) < 50:
-                    record = dict(diagnostic)
-                    record["kind"] = kind
-                    record["accepted_index"] = accepted
-                    sample_records.append(record)
-                if len(pending) >= int(worker_batch_size):
-                    _flush_transitions(agent, pending)
-            else:
-                failure_reasons[str(diagnostic.get("failure_key", "unknown"))] += 1
-                if len(sample_records) < 50:
-                    record = dict(diagnostic)
-                    record["kind"] = kind
-                    record["accepted_index"] = None
-                    sample_records.append(record)
+        else:
+            batch_results = [
+                _label_candidate_batch_local(
+                    system_data=system_data,
+                    setup=setup,
+                    dimensions=dimensions,
+                    lmpc=lmpc,
+                    reward_fn=reward_fn,
+                    x_batch=x_batch[start:end, :],
+                    y_batch=y_batch[start:end, :],
+                    u_batch=u_batch[start:end, :],
+                    step_start=attempted + start,
+                )
+                for start, end in task_ranges
+            ]
+
+        for batch_result in batch_results:
+            for item in batch_result["items"]:
+                attempted += 1
+                success = bool(item["success"])
+                diagnostic = item["diagnostic"]
+                transition = item["transition"]
+
+                target_stage_counts[str(diagnostic.get("target_stage"))] += 1
+                tracking_status_counts[str(diagnostic.get("status"))] += 1
+                if success and transition is not None and accepted < requested:
+                    accepted += 1
+                    pending.append(transition)
+                    if len(sample_records) < 50:
+                        record = dict(diagnostic)
+                        record["kind"] = kind
+                        record["accepted_index"] = accepted
+                        sample_records.append(record)
+                    if len(pending) >= int(worker_batch_size):
+                        _flush_transitions(agent, pending)
+                elif success and transition is not None:
+                    discarded_successes += 1
+                    if len(sample_records) < 50:
+                        record = dict(diagnostic)
+                        record["kind"] = kind
+                        record["accepted_index"] = None
+                        record["discarded_after_requested_count"] = True
+                        sample_records.append(record)
+                else:
+                    failure_reasons[str(diagnostic.get("failure_key", "unknown"))] += 1
+                    if len(sample_records) < 50:
+                        record = dict(diagnostic)
+                        record["kind"] = kind
+                        record["accepted_index"] = None
+                        sample_records.append(record)
+
+            if len(pending) >= int(worker_batch_size):
+                _flush_transitions(agent, pending)
 
         print(
             f"[lmpc-labels][{kind}] accepted={accepted}/{requested} "
-            f"attempted={attempted}/{max_attempts}"
+            f"attempted={attempted}/{max_attempts} discarded_successes={discarded_successes}"
         )
 
     _flush_transitions(agent, pending)
     seconds = float(time.perf_counter() - wall_start)
     status = "completed" if accepted >= requested else "insufficient_labels"
+    successful_solves = int(accepted + discarded_successes)
     return {
         "kind": kind,
         "requested": requested,
@@ -514,12 +641,18 @@ def _generate_lmpc_label_subset(
         "attempted": int(attempted),
         "max_attempts": int(max_attempts),
         "acceptance_rate": float(accepted / attempted) if attempted > 0 else None,
+        "successful_solves": successful_solves,
+        "solve_success_rate": float(successful_solves / attempted) if attempted > 0 else None,
         "elapsed_seconds": seconds,
         "status": status,
         "failure_reasons": dict(failure_reasons),
         "target_stage_counts": dict(target_stage_counts),
         "tracking_status_counts": dict(tracking_status_counts),
         "sample_records": sample_records,
+        "discarded_successes": int(discarded_successes),
+        "label_n_jobs": int(label_n_jobs),
+        "parallel_backend": backend,
+        "worker_batch_size": int(worker_batch_size),
     }
 
 
@@ -536,6 +669,8 @@ def fill_lmpc_replay_buffer(
     candidate_chunk_size: int,
     worker_batch_size: int,
     max_attempt_multiplier: float,
+    label_n_jobs: int,
+    parallel_backend: str,
 ) -> dict[str, Any]:
     broad_diag = _generate_lmpc_label_subset(
         agent=agent,
@@ -549,6 +684,8 @@ def fill_lmpc_replay_buffer(
         candidate_chunk_size=int(candidate_chunk_size),
         worker_batch_size=int(worker_batch_size),
         max_attempt_multiplier=float(max_attempt_multiplier),
+        label_n_jobs=int(label_n_jobs),
+        parallel_backend=str(parallel_backend),
     )
     steady_diag = _generate_lmpc_label_subset(
         agent=agent,
@@ -562,10 +699,14 @@ def fill_lmpc_replay_buffer(
         candidate_chunk_size=int(candidate_chunk_size),
         worker_batch_size=int(worker_batch_size),
         max_attempt_multiplier=float(max_attempt_multiplier),
+        label_n_jobs=int(label_n_jobs),
+        parallel_backend=str(parallel_backend),
     )
     requested_total = int(lmpc_samples + steady_samples)
     accepted_total = int(broad_diag["accepted"] + steady_diag["accepted"])
     attempted_total = int(broad_diag["attempted"] + steady_diag["attempted"])
+    discarded_successes = int(broad_diag["discarded_successes"] + steady_diag["discarded_successes"])
+    successful_solves = int(broad_diag["successful_solves"] + steady_diag["successful_solves"])
     status = "completed" if accepted_total >= requested_total else "insufficient_labels"
     return {
         "status": status,
@@ -573,8 +714,14 @@ def fill_lmpc_replay_buffer(
         "accepted_total": accepted_total,
         "attempted_total": attempted_total,
         "acceptance_rate": float(accepted_total / attempted_total) if attempted_total > 0 else None,
+        "discarded_successes": discarded_successes,
+        "successful_solves": successful_solves,
+        "solve_success_rate": float(successful_solves / attempted_total) if attempted_total > 0 else None,
         "broad": broad_diag,
         "steady": steady_diag,
+        "label_n_jobs": int(label_n_jobs),
+        "parallel_backend": str(parallel_backend).lower(),
+        "worker_batch_size": int(worker_batch_size),
     }
 
 
@@ -616,6 +763,8 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
         candidate_chunk_size=config.candidate_chunk_size,
         worker_batch_size=config.worker_batch_size,
         max_attempt_multiplier=config.max_attempt_multiplier,
+        label_n_jobs=config.label_n_jobs,
+        parallel_backend=config.parallel_backend,
     )
     label_seconds = float(time.perf_counter() - label_start)
     label_diagnostics_path = run_dir / "label_diagnostics.json"
@@ -753,8 +902,12 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
             "accepted_total": label_diagnostics["accepted_total"],
             "attempted_total": label_diagnostics["attempted_total"],
             "acceptance_rate": label_diagnostics["acceptance_rate"],
+            "solve_success_rate": label_diagnostics["solve_success_rate"],
+            "discarded_successes": label_diagnostics["discarded_successes"],
             "broad_acceptance_rate": label_diagnostics["broad"]["acceptance_rate"],
+            "broad_solve_success_rate": label_diagnostics["broad"]["solve_success_rate"],
             "steady_acceptance_rate": label_diagnostics["steady"]["acceptance_rate"],
+            "steady_solve_success_rate": label_diagnostics["steady"]["solve_success_rate"],
         },
         "reward_stats": array_stats(agent.buffer.rewards[:buffer_size]),
         "action_stats": array_stats(agent.buffer.actions[:buffer_size]),
@@ -1453,8 +1606,10 @@ __all__ = [
     "DEFAULT_CANDIDATE_CHUNK_SIZE",
     "DEFAULT_CRITIC_EPOCHS",
     "DEFAULT_CRITIC_LAYER_SIZES",
+    "DEFAULT_LABEL_N_JOBS",
     "DEFAULT_LMPC_SAMPLES",
     "DEFAULT_MAX_ATTEMPT_MULTIPLIER",
+    "DEFAULT_PARALLEL_BACKEND",
     "DEFAULT_PRETRAIN_BATCH_SIZE",
     "DEFAULT_STEADY_SAMPLES",
     "DEFAULT_WORKER_BATCH_SIZE",

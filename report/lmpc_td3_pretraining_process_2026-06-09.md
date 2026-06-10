@@ -158,7 +158,9 @@ The LMPC pretraining runner now keeps the editable production defaults at the to
 - accepted broad LMPC labels: `2,000,000`
 - accepted near-steady labels: `100,000`
 - candidate chunk size: `100,000`
-- replay flush batch size: `32`
+- parallel label workers: `-1` (`joblib` uses all available cores)
+- parallel backend: `loky`
+- candidate rows per parallel task and replay flush threshold: `8192`
 - max attempt multiplier: `5`
 - actor behavioral-cloning epochs: `1000`
 - critic TD warm-up epochs: `500`
@@ -166,7 +168,15 @@ The LMPC pretraining runner now keeps the editable production defaults at the to
 - actor hidden layers: `[256, 256, 256]`
 - critic hidden layers: `[256, 256, 256]`
 
-The runner exposes CLI overrides for all workload sizes, architecture values, seed, device, and output root.
+The runner exposes CLI overrides for all workload sizes, label-parallelism settings, architecture values, seed, device, and output root.
+
+LMPC label generation is parallelized at the candidate-batch level. The parent process samples candidate states and owns the replay buffer. Each `loky` worker builds its own Direct LMPC solver from serializable matrices, labels its assigned candidates, and returns plain NumPy transitions plus diagnostics. This avoids passing a live CVXPY problem or mutating the replay buffer across processes.
+
+Because a parallel worker batch may finish after the requested accepted-label count is already reached, diagnostics distinguish kept replay labels from extra successful solves:
+
+- `acceptance_rate`: accepted replay labels divided by attempted candidates
+- `solve_success_rate`: successful LMPC solves divided by attempted candidates
+- `discarded_successes`: successful solves not inserted because the requested count was already reached
 
 Checkpoint metadata was also extended in `TD3Agent.save(...)`. New checkpoints store `state_dim`, `action_dim`, `actor_hidden`, and `critic_hidden` in the `hparams` block. The comparison runner can also infer architecture from older checkpoints by reading saved layer weights.
 
@@ -300,10 +310,18 @@ The existing OF-MPC workflow still compiled, and a tiny OF-MPC smoke pretraining
 results/PretrainOFMPCSmoke/20260609_191259/
 ```
 
+Parallel LMPC label generation was also smoke-tested with `--label-n-jobs 2`, `--parallel-backend loky`, and `--worker-batch-size 2`:
+
+```text
+results/PretrainLMPCParallelSmoke/20260609_214340/
+```
+
+The run accepted 3 replay labels from 4 attempted candidates, recorded 4 successful LMPC solves, and discarded 1 extra successful solve after the requested count was reached. Loss logging remained valid with one actor BC loss and one critic TD loss.
+
 ## Limitations
 
 - Broad random candidates can be rejected by hard LMPC. Acceptance rate must be monitored before committing to a large production run.
-- The current V1 label generator is sequential. This avoids pickling CVXPY solver objects but is slower than OF-MPC replay generation.
+- Parallel LMPC workers rebuild their own CVXPY-backed solver per candidate batch. This is safer than sharing solver objects, but the batch size should be tuned so solver construction overhead does not dominate.
 - Offline LMPC pretraining uses the one-step MPC quadratic reward. Online RL training uses the shaped relative-QR reward and should remain separate from the MPC/LMPC objective weights.
 - The LMPC pretraining and comparison workflows now use the same proof-track contraction setting as `DirectLyapunovMPC.py`: `rho_lyap = 0.99`, `lyap_eps = 5e-3`.
 - The smoke checkpoint is intentionally tiny and should not be interpreted as evidence of policy quality.
