@@ -167,7 +167,7 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
         label="LMPC-pretrained online TD3 without safety intervention",
         safety_gate=False,
         pretrain_source="lmpc",
-        teacher_source="direct_lyapunov_mpc",
+        teacher_source="offset_free_mpc",
     ),
     "ofmpc_pretrained_no_safety_gate": OnlineTD3Preset(
         key="ofmpc_pretrained_no_safety_gate",
@@ -191,7 +191,7 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
         label="Cold-start online TD3 without safety intervention",
         safety_gate=False,
         pretrain_source=None,
-        teacher_source="direct_lyapunov_mpc",
+        teacher_source="offset_free_mpc",
     ),
 }
 
@@ -326,7 +326,7 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         "full_rl_exploration_std_end": 0.005,
         "full_rl_exploration_decay_mode": "linear",
         "bc_teacher_policy": teacher_source,
-        "bc_behavior_source": "policy_with_lmpc_teacher_demo",
+        "bc_behavior_source": teacher_source,
         "handoff_episodes": HANDOFF_EPISODES,
         "handoff_blend": "linear",
         "warmup_behavior_source": teacher_source,

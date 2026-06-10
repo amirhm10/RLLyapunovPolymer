@@ -287,10 +287,11 @@ This is separate from the old `warm_start=0` argument. With `training_phase_conf
 For the first 20 cycles, the config uses:
 
 ```text
-bc_behavior_source = "policy_with_lmpc_teacher_demo"
+bc_behavior_source = teacher_source
+bc_behavior_noise = "gaussian"
 ```
 
-Despite the name of the phase, this means the behavior action is still the policy action with Gaussian exploration. The teacher action is computed and stored as a supervised actor demo. The replay buffer stores the executed action, while the actor demo buffer stores the teacher action.
+This means the behavior candidate during BC is the teacher action plus Gaussian exploration. The clean teacher action is also stored as the supervised actor-demo target. This is the expert-guided/off-policy pattern: the critic sees real executed transitions, including exploration and safety/no-safety execution effects, while the actor is pulled toward the clean expert action.
 
 So the critic and actor learn from different objects during BC:
 
@@ -299,12 +300,12 @@ So the critic and actor learn from different objects during BC:
 - The actor does not run the TD3 policy-gradient update during BC.
 - The actor is trained by supervised BC updates toward the teacher demo action through `train_actor_bc_step()`.
 - If the safety gate is active, the replay action is the gate-executed action; the actor demo target is still the teacher action.
-- If no gate is active, the replay action is the policy/no-gate action; the actor demo target is still the teacher action.
+- If no gate is active, the replay action is the teacher-plus-noise action with no Direct LMPC intervention; the actor demo target is still the clean teacher action.
 
 Per step during BC:
 
-1. Compute policy action with Gaussian exploration.
-2. Compute teacher action from Direct LMPC or OF-MPC depending on runner.
+1. Compute teacher action from Direct LMPC or OF-MPC depending on runner.
+2. Add Gaussian exploration to the teacher action for the executed behavior candidate.
 3. Apply safety gate or no-gate diagnostic logic.
 4. Store the executed action in replay.
 5. Store the teacher action in the actor demo buffer.
@@ -315,15 +316,19 @@ Teacher source by runner:
 
 | Runner family | Teacher source |
 |---|---|
-| LMPC-pretrained safety/no-gate | Direct LMPC |
-| OF-MPC-pretrained safety/no-gate | OF-MPC |
-| cold-start safety/no-gate | Direct LMPC |
+| LMPC-pretrained safety | Direct LMPC |
+| OF-MPC-pretrained safety | OF-MPC |
+| cold-start safety | Direct LMPC |
+| LMPC-pretrained no-gate | OF-MPC |
+| OF-MPC-pretrained no-gate | OF-MPC |
+| cold-start no-gate | OF-MPC |
 
 The OF-MPC-pretrained safety-gate runner uses OF-MPC for the teacher while Direct LMPC remains the safety gate.
+For all no-gate runners, Direct LMPC is diagnostic only and is not used as the online BC/handoff supervisor. The LMPC-pretrained no-gate runner still starts from an LMPC-pretrained checkpoint, but its online supervisor is OF-MPC.
 
 ### Handoff
 
-After BC, the runner uses a 5-cycle handoff. During handoff, the policy candidate is blended with the teacher action:
+After BC, the runner uses a 5-cycle handoff. During handoff, the policy candidate is blended with the clean teacher action:
 
 $$
 u_{\mathrm{handoff}}
@@ -332,7 +337,7 @@ $$
 
 with $\alpha$ decaying linearly from near 1 to 0 over the handoff window.
 
-This blended candidate is then passed through the same safety-gate or no-gate execution path. Handoff diagnostics are logged as:
+The policy side of the blend keeps the full-RL Gaussian exploration schedule. No extra teacher-side noise is added after blending. The blended candidate is then passed through the same safety-gate or no-gate execution path. Handoff diagnostics are logged as:
 
 - `handoff_active_flags`
 - `handoff_alpha`
@@ -371,13 +376,13 @@ Parameter-noise exploration is implemented in the training loop but not enabled 
 
 Use these knobs in `utils/online_disturbance_runner.py`.
 
-To make BC execute the teacher instead of only using teacher demos:
+To use Direct LMPC as a BC/handoff teacher:
 
 ```python
 "bc_behavior_source": "direct_lyapunov_mpc"
 ```
 
-or for OF-MPC teacher:
+To use OF-MPC as a BC/handoff teacher:
 
 ```python
 "bc_behavior_source": "offset_free_mpc"
@@ -417,18 +422,18 @@ To add a true warmup phase:
 "warmup_behavior_noise": "none"
 ```
 
-To make no-gate runs still learn from a teacher but execute ungated policy actions, keep:
+To make BC execute ungated policy actions while only using the teacher as actor-demo supervision:
 
 ```python
 "bc_behavior_source": "policy_with_lmpc_teacher_demo"
 ```
 
-This preserves direct policy execution while still providing actor demo supervision.
+This is no longer the default because it makes BC critic data policy-driven instead of teacher-guided.
 
 ## Audit Findings And Caveats
 
 1. The active new runners do not mix reward-shaping penalties into the MPC or Direct LMPC safety-gate objective.
-2. The no-gate runners execute TD3 actions directly and log Direct LMPC diagnostics only.
+2. The no-gate runners execute the configured behavior/policy action directly and log Direct LMPC diagnostics only; Direct LMPC is not the no-gate online BC/handoff teacher.
 3. The saved no-gate reward config now disables fallback penalties explicitly, so the config matches the behavior.
 4. The `fallback_rate` comparison field counts Direct LMPC fallback modes, not every intervention-like hold-prev event. For safety-gate activity, prefer `actual_intervention_rate`, `n_target_fail_hold_prev`, `n_fallback_mpc_verified`, and `n_fallback_mpc_unverified`.
 5. The affine input scaler can produce scaled values outside $[0,1]$ for the physical input limits. This is consistent in the active code path but should be remembered when interpreting action magnitudes.
