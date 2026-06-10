@@ -153,16 +153,16 @@ with $Q_{MPC}=\operatorname{diag}(5,1)$ and $R_{MPC}=\operatorname{diag}(1,1)$. 
 
 ## TD3 Pretraining
 
-The default LMPC pretraining workload is moderate because each label requires target selection and CVXPY tracking solves:
+The LMPC pretraining runner now keeps the editable production defaults at the top of `PretrainTD3LyapunovMPC.py`, matching the current OF-MPC pretraining runner style:
 
-- accepted broad LMPC labels: `100_000`
-- accepted near-steady labels: `10_000`
-- candidate chunk size: `512`
+- accepted broad LMPC labels: `2,000,000`
+- accepted near-steady labels: `100,000`
+- candidate chunk size: `100,000`
 - replay flush batch size: `32`
 - max attempt multiplier: `5`
-- actor behavioral-cloning epochs: `500`
-- critic TD warm-up epochs: `200`
-- pretraining batch size: `4096`
+- actor behavioral-cloning epochs: `1000`
+- critic TD warm-up epochs: `500`
+- pretraining batch size: `8192`
 - actor hidden layers: `[256, 256, 256]`
 - critic hidden layers: `[256, 256, 256]`
 
