@@ -1,0 +1,10 @@
+{
+  "LMPC pretrained + gate": "results\\OnlineTD3_LMPCPretrained_SafetyGate\\20260610_200545",
+  "OF-MPC pretrained + gate": "results\\OnlineTD3_OFMPCPretrained_SafetyGate\\20260610_200552",
+  "LMPC pretrained no gate": "results\\OnlineTD3_LMPCPretrained_NoSafetyGate\\20260610_200457",
+  "OF-MPC pretrained no gate": "results\\OnlineTD3_OFMPCPretrained_NoSafetyGate\\20260610_200548",
+  "Cold start + gate": "results\\OnlineTD3_ColdStart_SafetyGate\\20260610_200453",
+  "Cold start no gate": "results\\OnlineTD3_ColdStart_NoSafetyGate\\20260610_200450",
+  "Direct LMPC baseline": "results\\DirectLMPCDisturbance\\20260610_200442",
+  "OF-MPC baseline": "results\\OffsetFreeMPCDisturbance\\20260610_200445"
+}
