@@ -384,7 +384,7 @@ The console now prints three reward quantities at each cycle boundary:
 - `avg. reward_no_penalty`: the same shaped tracking reward before safety-gate fallback/event penalties.
 - `avg. fallback penalty`: the average safety-gate penalty charged in that cycle.
 
-This matters because no-gate runners have fallback penalties disabled by construction, while safety-gate runners subtract the event and correction penalty whenever the Direct LMPC gate changes the candidate action. Therefore a no-gate run can show a much better raw reward while still reporting a nonzero `diagnostic_unsafe` or would-activate rate. In that case the interpretation is not a scaling failure: it means the no-gate candidate tracks better under the shaped reward but fails the model-based Direct LMPC contraction diagnostic on those steps.
+The saved per-run plots now show the same distinction. `reward_trace.png` overlays the actual training reward and `reward_no_penalty`; `reward_average_summary.png` overlays episode-level averages for both. This matters because no-gate runners have fallback penalties disabled by construction, while safety-gate runners subtract the event and correction penalty whenever the Direct LMPC gate changes the candidate action. Therefore a no-gate run can show a much better raw reward while still reporting a nonzero `diagnostic_unsafe` or would-activate rate. In that case the interpretation is not a scaling failure: it means the no-gate candidate tracks better under the shaped reward but fails the model-based Direct LMPC contraction diagnostic on those steps.
 
 ## What To Change If Needed
 

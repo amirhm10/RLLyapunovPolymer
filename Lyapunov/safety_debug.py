@@ -400,6 +400,19 @@ def _moving_average(values, window):
     return out
 
 
+def _bundle_reward_no_penalty_array(bundle, rewards):
+    rewards = np.asarray(rewards, dtype=float).reshape(-1)
+    raw = bundle.get("reward_no_penalty", bundle.get("reward_base", rewards))
+    arr = np.asarray(raw, dtype=float).reshape(-1)
+    if arr.size == rewards.size:
+        return arr
+    aligned = np.full_like(rewards, np.nan, dtype=float)
+    n = min(aligned.size, arr.size)
+    if n > 0:
+        aligned[:n] = arr[:n]
+    return aligned
+
+
 def _safety_active_flags_from_bundle(bundle, *, tol=1.0e-10):
     u_safe = np.asarray(bundle.get("u_safe_dev_store", []), dtype=float)
     u_cand = np.asarray(bundle.get("u_cand_dev_store", []), dtype=float)
@@ -2002,7 +2015,8 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
     constrained_mpc_failed_applied_candidate_flags = np.asarray(bundle["constrained_mpc_failed_applied_candidate_flags"], float)
     u_cand_dev = bundle["u_cand_dev_store"]
     u_safe_dev = bundle["u_safe_dev_store"]
-    rewards = bundle["rewards"]
+    rewards = np.asarray(bundle["rewards"], dtype=float).reshape(-1)
+    reward_no_penalty = _bundle_reward_no_penalty_array(bundle, rewards)
     projection_active = np.asarray(bundle["projection_active_flags"], float)
     fallback_verified_flags = np.asarray(bundle["fallback_verified_flags"], float)
     xhatdhat = np.asarray(bundle["xhatdhat"], float)
@@ -2685,10 +2699,23 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
         plt.close(fig)
 
         plt.figure(figsize=(10, 5))
-        plt.plot(time_u, rewards, linewidth=2, label="reward")
+        plt.plot(time_u, rewards, linewidth=1.7, label="training reward")
+        plt.plot(time_u, reward_no_penalty, linewidth=1.7, linestyle="-.", label="reward_no_penalty")
         reward_ma = _moving_average(rewards, max(1, int(bundle.get("time_in_sub_episodes", 1))))
+        reward_no_penalty_ma = _moving_average(
+            reward_no_penalty,
+            max(1, int(bundle.get("time_in_sub_episodes", 1))),
+        )
         if reward_ma.size == len(time_u):
-            plt.plot(time_u, reward_ma, linewidth=2, linestyle="--", label="episode-window avg reward")
+            plt.plot(time_u, reward_ma, linewidth=2, linestyle="--", label="episode-window avg training reward")
+        if reward_no_penalty_ma.size == len(time_u):
+            plt.plot(
+                time_u,
+                reward_no_penalty_ma,
+                linewidth=2,
+                linestyle=":",
+                label="episode-window avg reward_no_penalty",
+            )
         plt.grid(True, linestyle="--", alpha=0.35)
         plt.legend()
         plt.tight_layout()
@@ -2713,6 +2740,15 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
             episode_reward_mean = np.asarray(
                 [
                     np.nanmean(rewards[idx * episode_len : min((idx + 1) * episode_len, len(rewards))])
+                    for idx in range(n_episodes)
+                ],
+                dtype=float,
+            )
+            episode_reward_no_penalty_mean = np.asarray(
+                [
+                    np.nanmean(
+                        reward_no_penalty[idx * episode_len : min((idx + 1) * episode_len, len(reward_no_penalty))]
+                    )
                     for idx in range(n_episodes)
                 ],
                 dtype=float,
@@ -2745,8 +2781,28 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
                 ],
                 dtype=float,
             )
-            axes[0].plot(ep_time + 1, episode_reward_mean, linewidth=1.8, label="episode average reward")
-            axes[0].plot(ep_time + 1, _moving_average(episode_reward_mean, 5), linewidth=2.2, linestyle="--", label="5-episode moving avg")
+            axes[0].plot(ep_time + 1, episode_reward_mean, linewidth=1.8, label="episode avg training reward")
+            axes[0].plot(
+                ep_time + 1,
+                episode_reward_no_penalty_mean,
+                linewidth=1.8,
+                linestyle="-.",
+                label="episode avg reward_no_penalty",
+            )
+            axes[0].plot(
+                ep_time + 1,
+                _moving_average(episode_reward_mean, 5),
+                linewidth=2.2,
+                linestyle="--",
+                label="5-episode avg training reward",
+            )
+            axes[0].plot(
+                ep_time + 1,
+                _moving_average(episode_reward_no_penalty_mean, 5),
+                linewidth=2.2,
+                linestyle=":",
+                label="5-episode avg reward_no_penalty",
+            )
             axes[0].set_ylabel("reward")
             axes[1].plot(ep_time + 1, safety_rate, linewidth=1.8, color="tab:red", label="safety active rate")
             axes[1].plot(
@@ -2759,8 +2815,24 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
             )
             axes[1].plot(ep_time + 1, fallback_rate, linewidth=1.8, linestyle="--", color="tab:purple", label="fallback rate")
             axes[1].set_ylabel("rate")
-            axes[2].plot(time_u, rewards, linewidth=1.0, color="tab:blue", alpha=0.75, label="step reward")
-            axes[2].plot(time_u, reward_ma, linewidth=2.0, color="tab:orange", label="episode-window avg")
+            axes[2].plot(time_u, rewards, linewidth=1.0, color="tab:blue", alpha=0.65, label="step training reward")
+            axes[2].plot(
+                time_u,
+                reward_no_penalty,
+                linewidth=1.0,
+                color="tab:green",
+                alpha=0.65,
+                label="step reward_no_penalty",
+            )
+            axes[2].plot(time_u, reward_ma, linewidth=2.0, color="tab:orange", label="episode-window training avg")
+            axes[2].plot(
+                time_u,
+                reward_no_penalty_ma,
+                linewidth=2.0,
+                linestyle=":",
+                color="tab:purple",
+                label="episode-window no-penalty avg",
+            )
             axes[2].set_ylabel("reward")
             axes[3].step(time_u, safety_active_flags[: len(time_u)], where="post", linewidth=1.8, color="tab:red", label="safety active")
             axes[3].step(
@@ -3047,7 +3119,8 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
 
     y_system = np.asarray(bundle["y_system"], float)
     y_sp = np.asarray(bundle["y_sp"], float)
-    rewards = np.asarray(bundle["rewards"], float)
+    rewards = np.asarray(bundle["rewards"], float).reshape(-1)
+    reward_no_penalty = _bundle_reward_no_penalty_array(bundle, rewards)
     target_success_flags = np.asarray(bundle["target_success_flags"], float)
     target_failure_flags = np.asarray(bundle["target_failure_flags"], float)
     target_stage_code = np.asarray(bundle["target_stage_code"], float)
@@ -3150,7 +3223,8 @@ def plot_safety_filter_diagnostic_only(bundle, output_dir):
     plt.close(fig)
 
     plt.figure(figsize=(10, 5))
-    plt.plot(time_u, rewards, linewidth=2, label="reward")
+    plt.plot(time_u, rewards, linewidth=1.7, label="training reward")
+    plt.plot(time_u, reward_no_penalty, linewidth=1.7, linestyle="-.", label="reward_no_penalty")
     plt.grid(True, linestyle="--", alpha=0.35)
     plt.legend()
     plt.tight_layout()
