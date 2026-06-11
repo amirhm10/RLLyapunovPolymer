@@ -65,6 +65,17 @@ from utils.of_mpc_td3_workflow import (
     make_polymer_system,
     set_seed,
 )
+from utils.direct_lmpc_selector_defaults import (
+    DIRECT_LMPC_LYAP_EPS,
+    DIRECT_LMPC_LYAP_TOL,
+    DIRECT_LMPC_RHO_LYAP,
+    DIRECT_LMPC_SLACK_PENALTY,
+    DIRECT_LMPC_TARGET_MODE,
+    DIRECT_LMPC_TARGET_SELECTOR_VARIANT,
+    DIRECT_LMPC_U_REF_WEIGHT,
+    DIRECT_LMPC_X_REF_WEIGHT,
+    make_direct_lmpc_target_config,
+)
 from utils.path_helpers import repo_path, resolve_repo_path
 from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS
 from utils.scaling_helpers import apply_min_max
@@ -77,12 +88,12 @@ USE_TARGET_OUTPUT_FOR_TRACKING = False
 
 PREDICT_H = PREDICT_HORIZON
 CONT_H = CONTROL_HORIZON
-RHO_LYAP = 0.99
-LYAP_EPS = 1e-3
-LYAP_TOL = 1e-10
-SLACK_PENALTY = 1e6
-TARGET_MODE = "bounded"
-TARGET_SELECTOR_VARIANT = "bounded_mixed_u0p1_x0p1"
+RHO_LYAP = DIRECT_LMPC_RHO_LYAP
+LYAP_EPS = DIRECT_LMPC_LYAP_EPS
+LYAP_TOL = DIRECT_LMPC_LYAP_TOL
+SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
+TARGET_MODE = DIRECT_LMPC_TARGET_MODE
+TARGET_SELECTOR_VARIANT = DIRECT_LMPC_TARGET_SELECTOR_VARIANT
 
 QY_MPC_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -90,8 +101,8 @@ RDU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
 QY_REWARD_DIAG = np.array([12.0, 6.0], dtype=float)
 RDU_REWARD_DIAG = np.array([1.0, 1.0], dtype=float)
 
-U_PREV_PENALTY_WEIGHT = 0.1
-XS_PREV_PENALTY_WEIGHT = 0.1
+U_PREV_PENALTY_WEIGHT = DIRECT_LMPC_U_REF_WEIGHT
+XS_PREV_PENALTY_WEIGHT = DIRECT_LMPC_X_REF_WEIGHT
 
 DEFAULT_ACTOR_LAYER_SIZES = (256, 256, 256)
 DEFAULT_CRITIC_LAYER_SIZES = (256, 256, 256)
@@ -435,10 +446,7 @@ def _build_reward(
 
 
 def _bounded_mixed_target_config() -> dict[str, float]:
-    return {
-        "u_ref_weight": float(U_PREV_PENALTY_WEIGHT),
-        "x_ref_weight": float(XS_PREV_PENALTY_WEIGHT),
-    }
+    return make_direct_lmpc_target_config()
 
 
 def _pretrained_selector_note(pretrain_source: str | None) -> str:

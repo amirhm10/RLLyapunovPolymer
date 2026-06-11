@@ -27,7 +27,19 @@ from Plotting_fns.mpc_plot_fns import plot_mpc_rl_results_cstr
 from Simulation.mpc import MpcSolver
 from TD3Agent.agent import TD3Agent
 from TD3Agent.reward_functions import make_reward_fn_mpc_quadratic
-from utils.direct_lyapunov_study import governed_reference_case_spec
+from utils.direct_lmpc_selector_defaults import (
+    DIRECT_LMPC_LYAP_EPS,
+    DIRECT_LMPC_LYAP_TOL,
+    DIRECT_LMPC_RHO_LYAP,
+    DIRECT_LMPC_SLACK_PENALTY,
+    DIRECT_LMPC_TARGET_MODE,
+    DIRECT_LMPC_TARGET_SELECTOR_VARIANT,
+    DIRECT_LMPC_U_REF_WEIGHT,
+    DIRECT_LMPC_X_REF_WEIGHT,
+    direct_lmpc_selector_cache_token,
+    direct_lmpc_selector_metadata,
+    make_direct_lmpc_target_config,
+)
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.of_mpc_td3_workflow import (
     COMPARISON_SETPOINT_Y_PHYS,
@@ -73,18 +85,20 @@ QY_MPC = np.array([5.0, 1.0], dtype=float)
 SU_MPC = np.array([1.0, 1.0], dtype=float)
 RDU_MPC = np.array([1.0, 1.0], dtype=float)
 
-RHO_LYAP = 0.99
-LYAP_EPS = 5.0e-3
-SLACK_PENALTY = 1.0e6
-TARGET_MODE = "governed_reference"
+RHO_LYAP = DIRECT_LMPC_RHO_LYAP
+LYAP_EPS = DIRECT_LMPC_LYAP_EPS
+LYAP_TOL = DIRECT_LMPC_LYAP_TOL
+SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
+TARGET_MODE = DIRECT_LMPC_TARGET_MODE
+TARGET_SELECTOR_VARIANT = DIRECT_LMPC_TARGET_SELECTOR_VARIANT
 LYAPUNOV_MODE = "hard"
 FIRST_STEP_CONTRACTION_ON = True
 USE_TARGET_OUTPUT_FOR_TRACKING = False
 USE_TARGET_ON_SOLVER_FAIL = False
 DISTURBANCE_AFTER_STEP = False
 
-U_PREV_PENALTY_WEIGHT = 0.0
-XS_PREV_PENALTY_WEIGHT = 0.0
+U_PREV_PENALTY_WEIGHT = DIRECT_LMPC_U_REF_WEIGHT
+XS_PREV_PENALTY_WEIGHT = DIRECT_LMPC_X_REF_WEIGHT
 
 DEFAULT_LMPC_SAMPLES = 2_000_000
 DEFAULT_STEADY_SAMPLES = 100_000
@@ -188,14 +202,7 @@ def validate_lmpc_comparison_config(config: LMPCComparisonRunConfig) -> None:
 
 
 def make_lmpc_target_config() -> dict[str, Any]:
-    return governed_reference_case_spec(
-        QY_MPC,
-        case_name="lmpc_td3_pretraining_governed_reference",
-        controller_mode="direct_lyapunov_mpc",
-        lyapunov_mode=LYAPUNOV_MODE,
-        u_ref_weight=U_PREV_PENALTY_WEIGHT,
-        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
-    )["target_config"]
+    return make_direct_lmpc_target_config()
 
 
 def make_lmpc_components(system_data: dict[str, Any]) -> LMPCComponents:
@@ -369,6 +376,13 @@ def _label_candidate(
             solver_options={"warm_start": True},
         )
     diagnostic = {
+        "target_mode": TARGET_MODE,
+        "target_selector_variant": TARGET_SELECTOR_VARIANT,
+        "target_config": dict(lmpc.target_config),
+        "rho_lyap": RHO_LYAP,
+        "lyap_eps": LYAP_EPS,
+        "lyap_tol": LYAP_TOL,
+        "slack_penalty": SLACK_PENALTY,
         "target_success": bool(target_info.get("success", False)),
         "target_stage": target_info.get("solve_stage"),
         "target_status": target_info.get("status"),
@@ -385,6 +399,10 @@ def _label_candidate(
         "first_step_contraction_satisfied": step_info.get("first_step_contraction_satisfied"),
         "terminal_constraint_skipped": step_info.get("terminal_constraint_skipped"),
         "alpha_terminal_used": step_info.get("alpha_terminal_used"),
+        "target_u_ref_weight": step_info.get("target_u_ref_weight"),
+        "target_x_ref_weight": step_info.get("target_x_ref_weight"),
+        "target_u_ref_active": step_info.get("target_u_ref_active"),
+        "target_x_ref_active": step_info.get("target_x_ref_active"),
         "failure_key": _failure_key(target_info, step_info),
     }
     if not bool(step_info.get("success", False)):
@@ -725,6 +743,7 @@ def fill_lmpc_replay_buffer(
     status = "completed" if accepted_total >= requested_total else "insufficient_labels"
     return {
         "status": status,
+        "controller": direct_lmpc_selector_metadata(),
         "requested_total": requested_total,
         "accepted_total": accepted_total,
         "attempted_total": attempted_total,
@@ -791,6 +810,10 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
             "status": "failed_insufficient_lmpc_labels",
             "run_timestamp": run_timestamp,
             "run_dir": relative_to_repo(run_dir),
+            "target_mode": TARGET_MODE,
+            "target_selector_variant": TARGET_SELECTOR_VARIANT,
+            "target_config": make_lmpc_target_config(),
+            "controller": direct_lmpc_selector_metadata(),
             "label_generation_seconds": label_seconds,
             "label_diagnostics": relative_to_repo(label_diagnostics_path),
             "requested_total": label_diagnostics["requested_total"],
@@ -865,8 +888,10 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
             "Rdu_mpc_diag": RDU_MPC,
             "rho_lyap": RHO_LYAP,
             "lyap_eps": LYAP_EPS,
+            "lyap_tol": LYAP_TOL,
             "slack_penalty": SLACK_PENALTY,
             "target_mode": TARGET_MODE,
+            "target_selector_variant": TARGET_SELECTOR_VARIANT,
             "target_config": lmpc.target_config,
             "lyapunov_mode": LYAPUNOV_MODE,
             "first_step_contraction_on": FIRST_STEP_CONTRACTION_ON,
@@ -909,6 +934,10 @@ def run_lmpc_pretraining(config: LMPCPretrainingRunConfig) -> dict[str, Any]:
         "steady_samples": int(config.steady_samples),
         "state_dim": int(dimensions.state_dim),
         "action_dim": int(dimensions.action_dim),
+        "target_mode": TARGET_MODE,
+        "target_selector_variant": TARGET_SELECTOR_VARIANT,
+        "target_config": dict(lmpc.target_config),
+        "controller": direct_lmpc_selector_metadata(),
         "checkpoint_path": relative_to_repo(checkpoint_path),
         "config_path": relative_to_repo(config_path),
         "label_diagnostics_path": relative_to_repo(label_diagnostics_path),
@@ -1061,9 +1090,10 @@ def _baseline_cache_path(
     timing = "after" if bool(disturbance_after_step) else "before"
     weights = _weights_cache_token(QY_MPC, RDU_MPC)
     lyap = _lyapunov_cache_token(RHO_LYAP, LYAP_EPS)
+    selector = direct_lmpc_selector_cache_token()
     return cache_dir / (
         f"{controller}_{mode}_n{int(n_tests)}_len{int(set_points_len)}_"
-        f"disturb_{timing}_{weights}_{lyap}.pickle"
+        f"disturb_{timing}_{weights}_{lyap}_{selector}.pickle"
     )
 
 
@@ -1584,7 +1614,10 @@ def run_pretrained_lmpc_comparison(config: LMPCComparisonRunConfig) -> dict[str,
             "Rdu_mpc_diag": RDU_MPC,
             "rho_lyap": RHO_LYAP,
             "lyap_eps": LYAP_EPS,
+            "lyap_tol": LYAP_TOL,
+            "slack_penalty": SLACK_PENALTY,
             "target_mode": TARGET_MODE,
+            "target_selector_variant": TARGET_SELECTOR_VARIANT,
             "target_config": lmpc.target_config,
             "lyapunov_mode": LYAPUNOV_MODE,
             "first_step_contraction_on": FIRST_STEP_CONTRACTION_ON,
