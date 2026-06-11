@@ -40,7 +40,6 @@ from utils.direct_lyapunov_study import (
     DIRECT_DISTURBANCE_SETPOINT_LEN,
     DIRECT_TWO_SETPOINT_Y_PHYS,
     direct_disturbance_test_cycle,
-    governed_reference_case_spec,
 )
 from utils.lmpc_td3_workflow import (
     latest_lmpc_pretrained_checkpoint,
@@ -79,9 +78,11 @@ USE_TARGET_OUTPUT_FOR_TRACKING = False
 PREDICT_H = PREDICT_HORIZON
 CONT_H = CONTROL_HORIZON
 RHO_LYAP = 0.99
-LYAP_EPS = 5e-3
+LYAP_EPS = 1e-3
 LYAP_TOL = 1e-10
 SLACK_PENALTY = 1e6
+TARGET_MODE = "bounded"
+TARGET_SELECTOR_VARIANT = "bounded_mixed_u0p1_x0p1"
 
 QY_MPC_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -89,8 +90,8 @@ RDU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
 QY_REWARD_DIAG = np.array([12.0, 6.0], dtype=float)
 RDU_REWARD_DIAG = np.array([1.0, 1.0], dtype=float)
 
-U_PREV_PENALTY_WEIGHT = 0.0
-XS_PREV_PENALTY_WEIGHT = 0.0
+U_PREV_PENALTY_WEIGHT = 0.1
+XS_PREV_PENALTY_WEIGHT = 0.1
 
 DEFAULT_ACTOR_LAYER_SIZES = (256, 256, 256)
 DEFAULT_CRITIC_LAYER_SIZES = (256, 256, 256)
@@ -433,6 +434,22 @@ def _build_reward(
     )
 
 
+def _bounded_mixed_target_config() -> dict[str, float]:
+    return {
+        "u_ref_weight": float(U_PREV_PENALTY_WEIGHT),
+        "x_ref_weight": float(XS_PREV_PENALTY_WEIGHT),
+    }
+
+
+def _pretrained_selector_note(pretrain_source: str | None) -> str:
+    if pretrain_source is None:
+        return "cold-start run; no pretrained checkpoint was loaded"
+    return (
+        f"{pretrain_source} checkpoint loading is unchanged; online Direct LMPC "
+        f"gate/diagnostic target selector is {TARGET_SELECTOR_VARIANT}"
+    )
+
+
 def build_disturbance_context() -> DisturbanceContext:
     setup = build_polymer_setup()
     system_data = load_of_mpc_system_data(
@@ -495,12 +512,7 @@ def build_disturbance_context() -> DisturbanceContext:
         n_inputs,
         fallback_penalty_enabled=False,
     )
-    target_config = governed_reference_case_spec(
-        QY_MPC_DIAG,
-        case_name="governed_reference",
-        u_ref_weight=U_PREV_PENALTY_WEIGHT,
-        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
-    )["target_config"]
+    target_config = _bounded_mixed_target_config()
 
     return DisturbanceContext(
         setup=setup,
@@ -702,8 +714,10 @@ def run_online_td3_disturbance_preset(
         "safety_gate_active": bool(preset.safety_gate),
         "pretrain_source": preset.pretrain_source,
         "teacher_source": preset.teacher_source,
-        "target_mode": "governed_reference",
+        "target_mode": TARGET_MODE,
+        "target_selector_variant": TARGET_SELECTOR_VARIANT,
         "target_config": dict(context.target_config),
+        "pretrained_checkpoint_selector_note": _pretrained_selector_note(preset.pretrain_source),
         "plant_mode": PLANT_MODE,
         "n_tests": episodes,
         "n_episodes": episodes,
@@ -728,6 +742,8 @@ def run_online_td3_disturbance_preset(
         "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
         "rho_lyap": RHO_LYAP,
         "lyap_eps": LYAP_EPS,
+        "lyap_tol": LYAP_TOL,
+        "slack_penalty": SLACK_PENALTY,
         "training_phase_config": dict(training_phase_config),
         "initial_agent_path": resolved_agent_path,
         "checkpoint_architecture": checkpoint_arch,
@@ -771,7 +787,7 @@ def run_online_td3_disturbance_preset(
         reset_system_on_entry=True,
         projection_backend=projection_backend,
         first_step_contraction_on=True,
-        direct_target_mode="governed_reference",
+        direct_target_mode=TARGET_MODE,
         direct_target_config=dict(context.target_config),
         direct_tracking_use_target_output=USE_TARGET_OUTPUT_FOR_TRACKING,
         diagnostic_lmpc_obj=context.lmpc_obj,
@@ -854,7 +870,11 @@ def _base_direct_config(study_name: str, episodes: int, set_points_len: int, see
         "cont_h": CONT_H,
         "rho_lyap": RHO_LYAP,
         "lyap_eps": LYAP_EPS,
+        "lyap_tol": LYAP_TOL,
         "slack_penalty": SLACK_PENALTY,
+        "target_mode": TARGET_MODE,
+        "target_selector_variant": TARGET_SELECTOR_VARIANT,
+        "target_config": _bounded_mixed_target_config(),
         "Qy_mpc_diag": QY_MPC_DIAG.copy(),
         "Su_mpc_diag": SU_MPC_DIAG.copy(),
         "Rdu_mpc_diag": RDU_MPC_DIAG.copy(),
@@ -924,22 +944,13 @@ def run_direct_lmpc_disturbance(
     study_name = "DirectLMPCDisturbance"
     case_name = "direct_lmpc_disturbance"
     study_root = _study_root(study_name)
-    case_spec = governed_reference_case_spec(
-        QY_MPC_DIAG,
-        case_name=case_name,
-        controller_mode="direct_lyapunov_mpc",
-        lyapunov_mode="hard",
-        label="Direct LMPC disturbance baseline",
-        u_ref_weight=U_PREV_PENALTY_WEIGHT,
-        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
-    )
     case_config = {
         **_base_direct_config(study_name, episodes, set_points_len, seed),
         "case_name": case_name,
         "controller_mode": "direct_lyapunov_mpc",
-        "target_mode": case_spec["target_mode"],
-        "lyapunov_mode": case_spec["lyapunov_mode"],
-        "target_config": dict(case_spec["target_config"]),
+        "target_mode": TARGET_MODE,
+        "lyapunov_mode": "hard",
+        "target_config": dict(context.target_config),
         "reward_config": dict(context.reward_config),
     }
 
@@ -965,9 +976,9 @@ def run_direct_lmpc_disturbance(
         qi_change=QI_CHANGE,
         qs_change=QS_CHANGE,
         ha_change=HA_CHANGE,
-        target_mode=case_spec["target_mode"],
-        lyapunov_mode=case_spec["lyapunov_mode"],
-        target_config=dict(case_spec["target_config"]),
+        target_mode=TARGET_MODE,
+        lyapunov_mode="hard",
+        target_config=dict(context.target_config),
         target_H=None,
         mode=PLANT_MODE,
         disturbance_after_step=DISTURBANCE_AFTER_STEP,
@@ -1030,22 +1041,13 @@ def run_offset_free_mpc_disturbance(
     study_name = "OffsetFreeMPCDisturbance"
     case_name = "offset_free_mpc_disturbance"
     study_root = _study_root(study_name)
-    case_spec = governed_reference_case_spec(
-        QY_MPC_DIAG,
-        case_name=case_name,
-        controller_mode="offset_free_mpc",
-        lyapunov_mode="diagnostic_only",
-        label="Offset-free MPC disturbance baseline with Direct LMPC diagnostics",
-        u_ref_weight=U_PREV_PENALTY_WEIGHT,
-        x_ref_weight=XS_PREV_PENALTY_WEIGHT,
-    )
     case_config = {
         **_base_direct_config(study_name, episodes, set_points_len, seed),
         "case_name": case_name,
         "controller_mode": "offset_free_mpc",
-        "target_mode": case_spec["target_mode"],
+        "target_mode": TARGET_MODE,
         "lyapunov_mode": "diagnostic_only",
-        "target_config": dict(case_spec["target_config"]),
+        "target_config": dict(context.target_config),
         "diagnostic_lmpc_enabled": True,
         "reward_config": dict(context.reward_config),
     }
@@ -1073,8 +1075,8 @@ def run_offset_free_mpc_disturbance(
         qi_change=QI_CHANGE,
         qs_change=QS_CHANGE,
         ha_change=HA_CHANGE,
-        target_mode=case_spec["target_mode"],
-        target_config=dict(case_spec["target_config"]),
+        target_mode=TARGET_MODE,
+        target_config=dict(context.target_config),
         target_H=None,
         mode=PLANT_MODE,
         disturbance_after_step=DISTURBANCE_AFTER_STEP,
