@@ -124,6 +124,12 @@ COLD_START_SMOOTHING_STD = 0.1
 NOISE_CLIP = 0.01
 PRETRAINED_EXPLORATION_STD_START = 0.02
 COLD_START_EXPLORATION_STD_START = 0.1
+PRETRAINED_BC_EXPLORATION_STD = 0.0
+COLD_START_BC_EXPLORATION_STD = 0.005
+PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.0
+PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.005
+COLD_START_HANDOFF_EXPLORATION_STD_START = 0.0
+COLD_START_HANDOFF_EXPLORATION_STD_END = 0.01
 
 WARMUP_EPISODES = 0
 BC_TEACHER_EPISODES = 20
@@ -391,12 +397,30 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         if pretrained
         else COLD_START_EXPLORATION_STD_START
     )
+    bc_exploration_std = (
+        PRETRAINED_BC_EXPLORATION_STD
+        if pretrained
+        else COLD_START_BC_EXPLORATION_STD
+    )
+    handoff_exploration_std_start = (
+        PRETRAINED_HANDOFF_EXPLORATION_STD_START
+        if pretrained
+        else COLD_START_HANDOFF_EXPLORATION_STD_START
+    )
+    handoff_exploration_std_end = (
+        PRETRAINED_HANDOFF_EXPLORATION_STD_END
+        if pretrained
+        else COLD_START_HANDOFF_EXPLORATION_STD_END
+    )
     return {
         "episode_unit": "cycle",
         "warmup_buffer_only_episodes": WARMUP_EPISODES,
         "behavior_clone_teacher_episodes": BC_TEACHER_EPISODES,
         "bc_actor_updates_per_step": 4,
-        "bc_exploration_std": exploration_std,
+        "bc_exploration_std": bc_exploration_std,
+        "handoff_exploration_std_start": handoff_exploration_std_start,
+        "handoff_exploration_std_end": handoff_exploration_std_end,
+        "handoff_noise_policy_side_only": True,
         "full_rl_exploration_std_start": exploration_std,
         "full_rl_exploration_std_end": 0.005,
         "full_rl_exploration_decay_mode": "linear",
@@ -406,7 +430,8 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         "handoff_blend": "linear",
         "warmup_behavior_source": teacher_source,
         "warmup_behavior_noise": "none",
-        "bc_behavior_noise": "gaussian",
+        "bc_behavior_noise": "none" if bc_exploration_std <= 0.0 else "gaussian",
+        "handoff_behavior_noise": "none" if handoff_exploration_std_end <= 0.0 else "gaussian",
         "full_rl_behavior_noise": "gaussian",
     }
 

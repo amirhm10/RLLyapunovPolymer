@@ -602,6 +602,10 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
 
     warmup_behavior_noise = _normalize_behavior_noise("warmup_behavior_noise", "gaussian")
     bc_behavior_noise = _normalize_behavior_noise("bc_behavior_noise", "gaussian")
+    handoff_behavior_noise = _normalize_behavior_noise(
+        "handoff_behavior_noise",
+        cfg.get("full_rl_behavior_noise", "gaussian"),
+    )
     full_rl_behavior_noise = _normalize_behavior_noise("full_rl_behavior_noise", "gaussian")
 
     if warmup_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"} and warmup_behavior_noise == "parameter":
@@ -623,6 +627,11 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     handoff_blend = str(cfg.get("handoff_blend", "linear")).strip().lower()
     if handoff_blend not in {"linear", "none"}:
         raise ValueError("training_phase_config['handoff_blend'] must be 'linear' or 'none'.")
+    if not bool(cfg.get("handoff_noise_policy_side_only", True)):
+        raise ValueError("Only policy-side handoff exploration is supported.")
+
+    handoff_episodes = max(0, int(cfg.get("handoff_episodes", 0)))
+    handoff_steps = handoff_episodes * int(time_in_sub_episodes)
 
     return {
         "episode_unit": episode_unit,
@@ -630,17 +639,21 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "behavior_clone_teacher_episodes": bc_episodes,
         "warmup_end_step": warmup_steps,
         "bc_end_step": warmup_steps + bc_steps,
-        "handoff_episodes": max(0, int(cfg.get("handoff_episodes", 0))),
-        "handoff_steps": max(0, int(cfg.get("handoff_episodes", 0))) * int(time_in_sub_episodes),
+        "handoff_episodes": handoff_episodes,
+        "handoff_steps": handoff_steps,
         "handoff_blend": handoff_blend,
         "bc_actor_updates_per_step": max(1, int(cfg.get("bc_actor_updates_per_step", 1))),
         "bc_exploration_std": float(max(0.0, cfg.get("bc_exploration_std", 0.0))),
+        "handoff_exploration_std_start": float(max(0.0, cfg.get("handoff_exploration_std_start", 0.0))),
+        "handoff_exploration_std_end": float(max(0.0, cfg.get("handoff_exploration_std_end", 0.0))),
+        "handoff_noise_policy_side_only": bool(cfg.get("handoff_noise_policy_side_only", True)),
         "full_rl_exploration_std_start": float(
             max(0.0, cfg.get("full_rl_exploration_std_start", cfg.get("exploration_std_start", 0.02)))
         ),
         "full_rl_exploration_std_end": float(
             max(0.0, cfg.get("full_rl_exploration_std_end", cfg.get("exploration_std_end", 0.0)))
         ),
+        "full_rl_noise_start_step": warmup_steps + bc_steps + handoff_steps,
         "full_rl_exploration_decay_mode": str(
             cfg.get("full_rl_exploration_decay_mode", cfg.get("exploration_decay_mode", "agent_schedule"))
         ).strip().lower(),
@@ -654,6 +667,7 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "warmup_behavior_source": warmup_behavior_source,
         "warmup_behavior_noise": warmup_behavior_noise,
         "bc_behavior_noise": bc_behavior_noise,
+        "handoff_behavior_noise": handoff_behavior_noise,
         "full_rl_behavior_noise": full_rl_behavior_noise,
         "parameter_noise_resample_scope": parameter_noise_resample_scope,
         "parameter_noise_initial_std": float(cfg.get("parameter_noise_initial_std", 0.01)),
@@ -765,6 +779,12 @@ def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
     if policy_phase == "behavior_clone_teacher":
         return float(max(0.0, phase_cfg.get("bc_exploration_std", 0.0)))
 
+    if bool(phase_state.get("handoff_active", False)):
+        start = float(max(0.0, phase_cfg.get("handoff_exploration_std_start", 0.0)))
+        end = float(max(0.0, phase_cfg.get("handoff_exploration_std_end", start)))
+        progress = float(np.clip(phase_state.get("handoff_progress", 0.0), 0.0, 1.0))
+        return float(start + (end - start) * progress)
+
     if policy_phase != "full_rl":
         return _legacy_exploration_sigma(phase_cfg, step_idx, agent=agent)
 
@@ -773,7 +793,12 @@ def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
     decay_mode = str(
         phase_cfg.get("full_rl_exploration_decay_mode", phase_cfg.get("exploration_decay_mode", "linear"))
     ).strip().lower()
-    full_rl_start_step = int(phase_cfg.get("bc_end_step", 0))
+    full_rl_start_step = int(
+        phase_cfg.get(
+            "full_rl_noise_start_step",
+            int(phase_cfg.get("bc_end_step", 0)) + int(phase_cfg.get("handoff_steps", 0)),
+        )
+    )
     total_steps = max(1, int(phase_cfg.get("total_steps", 1)))
     phase_last_step = max(full_rl_start_step, total_steps - 1)
 
@@ -847,17 +872,26 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
             else None
         )
         use_teacher_behavior = False
-        behavior_noise_mode = "none" if test else str(phase_cfg.get("full_rl_behavior_noise", "gaussian"))
+        behavior_noise_mode = "none" if test else str(
+            phase_cfg.get(
+                "handoff_behavior_noise" if handoff_active else "full_rl_behavior_noise",
+                "gaussian",
+            )
+        )
         training_update_mode = "no_learning_test" if test else "td3_full"
 
     if "handoff_active" not in locals():
         handoff_active = False
+    handoff_step = 0
+    handoff_progress = 0.0
     if handoff_active:
         handoff_steps = max(1, int(phase_cfg.get("handoff_steps", 1)))
         handoff_step = max(0, int(step_idx) - int(phase_cfg.get("bc_end_step", 0)))
-        handoff_alpha = float(np.clip(1.0 - handoff_step / float(handoff_steps), 0.0, 1.0))
+        handoff_progress = float(np.clip(handoff_step / float(max(1, handoff_steps - 1)), 0.0, 1.0))
+        handoff_alpha = float(np.clip(1.0 - handoff_progress, 0.0, 1.0))
     else:
         handoff_alpha = 0.0
+    handoff_policy_weight = float(1.0 - handoff_alpha) if handoff_active else 0.0
     compute_teacher_demo = bool(
         (policy_phase == "behavior_clone_teacher" and str(phase_cfg.get("bc_behavior_source", "")).strip().lower() == "policy_with_lmpc_teacher_demo")
         or handoff_active
@@ -908,6 +942,10 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         "compute_teacher_demo": bool(compute_teacher_demo),
         "handoff_active": bool(handoff_active),
         "handoff_alpha": float(handoff_alpha),
+        "handoff_teacher_weight": float(handoff_alpha),
+        "handoff_policy_weight": float(handoff_policy_weight),
+        "handoff_step": int(handoff_step),
+        "handoff_progress": float(handoff_progress),
         "explore_behavior": behavior_noise_mode != "none",
         "push_demo": bool((not test) and (use_teacher_behavior or policy_phase == "behavior_clone_teacher")),
         "run_critic_only_update": (not test) and (policy_phase == "behavior_clone_teacher"),
@@ -925,7 +963,11 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["training_update_mode"] = str(phase_state.get("training_update_mode"))
     info["handoff_active"] = bool(phase_state.get("handoff_active", False))
     info["handoff_alpha"] = float(phase_state.get("handoff_alpha", 0.0))
+    info["handoff_teacher_weight"] = float(phase_state.get("handoff_teacher_weight", phase_state.get("handoff_alpha", 0.0)))
+    info["handoff_policy_weight"] = float(phase_state.get("handoff_policy_weight", 0.0))
+    info["handoff_progress"] = float(phase_state.get("handoff_progress", 0.0))
     if behavior_debug is not None:
+        info["behavior_exploration_sigma"] = float(behavior_debug.get("behavior_exploration_sigma", 0.0))
         info["parameter_noise_active"] = bool(behavior_debug.get("parameter_noise_active", False))
         info["parameter_noise_std"] = float(behavior_debug.get("parameter_noise_std", 0.0))
         info["parameter_noise_resampled_this_step"] = bool(
@@ -1473,6 +1515,7 @@ def run_rl_train(
         action = np.asarray(action, float).reshape(-1)
         action = np.clip(action, -1.0, 1.0)
         behavior_debug = agent.get_behavior_noise_diagnostics() if hasattr(agent, "get_behavior_noise_diagnostics") else {}
+        behavior_debug["behavior_exploration_sigma"] = 0.0 if sigma_override is None else float(sigma_override)
         behavior_debug["parameter_noise_active"] = bool(
             phase_state.get("behavior_noise_mode") == "parameter" and (not test)
         )

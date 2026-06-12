@@ -118,7 +118,7 @@ Setpoint deviation scaler bounds used in the TD3 state:
 
 The online runner now checks this scaling contract at startup. The TD3 feature scaler must remain the broad pretraining envelope `[[2.8, 320.0], [5.0, 326.0]]`, while the rollout setpoints remain the direct comparison scenario `[[4.5, 324.0], [3.4, 321.0]]`. If the TD3 scaler is accidentally replaced by the direct two-setpoint rollout scenario, the runner raises before training.
 
-The BC Gaussian standard deviation is in normalized actor-action coordinates. For the current action bounds, `0.02` corresponds to about one percent of the full normalized input span, or roughly `0.20` and `0.15` in controller deviation coordinates for the two inputs.
+The Gaussian standard deviations are in normalized actor-action coordinates. For the current action bounds, `0.02` corresponds to about one percent of the full normalized input span, or roughly `0.20` and `0.15` in controller deviation coordinates for the two inputs. The current BC phase now uses zero or tiny teacher-side exploration, so this larger `0.02` scale is reserved for full online RL in pretrained runs.
 
 The online TD3 dimension check is:
 
@@ -270,7 +270,7 @@ Core TD3 and Lyapunov constants:
 | TD3 discount factor $\gamma_{\mathrm{TD3}}$ | 0.99 | bootstrapped critic target discount |
 | TD3 policy delay | 2 | actor and target updates every second critic update |
 | Direct LMPC contraction $\rho$ | 0.99 | first-step Lyapunov contraction factor |
-| Direct LMPC $\epsilon$ | $5\times 10^{-3}$ | practical contraction tolerance |
+| Direct LMPC $\epsilon$ | $10^{-3}$ | practical contraction tolerance |
 | Lyapunov numerical tolerance | $10^{-10}$ | candidate/gate feasibility tolerance |
 
 ### Warmup
@@ -292,10 +292,10 @@ For the first 20 cycles, the config uses:
 
 ```text
 bc_behavior_source = teacher_source
-bc_behavior_noise = "gaussian"
+bc_behavior_noise = "none" for pretrained runners, "gaussian" for cold-start runners
 ```
 
-This means the behavior candidate during BC is the teacher action plus Gaussian exploration. The clean teacher action is also stored as the supervised actor-demo target. This is the expert-guided/off-policy pattern: the critic sees real executed transitions, including exploration and safety/no-safety execution effects, while the actor is pulled toward the clean expert action.
+This means the behavior candidate during BC is now the clean teacher action for pretrained runners and the teacher action plus a very small Gaussian perturbation for cold-start runners. The clean teacher action is also stored as the supervised actor-demo target. This keeps BC close to the expert rollout while still letting the critic see the real executed transition.
 
 So the critic and actor learn from different objects during BC:
 
@@ -309,7 +309,7 @@ So the critic and actor learn from different objects during BC:
 Per step during BC:
 
 1. Compute teacher action from Direct LMPC or OF-MPC depending on runner.
-2. Add Gaussian exploration to the teacher action for the executed behavior candidate.
+2. Add no Gaussian exploration for pretrained BC, or tiny Gaussian exploration for cold-start BC.
 3. Apply safety gate or no-gate diagnostic logic.
 4. Store the executed action in replay.
 5. Store the teacher action in the actor demo buffer.
@@ -341,10 +341,14 @@ $$
 
 with $\alpha$ decaying linearly from near 1 to 0 over the handoff window.
 
-The policy side of the blend keeps the full-RL Gaussian exploration schedule. No extra teacher-side noise is added after blending. The blended candidate is then passed through the same safety-gate or no-gate execution path. Handoff diagnostics are logged as:
+The policy side of the blend uses its own small handoff Gaussian schedule. Full-RL exploration starts after the handoff window rather than at the BC boundary. No teacher-side noise is added, and no extra noise is added after blending. The blended candidate is then passed through the same safety-gate or no-gate execution path. Handoff diagnostics are logged as:
 
 - `handoff_active_flags`
 - `handoff_alpha`
+- `handoff_teacher_weight`
+- `handoff_policy_weight`
+- `handoff_progress`
+- `behavior_exploration_sigma`
 - `handoff_candidate_gap_inf`
 - `bc_teacher_gap_inf`
 
@@ -362,10 +366,10 @@ After the handoff window:
 
 Current Gaussian exploration settings:
 
-| Runner family | BC std | Full RL std start | Full RL std end |
-|---|---:|---:|---:|
-| pretrained | 0.02 | 0.02 | 0.005 |
-| cold-start | 0.10 | 0.10 | 0.005 |
+| Runner family | BC std | Handoff std start | Handoff std end | Full RL std start | Full RL std end |
+|---|---:|---:|---:|---:|---:|
+| pretrained | 0.000 | 0.000 | 0.005 | 0.020 | 0.005 |
+| cold-start | 0.005 | 0.000 | 0.010 | 0.100 | 0.005 |
 
 TD3 target-policy smoothing:
 
@@ -420,10 +424,12 @@ or
 "handoff_episodes": 0
 ```
 
-To reduce cold-start aggressiveness:
+To change exploration aggressiveness:
 
 ```python
-"bc_exploration_std": 0.05
+"bc_exploration_std": 0.005
+"handoff_exploration_std_start": 0.0
+"handoff_exploration_std_end": 0.01
 "full_rl_exploration_std_start": 0.05
 "full_rl_exploration_std_end": 0.005
 ```
