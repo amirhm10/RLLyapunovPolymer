@@ -146,6 +146,7 @@ class TD3Agent(nn.Module):
         self.target_combine = target_combine
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
+        self.use_adamw = bool(use_adamw)
 
         self.steps = 0
         self.train_steps = 0
@@ -186,7 +187,7 @@ class TD3Agent(nn.Module):
         hard_update(self.behavior_actor, self.actor)
 
         # --- optimizers and loss function ---
-        if use_adamw:
+        if self.use_adamw:
             self.actor_optimizer = optim.AdamW(self.actor.parameters(), lr=actor_lr, weight_decay=0.0)
             self.critic_optimizer = optim.AdamW(self.critic.parameters(), lr=critic_lr, weight_decay=0.0)
         else:
@@ -751,11 +752,40 @@ class TD3Agent(nn.Module):
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)
 
-        # re-init optimizers then load states
-        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=self.actor_lr, weight_decay=0)
-        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), lr=self.critic_lr, weight_decay=0)
+        # re-init optimizers; checkpoint optimizer states are intentionally not restored.
+        if self.use_adamw:
+            self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=self.actor_lr, weight_decay=0.0)
+            self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(), lr=self.critic_lr, weight_decay=0.0)
+        else:
+            self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+            self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.critic_lr)
 
         print(f"Agent loaded successfully from: {path}")
+
+    def reset_critic(self) -> None:
+        """Reinitialize both critic networks while preserving the actor state."""
+        self.critic = Critic(
+            self.state_dim,
+            self.action_dim,
+            self.critic_hidden,
+            activation=self.activation,
+            use_layernorm=self.use_layernorm,
+            dropout=self.dropout,
+        ).to(self.device)
+        self.critic_target = Critic(
+            self.state_dim,
+            self.action_dim,
+            self.critic_hidden,
+            activation=self.activation,
+            use_layernorm=self.use_layernorm,
+            dropout=self.dropout,
+        ).to(self.device)
+        hard_update(self.critic_target, self.critic)
+        if self.use_adamw:
+            self.critic_optimizer = optim.AdamW(self.critic.parameters(), lr=self.critic_lr, weight_decay=0.0)
+        else:
+            self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=self.critic_lr)
+        self.critic_losses = []
 
     def save(
             self,

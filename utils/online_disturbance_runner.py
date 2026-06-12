@@ -124,12 +124,13 @@ COLD_START_SMOOTHING_STD = 0.1
 NOISE_CLIP = 0.01
 PRETRAINED_EXPLORATION_STD_START = 0.02
 COLD_START_EXPLORATION_STD_START = 0.1
-PRETRAINED_BC_EXPLORATION_STD = 0.0
+PRETRAINED_BC_EXPLORATION_STD = 1e-4
 COLD_START_BC_EXPLORATION_STD = 0.005
 PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.0
 PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.005
 COLD_START_HANDOFF_EXPLORATION_STD_START = 0.0
 COLD_START_HANDOFF_EXPLORATION_STD_END = 0.01
+DEFAULT_RESET_PRETRAINED_CRITIC = True
 
 WARMUP_EPISODES = 0
 BC_TEACHER_EPISODES = 20
@@ -639,7 +640,8 @@ def _agent_for_preset(
     context: DisturbanceContext,
     set_points_len: int,
     agent_path: str | None,
-) -> tuple[TD3Agent, str | None, dict[str, Any] | None]:
+    reset_pretrained_critic: bool,
+) -> tuple[TD3Agent, str | None, dict[str, Any] | None, dict[str, Any]]:
     checkpoint_arch = None
     resolved_agent_path: str | None = None
     smoothing_std = PRETRAINED_SMOOTHING_STD if preset.pretrain_source else COLD_START_SMOOTHING_STD
@@ -665,7 +667,19 @@ def _agent_for_preset(
     )
     if resolved_agent_path is not None:
         agent.load(resolved_agent_path)
-    return agent, resolved_agent_path, checkpoint_arch
+    critic_reset_requested = bool(resolved_agent_path is not None and reset_pretrained_critic)
+    critic_reset_applied = critic_reset_requested
+    if critic_reset_applied:
+        agent.reset_critic()
+        print("Pretrained actor retained; critic and target critic reset for online training.")
+    critic_reset_metadata = {
+        "pretrained_critic_reset": critic_reset_applied,
+        "critic_reset_requested": critic_reset_requested,
+        "critic_reset_scope": "critic_and_critic_target" if critic_reset_applied else None,
+        "actor_loaded_from_checkpoint": resolved_agent_path is not None,
+        "critic_loaded_from_checkpoint": bool(resolved_agent_path is not None and not critic_reset_applied),
+    }
+    return agent, resolved_agent_path, checkpoint_arch, critic_reset_metadata
 
 
 def _study_root(study_name: str, timestamp: str | None = None) -> Path:
@@ -696,6 +710,7 @@ def run_online_td3_disturbance_preset(
     seed: int = DIRECT_DISTURBANCE_SEED,
     save_plots: bool = True,
     agent_path: str | None = None,
+    reset_pretrained_critic: bool = DEFAULT_RESET_PRETRAINED_CRITIC,
 ) -> dict[str, Any]:
     if preset_key not in ONLINE_TD3_PRESETS:
         known = ", ".join(sorted(ONLINE_TD3_PRESETS))
@@ -717,11 +732,12 @@ def run_online_td3_disturbance_preset(
         context.dimensions.inputs_number,
         fallback_penalty_enabled=bool(preset.safety_gate),
     )
-    agent, resolved_agent_path, checkpoint_arch = _agent_for_preset(
+    agent, resolved_agent_path, checkpoint_arch, critic_reset_metadata = _agent_for_preset(
         preset,
         context=context,
         set_points_len=set_points_len,
         agent_path=agent_path,
+        reset_pretrained_critic=bool(reset_pretrained_critic),
     )
     study_root = _study_root(preset.study_name)
     test_cycle = direct_disturbance_test_cycle(episodes)
@@ -783,6 +799,7 @@ def run_online_td3_disturbance_preset(
         "online_td3_hparams": _td3_online_hparams(agent),
         "scaling_contract": scaling_contract,
     }
+    case_config.update(critic_reset_metadata)
 
     print(f"Running {preset.study_name} into {study_root}")
     timer_start = time.perf_counter()
@@ -875,6 +892,9 @@ def run_online_td3_disturbance_preset(
     run_summary = {
         "study_name": preset.study_name,
         "case_name": preset.study_name,
+        "pretrained_critic_reset": bool(critic_reset_metadata["pretrained_critic_reset"]),
+        "critic_reset_scope": critic_reset_metadata["critic_reset_scope"],
+        "actor_loaded_from_checkpoint": bool(critic_reset_metadata["actor_loaded_from_checkpoint"]),
         "result_root": os.fspath(study_root),
         "debug_dir": debug_dir,
         "comparison_artifacts": comparison_artifacts,
@@ -1158,6 +1178,12 @@ def build_online_arg_parser(description: str, *, include_agent_path: bool = Fals
     parser.add_argument("--no-save-plots", dest="save_plots", action="store_false")
     if include_agent_path:
         parser.add_argument("--agent-path", default=None)
+        parser.add_argument(
+            "--keep-pretrained-critic",
+            action="store_true",
+            default=False,
+            help="Keep the critic loaded from the pretrained checkpoint instead of resetting it for online training.",
+        )
     return parser
 
 
@@ -1175,6 +1201,7 @@ def _main_online(preset_key: str, argv: list[str] | None = None) -> dict[str, An
         seed=args.seed,
         save_plots=args.save_plots,
         agent_path=getattr(args, "agent_path", None),
+        reset_pretrained_critic=not bool(getattr(args, "keep_pretrained_critic", False)),
     )
 
 

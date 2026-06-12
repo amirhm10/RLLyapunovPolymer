@@ -515,6 +515,7 @@ def make_safety_filter_step_records(lyap_info_storage):
             "policy_phase": info.get("policy_phase"),
             "behavior_policy_source": info.get("behavior_policy_source"),
             "behavior_noise_mode": info.get("behavior_noise_mode"),
+            "behavior_exploration_sigma": info.get("behavior_exploration_sigma"),
             "training_update_mode": info.get("training_update_mode"),
             "handoff_active": bool(info.get("handoff_active", False)),
             "handoff_alpha": info.get("handoff_alpha"),
