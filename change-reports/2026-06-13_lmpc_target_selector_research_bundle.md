@@ -29,6 +29,25 @@ The exported scaler table confirms the LMPC pretraining and comparison runs use
 the same TD3 scaled-deviation contract. The comparison setpoints are inside the
 exported physical setpoint scaler for all included LMPC runs.
 
+## Online Evidence Expansion
+
+Extended the same bundle so the deep-research packet also includes the final
+online pretrained disturbance runners and the two disturbance controller
+baselines:
+
+- Direct LMPC disturbance baseline,
+- OF-MPC disturbance baseline,
+- LMPC-pretrained TD3 with and without the safety gate,
+- OF-MPC-pretrained TD3 with and without the safety gate.
+
+The added online section reports `reward_no_penalty` for fair controller
+comparison, keeps actual safety-gate interventions separate from no-gate
+Direct LMPC monitor diagnostics, and embeds reward/RMSE comparison figures.
+This makes the packet suitable for asking a broader target-selector question:
+why the Direct LMPC selector is weak as an offline label generator while the
+online TD3 runners can still outperform the controller baselines under the
+online shaped tracking metric.
+
 ## Files Added
 
 - `analysis/lmpc_target_selector_research_bundle.py`

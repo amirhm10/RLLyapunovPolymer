@@ -60,6 +60,51 @@ OF_MPC_REFERENCE = {
 
 LATEST_RUN = LMPC_RUNS[-1]
 
+ONLINE_CONTROL_RUNS = [
+    {
+        "label": "direct_lmpc_disturbance",
+        "short_label": "Direct LMPC",
+        "controller_family": "direct_lmpc_baseline",
+        "run_dir": ROOT / "results" / "DirectLMPCDisturbance" / "20260611_000526",
+        "activity_kind": "governing_controller",
+    },
+    {
+        "label": "offset_free_mpc_disturbance",
+        "short_label": "OF-MPC",
+        "controller_family": "of_mpc_baseline",
+        "run_dir": ROOT / "results" / "OffsetFreeMPCDisturbance" / "20260611_000530",
+        "activity_kind": "direct_lmpc_monitor",
+    },
+    {
+        "label": "online_lmpc_pretrained_gate",
+        "short_label": "LMPC PT + gate",
+        "controller_family": "online_td3",
+        "run_dir": ROOT / "results" / "OnlineTD3_LMPCPretrained_SafetyGate" / "20260612_231616",
+        "activity_kind": "actual_gate",
+    },
+    {
+        "label": "online_lmpc_pretrained_no_gate",
+        "short_label": "LMPC PT no gate",
+        "controller_family": "online_td3",
+        "run_dir": ROOT / "results" / "OnlineTD3_LMPCPretrained_NoSafetyGate" / "20260612_231608",
+        "activity_kind": "direct_lmpc_monitor",
+    },
+    {
+        "label": "online_ofmpc_pretrained_gate",
+        "short_label": "OF-MPC PT + gate",
+        "controller_family": "online_td3",
+        "run_dir": ROOT / "results" / "OnlineTD3_OFMPCPretrained_SafetyGate" / "20260612_231623",
+        "activity_kind": "actual_gate",
+    },
+    {
+        "label": "online_ofmpc_pretrained_no_gate",
+        "short_label": "OF-MPC PT no gate",
+        "controller_family": "online_td3",
+        "run_dir": ROOT / "results" / "OnlineTD3_OFMPCPretrained_NoSafetyGate" / "20260612_231619",
+        "activity_kind": "direct_lmpc_monitor",
+    },
+]
+
 
 def read_json(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
@@ -93,6 +138,13 @@ def fmt(value: Any, digits: int = 3) -> str:
     if 0 < abs(value) < 1e-4:
         return f"{value:.2e}"
     return f"{value:.{digits}f}"
+
+
+def moving_average(values: np.ndarray, window: int = 5) -> np.ndarray:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return arr
+    return pd.Series(arr).rolling(window=window, min_periods=1).mean().to_numpy()
 
 
 def md_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]]) -> str:
@@ -418,6 +470,82 @@ def collect_scaler_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def read_first_csv_row(path: Path) -> dict[str, Any]:
+    frame = pd.read_csv(path)
+    if frame.empty:
+        return {}
+    return frame.iloc[0].to_dict()
+
+
+def collect_online_control() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows: list[dict[str, Any]] = []
+    episode_rows: list[dict[str, Any]] = []
+    for run in ONLINE_CONTROL_RUNS:
+        run_dir = run["run_dir"]
+        comparison = read_first_csv_row(run_dir / "comparison_table.csv")
+        summary = read_json(run_dir / "summary.json")
+        run_summary = read_json(run_dir / "run_summary.json")
+        config = run_summary.get("config", {})
+        episode = pd.read_csv(run_dir / "episode_table.csv")
+        reward_col = "reward_no_penalty_mean" if "reward_no_penalty_mean" in episode.columns else "reward_mean"
+        rmse_col = "output_rmse_mean" if "output_rmse_mean" in episode.columns else None
+        reward_values = episode[reward_col].to_numpy(dtype=float)
+        tail = episode.tail(50)
+        actual_rate = comparison.get("actual_intervention_rate", summary.get("actual_intervention_rate"))
+        diagnostic_rate = comparison.get("diagnostic_unsafe_rate", summary.get("diagnostic_unsafe_rate"))
+        output_rmse = comparison.get("output_rmse_mean", summary.get("output_rmse_mean"))
+        tail_rmse = float(tail[rmse_col].mean()) if rmse_col is not None else output_rmse
+        activity_rate = None
+        if run["activity_kind"] == "actual_gate":
+            activity_rate = actual_rate
+        elif run["activity_kind"] == "direct_lmpc_monitor":
+            activity_rate = diagnostic_rate
+        rows.append(
+            {
+                "label": run["label"],
+                "short_label": run["short_label"],
+                "controller_family": run["controller_family"],
+                "run_dir": repo_rel(run_dir),
+                "activity_kind": run["activity_kind"],
+                "pretrain_source": config.get("pretrain_source"),
+                "teacher_source": config.get("teacher_source"),
+                "safety_gate_active": config.get("safety_gate_active"),
+                "target_selector_variant": config.get("target_selector_variant", comparison.get("target_mode")),
+                "rho_lyap": config.get("rho_lyap", comparison.get("rho_lyap")),
+                "lyap_eps": config.get("lyap_eps", comparison.get("lyap_eps")),
+                "reward_no_penalty_mean": comparison.get("reward_no_penalty_mean", summary.get("reward_no_penalty_mean")),
+                "training_reward_mean": comparison.get("reward_mean", summary.get("reward_mean")),
+                "tail50_reward_no_penalty": float(tail[reward_col].mean()),
+                "output_rmse_mean": output_rmse,
+                "tail50_output_rmse_mean": tail_rmse,
+                "actual_intervention_rate": actual_rate,
+                "diagnostic_unsafe_rate": diagnostic_rate,
+                "activity_rate_for_context": activity_rate,
+                "accepted_rate": comparison.get("accepted_rate", summary.get("accepted_rate")),
+                "fallback_rate": comparison.get("fallback_rate", summary.get("fallback_rate")),
+                "target_success_rate": comparison.get("target_success_rate", summary.get("target_success_rate")),
+                "solver_success_rate": comparison.get("solver_success_rate", summary.get("solver_success_rate")),
+                "bounded_solution_used_steps": comparison.get("bounded_solution_used_steps", summary.get("bounded_solution_used_steps")),
+                "target_quality_mismatch_inf_mean": comparison.get(
+                    "target_quality_mismatch_inf_mean",
+                    summary.get("target_quality_mismatch_inf_mean"),
+                ),
+                "target_stage_counts": comparison.get("target_stage_counts", summary.get("target_stage_counts")),
+            }
+        )
+        for _, ep in episode.iterrows():
+            episode_rows.append(
+                {
+                    "label": run["label"],
+                    "short_label": run["short_label"],
+                    "episode": int(ep["episode"]),
+                    "reward_no_penalty_mean": float(ep[reward_col]),
+                    "output_rmse_mean": float(ep[rmse_col]) if rmse_col is not None else np.nan,
+                }
+            )
+    return pd.DataFrame(rows), pd.DataFrame(episode_rows)
+
+
 def collect_all() -> dict[str, Any]:
     pretrain_rows = [load_lmpc_pretrain_row(run) for run in LMPC_RUNS]
     comparison_rows, gap_rows = collect_lmpc_comparison_rows()
@@ -430,6 +558,7 @@ def collect_all() -> dict[str, Any]:
     failure_rows: list[dict[str, Any]] = []
     for run in LMPC_RUNS:
         failure_rows.extend(label_failure_rows(run))
+    online_control, online_episode = collect_online_control()
     return {
         "pretrain": pd.DataFrame(pretrain_rows),
         "comparison": pd.DataFrame(comparison_rows),
@@ -437,6 +566,8 @@ def collect_all() -> dict[str, Any]:
         "target": pd.DataFrame(target_rows),
         "failures": pd.DataFrame(failure_rows),
         "scaler_consistency": pd.DataFrame(collect_scaler_rows()),
+        "online_control": online_control,
+        "online_episode_reward": online_episode,
     }
 
 
@@ -447,6 +578,8 @@ def make_figures(data: dict[str, pd.DataFrame]) -> dict[str, Path]:
     gap = data["gap"]
     target = data["target"]
     failures = data["failures"]
+    online = data["online_control"].copy()
+    online_episode = data["online_episode_reward"].copy()
 
     disturb_gap = gap.loc[gap["mode"] == "disturb"].copy()
     order = ["governed_reference_256", "bounded_mixed_256", "bounded_mixed_512", "of_mpc_reference_256"]
@@ -579,6 +712,50 @@ def make_figures(data: dict[str, pd.DataFrame]) -> dict[str, Path]:
     paths["rollout"] = FIG_DIR / "latest_512_disturbance_rollout_overlay.png"
     fig.savefig(paths["rollout"], dpi=180)
     plt.close(fig)
+
+    order = [run["label"] for run in ONLINE_CONTROL_RUNS]
+    online["order"] = online["label"].map({label: idx for idx, label in enumerate(order)})
+    online = online.sort_values("order")
+    x = np.arange(len(online))
+    colors = ["#333333", "#777777", "#4c78a8", "#54a24b", "#e45756", "#f58518"]
+    fig, axes = plt.subplots(1, 2, figsize=(13.0, 4.2))
+    axes[0].bar(x, online["reward_no_penalty_mean"], color=colors)
+    axes[0].set_ylabel("Mean reward no penalty")
+    axes[0].set_title("Online disturbance full-run reward")
+    axes[1].bar(x, online["output_rmse_mean"], color=colors)
+    axes[1].set_ylabel("Output RMSE mean")
+    axes[1].set_title("Online disturbance full-run tracking")
+    for ax in axes:
+        ax.set_xticks(x, online["short_label"], rotation=30, ha="right")
+        ax.grid(True, axis="y", alpha=0.25)
+    fig.tight_layout()
+    paths["online_scalar"] = FIG_DIR / "online_disturbance_scalar_comparison.png"
+    fig.savefig(paths["online_scalar"], dpi=180)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12.2, 4.8))
+    color_map = {label: color for label, color in zip(order, colors)}
+    for run in ONLINE_CONTROL_RUNS:
+        part = online_episode.loc[online_episode["label"] == run["label"]].sort_values("episode")
+        rewards = moving_average(part["reward_no_penalty_mean"].to_numpy(), window=5)
+        ax.plot(
+            part["episode"],
+            rewards,
+            label=run["short_label"],
+            color=color_map[run["label"]],
+            linewidth=1.6,
+        )
+    ax.axvspan(1, 20, color="#e8f0fb", alpha=0.35, linewidth=0, label="online BC window")
+    ax.axvspan(21, 30, color="#fff0cc", alpha=0.35, linewidth=0, label="online handoff window")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Reward no penalty, 5-episode mean")
+    ax.set_title("Online disturbance reward traces including baselines")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8, ncol=3)
+    fig.tight_layout()
+    paths["online_reward_trace"] = FIG_DIR / "online_disturbance_reward_trace_comparison.png"
+    fig.savefig(paths["online_reward_trace"], dpi=180)
+    plt.close(fig)
     return paths
 
 
@@ -616,6 +793,14 @@ def make_tables(data: dict[str, pd.DataFrame]) -> dict[str, Path]:
             "description": "Positive-control OF-MPC TD3 pretraining comparison.",
         },
     ]
+    for run in ONLINE_CONTROL_RUNS:
+        source_rows.append(
+            {
+                "artifact": run["label"],
+                "path": repo_rel(run["run_dir"]),
+                "description": f"Online disturbance/control result for {run['short_label']}.",
+            }
+        )
     path = TABLE_DIR / "source_artifacts.csv"
     write_csv(path, source_rows)
     paths["source_artifacts"] = path
@@ -628,6 +813,7 @@ def report_text(data: dict[str, pd.DataFrame], figs: dict[str, Path], tables: di
     target = data["target"]
     failures = data["failures"]
     scaler = data["scaler_consistency"]
+    online = data["online_control"]
 
     pretrain_rows = []
     for _, row in pretrain.iterrows():
@@ -678,6 +864,29 @@ def report_text(data: dict[str, pd.DataFrame], figs: dict[str, Path], tables: di
                 "T mismatch": fmt(row["target_mismatch_phys_T_mean_abs"]),
                 "p95 dev": fmt(row["target_mismatch_dev_inf_p95"]),
                 "max T mismatch": fmt(row["target_mismatch_phys_T_max_abs"]),
+            }
+        )
+
+    online_rows = []
+    online_order = {run["label"]: idx for idx, run in enumerate(ONLINE_CONTROL_RUNS)}
+    online_display = online.assign(order=online["label"].map(online_order)).sort_values("order")
+    for _, row in online_display.iterrows():
+        act_pct = "-"
+        diag_pct = "-"
+        if row["activity_kind"] == "actual_gate":
+            act_pct = fmt(100.0 * float(row["actual_intervention_rate"]))
+        elif row["activity_kind"] == "direct_lmpc_monitor":
+            diag_pct = fmt(100.0 * float(row["diagnostic_unsafe_rate"]))
+        online_rows.append(
+            {
+                "Case": row["short_label"],
+                "Role": row["controller_family"],
+                "Mean Rnp": fmt(row["reward_no_penalty_mean"]),
+                "Tail Rnp": fmt(row["tail50_reward_no_penalty"]),
+                "RMSE": fmt(row["output_rmse_mean"]),
+                "Tail RMSE": fmt(row["tail50_output_rmse_mean"]),
+                "Act %": act_pct,
+                "Diag %": diag_pct,
             }
         )
 
@@ -824,6 +1033,44 @@ expert behavior that matters.
 
 ![Latest rollout overlay](figures/latest_512_disturbance_rollout_overlay.png)
 
+## Online Disturbance Evidence
+
+The offline comparison is not the whole story. The final online TD3 runners
+with critic reset, 10-episode actor-frozen handoff, and `lyap_eps=1e-3` should
+also be part of any target-selector research question. The table below compares
+those online runners against the Direct LMPC and OF-MPC disturbance baselines
+on the same 300-episode disturbance schedule.
+
+{md_table(online_rows, [
+        ("Case", "Case"),
+        ("Role", "Role"),
+        ("Mean Rnp", "Mean Rnp"),
+        ("Tail Rnp", "Tail Rnp"),
+        ("RMSE", "RMSE"),
+        ("Tail RMSE", "Tail RMSE"),
+        ("Act %", "Act %"),
+        ("Diag %", "Diag %"),
+    ])}
+
+![Online scalar comparison]({bundle_rel(figs['online_scalar'])})
+
+![Online reward traces]({bundle_rel(figs['online_reward_trace'])})
+
+In the reward trace, the shaded BC and handoff windows apply to the online TD3
+runners. The Direct LMPC and OF-MPC baselines are plotted on the same episode
+axis only as disturbance-schedule reference curves. The table also suppresses
+the raw Direct LMPC governing-controller activity rate so it is not confused
+with a safety-gate fallback rate.
+
+Two points matter for deep research. First, Direct LMPC and OF-MPC baselines
+remain almost identical, so the online failure mode is not that OF-MPC is a
+fundamentally different plant/controller benchmark. Second, the final online
+TD3 runners can outperform the baselines under the shaped online
+`reward_no_penalty` metric, while the safety-gate runners pay a visible
+intervention/tracking cost. That means the target-selector redesign should be
+evaluated in both settings: offline actor imitation and online closed-loop
+learning with gate or monitor diagnostics.
+
 ## Target Selector Diagnostics
 
 {md_table(target_rows, [
@@ -909,6 +1156,8 @@ more closed-loop relevant, and less sensitive to target-stage switches:
 - Target diagnostics table: `{bundle_rel(tables['target'])}`
 - Label failure table: `{bundle_rel(tables['failures'])}`
 - Scaling consistency table: `{bundle_rel(tables['scaler_consistency'])}`
+- Online control table: `{bundle_rel(tables['online_control'])}`
+- Online episode reward table: `{bundle_rel(tables['online_episode_reward'])}`
 - Source artifact paths: `{bundle_rel(tables['source_artifacts'])}`
 - Deep research prompt: `deep_research_prompt.md`
 
@@ -937,6 +1186,8 @@ Please use the attached bundle to help design a better target selector.
 - `tables/gap.csv`: TD3-vs-expert gaps.
 - `tables/target.csv`: Direct LMPC target-selector diagnostics.
 - `tables/failures.csv`: LMPC label rejection reasons.
+- `tables/online_control.csv`: final online TD3, Direct LMPC, and OF-MPC disturbance metrics.
+- `tables/online_episode_reward.csv`: episode-level online reward traces.
 - `figures/*.png`: visual summaries.
 
 ## Important Facts
@@ -948,6 +1199,8 @@ Please use the attached bundle to help design a better target selector.
 - The bounded-mixed selector often uses a bounded least-squares target instead of the exact raw-setpoint steady target.
 - The governed-reference selector also produced poor LMPC-TD3 imitation.
 - Direct LMPC uses the selected target for Lyapunov certification but still tracks the raw setpoint in the MPC objective.
+- Final online TD3 runners with critic reset and calibrated handoff should also be considered.
+- Direct LMPC and OF-MPC disturbance baselines are included, and online results should be evaluated using `reward_no_penalty` for fair comparison with safety-gate runs.
 
 ## Research Questions
 
@@ -964,6 +1217,9 @@ Please use the attached bundle to help design a better target selector.
    offline pretraining?
 6. What label-quality metrics should be logged and filtered before actor BC?
 7. What concrete ablation plan should be run next?
+8. How should the target selector be redesigned so it improves both offline
+   LMPC actor imitation and online TD3 learning with Direct LMPC gate/monitor
+   diagnostics?
 
 Please produce a literature-backed target-selector redesign plan with equations,
 implementation-level details, and a small ablation matrix.
@@ -1054,6 +1310,8 @@ def html_text(data: dict[str, pd.DataFrame], figs: dict[str, Path], tables: dict
         ("Target Mismatch Diagnostics", "target_mismatch"),
         ("Target Selector Stage Usage", "stage_usage"),
         ("Latest Label Failure Reasons", "failures"),
+        ("Online Disturbance Scalar Comparison", "online_scalar"),
+        ("Online Disturbance Reward Traces", "online_reward_trace"),
     ]:
         path = figs[key]
         figure_blocks.append(
@@ -1069,6 +1327,8 @@ def html_text(data: dict[str, pd.DataFrame], figs: dict[str, Path], tables: dict
         ("Target Diagnostics", "target"),
         ("Label Failure Reasons", "failures"),
         ("Scaling Consistency", "scaler_consistency"),
+        ("Online Control Metrics", "online_control"),
+        ("Online Episode Rewards", "online_episode_reward"),
         ("Source Artifacts", "source_artifacts"),
     ]:
         table_blocks.append(

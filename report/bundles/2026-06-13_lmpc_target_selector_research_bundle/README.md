@@ -113,6 +113,42 @@ expert behavior that matters.
 
 ![Latest rollout overlay](figures/latest_512_disturbance_rollout_overlay.png)
 
+## Online Disturbance Evidence
+
+The offline comparison is not the whole story. The final online TD3 runners
+with critic reset, 10-episode actor-frozen handoff, and `lyap_eps=1e-3` should
+also be part of any target-selector research question. The table below compares
+those online runners against the Direct LMPC and OF-MPC disturbance baselines
+on the same 300-episode disturbance schedule.
+
+| Case | Role | Mean Rnp | Tail Rnp | RMSE | Tail RMSE | Act % | Diag % |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Direct LMPC | direct_lmpc_baseline | -12.489 | -12.231 | 0.378 | 0.378 | - | - |
+| OF-MPC | of_mpc_baseline | -12.480 | -12.177 | 0.378 | 0.378 | - | 0.000 |
+| LMPC PT + gate | online_td3 | -6.247 | -5.149 | 0.229 | 0.180 | 2.650 | - |
+| LMPC PT no gate | online_td3 | -5.361 | -3.927 | 0.214 | 0.156 | - | 6.182 |
+| OF-MPC PT + gate | online_td3 | -6.214 | -4.929 | 0.227 | 0.176 | 2.654 | - |
+| OF-MPC PT no gate | online_td3 | -5.467 | -4.091 | 0.214 | 0.160 | - | 5.760 |
+
+![Online scalar comparison](figures/online_disturbance_scalar_comparison.png)
+
+![Online reward traces](figures/online_disturbance_reward_trace_comparison.png)
+
+In the reward trace, the shaded BC and handoff windows apply to the online TD3
+runners. The Direct LMPC and OF-MPC baselines are plotted on the same episode
+axis only as disturbance-schedule reference curves. The table also suppresses
+the raw Direct LMPC governing-controller activity rate so it is not confused
+with a safety-gate fallback rate.
+
+Two points matter for deep research. First, Direct LMPC and OF-MPC baselines
+remain almost identical, so the online failure mode is not that OF-MPC is a
+fundamentally different plant/controller benchmark. Second, the final online
+TD3 runners can outperform the baselines under the shaped online
+`reward_no_penalty` metric, while the safety-gate runners pay a visible
+intervention/tracking cost. That means the target-selector redesign should be
+evaluated in both settings: offline actor imitation and online closed-loop
+learning with gate or monitor diagnostics.
+
 ## Target Selector Diagnostics
 
 | Run | Stages | eta mismatch | T mismatch | p95 dev | max T mismatch |
@@ -200,6 +236,8 @@ more closed-loop relevant, and less sensitive to target-stage switches:
 - Target diagnostics table: `tables/target.csv`
 - Label failure table: `tables/failures.csv`
 - Scaling consistency table: `tables/scaler_consistency.csv`
+- Online control table: `tables/online_control.csv`
+- Online episode reward table: `tables/online_episode_reward.csv`
 - Source artifact paths: `tables/source_artifacts.csv`
 - Deep research prompt: `deep_research_prompt.md`
 

@@ -14,6 +14,8 @@ Please use the attached bundle to help design a better target selector.
 - `tables/gap.csv`: TD3-vs-expert gaps.
 - `tables/target.csv`: Direct LMPC target-selector diagnostics.
 - `tables/failures.csv`: LMPC label rejection reasons.
+- `tables/online_control.csv`: final online TD3, Direct LMPC, and OF-MPC disturbance metrics.
+- `tables/online_episode_reward.csv`: episode-level online reward traces.
 - `figures/*.png`: visual summaries.
 
 ## Important Facts
@@ -25,6 +27,8 @@ Please use the attached bundle to help design a better target selector.
 - The bounded-mixed selector often uses a bounded least-squares target instead of the exact raw-setpoint steady target.
 - The governed-reference selector also produced poor LMPC-TD3 imitation.
 - Direct LMPC uses the selected target for Lyapunov certification but still tracks the raw setpoint in the MPC objective.
+- Final online TD3 runners with critic reset and calibrated handoff should also be considered.
+- Direct LMPC and OF-MPC disturbance baselines are included, and online results should be evaluated using `reward_no_penalty` for fair comparison with safety-gate runs.
 
 ## Research Questions
 
@@ -41,6 +45,9 @@ Please use the attached bundle to help design a better target selector.
    offline pretraining?
 6. What label-quality metrics should be logged and filtered before actor BC?
 7. What concrete ablation plan should be run next?
+8. How should the target selector be redesigned so it improves both offline
+   LMPC actor imitation and online TD3 learning with Direct LMPC gate/monitor
+   diagnostics?
 
 Please produce a literature-backed target-selector redesign plan with equations,
 implementation-level details, and a small ablation matrix.
