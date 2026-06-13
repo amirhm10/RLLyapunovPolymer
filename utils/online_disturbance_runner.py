@@ -66,7 +66,6 @@ from utils.of_mpc_td3_workflow import (
     set_seed,
 )
 from utils.direct_lmpc_selector_defaults import (
-    DIRECT_LMPC_LYAP_EPS,
     DIRECT_LMPC_LYAP_TOL,
     DIRECT_LMPC_RHO_LYAP,
     DIRECT_LMPC_SLACK_PENALTY,
@@ -89,7 +88,7 @@ USE_TARGET_OUTPUT_FOR_TRACKING = False
 PREDICT_H = PREDICT_HORIZON
 CONT_H = CONTROL_HORIZON
 RHO_LYAP = DIRECT_LMPC_RHO_LYAP
-LYAP_EPS = DIRECT_LMPC_LYAP_EPS
+LYAP_EPS = 1e-4
 LYAP_TOL = DIRECT_LMPC_LYAP_TOL
 SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
 TARGET_MODE = DIRECT_LMPC_TARGET_MODE
@@ -813,7 +812,7 @@ def run_online_td3_disturbance_preset(
         "lyap_eps": case_lyap_eps,
         "lyap_eps_default": LYAP_EPS,
         "lyap_eps_pretrained_online_override": None,
-        "lyap_eps_override_reason": "default bounded-mixed Direct LMPC epsilon",
+        "lyap_eps_override_reason": "runner-only stricter bounded-mixed Direct LMPC epsilon",
         "lyap_tol": LYAP_TOL,
         "slack_penalty": SLACK_PENALTY,
         "training_phase_config": dict(training_phase_config),
