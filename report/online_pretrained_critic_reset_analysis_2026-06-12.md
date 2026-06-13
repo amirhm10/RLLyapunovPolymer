@@ -100,6 +100,8 @@ with $\rho=0.99$ and $\epsilon=10^{-3}$.
 
 ![Reward traces](figures/2026-06-12_online_pretrained_critic_reset_analysis/pretrained_handoff_eps1e3_reward_traces.png)
 
+![Combined reward comparison](figures/2026-06-12_online_pretrained_critic_reset_analysis/pretrained_handoff_eps1e3_all_rewards_no_penalty.png)
+
 The final setup is controlled across all four pretrained cases. The no-gate
 runners have the best tail reward, while the safety-gate runners are more
 conservative because fallback is actually applied. The maximum actual

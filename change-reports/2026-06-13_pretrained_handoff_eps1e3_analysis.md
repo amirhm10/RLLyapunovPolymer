@@ -24,6 +24,10 @@ In the strict-epsilon batch, LMPC-pretrained no-gate has the best tail
 reward/RMSE among the four single-seed runs. The safety-gate runners remain
 more conservative and pay a small tracking/reward cost, but stay controlled.
 
+Added a combined reward plot using `reward_no_penalty_mean` for all four runs
+so safety-gate and no-gate controllers can be compared without fallback/event
+penalty distortion.
+
 ## Files Changed
 
 - `analysis/online_pretrained_critic_reset_analysis.py`

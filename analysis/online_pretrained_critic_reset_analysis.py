@@ -384,6 +384,29 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     fig.savefig(paths["reward_traces"], dpi=180)
     plt.close(fig)
 
+    fig, ax = plt.subplots(figsize=(11.8, 4.8))
+    for case in CASE_ORDER:
+        episode = meta[f"{case}::{TARGET_BATCH}"]["episode"]
+        y = moving_average(episode["reward_no_penalty_mean"].to_numpy(), window=5)
+        ax.plot(
+            episode["episode"],
+            y,
+            label=case,
+            color=colors[case],
+            linewidth=1.9,
+        )
+    ax.axvspan(1, 20, color="#e8f0fb", alpha=0.45, linewidth=0, label="BC")
+    ax.axvspan(21, 30, color="#fff0cc", alpha=0.45, linewidth=0, label="handoff")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Reward no penalty, 5-episode mean")
+    ax.set_title("Current pretrained online TD3 reward comparison")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8, ncol=2)
+    fig.tight_layout()
+    paths["all_rewards"] = FIG_DIR / f"{FIG_PREFIX}_all_rewards_no_penalty.png"
+    fig.savefig(paths["all_rewards"], dpi=180)
+    plt.close(fig)
+
     phase_summary = (
         current_phases.pivot(index="case", columns="phase", values="reward_no_penalty")
         .reindex(index=CASE_ORDER, columns=PHASE_ORDER)
@@ -664,6 +687,8 @@ with $\rho=0.99$ and $\epsilon=10^{{-3}}$.
 ![Tail summary]({rel_report(figs['tail_summary'])})
 
 ![Reward traces]({rel_report(figs['reward_traces'])})
+
+![Combined reward comparison]({rel_report(figs['all_rewards'])})
 
 The final setup is controlled across all four pretrained cases. The no-gate
 runners have the best tail reward, while the safety-gate runners are more
