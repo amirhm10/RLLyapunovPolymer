@@ -1,0 +1,6 @@
+artifact,path,description
+latest_lmpc_pretrain,results/PretrainLMPC/20260612_011323,Latest 512x5 bounded-mixed LMPC pretraining bundle.
+latest_lmpc_comparison,results/PretrainLMPCComparison/20260613_003113,Latest 512x5 comparison against Direct LMPC and OF-MPC.
+governed_reference_pretrain,results/PretrainLMPC/20260610_005100,Historical governed-reference LMPC pretraining bundle.
+governed_reference_comparison,results/PretrainLMPCComparison/20260610_173925,Historical governed-reference comparison bundle.
+of_mpc_reference_comparison,results/PretrainOFMPCComparison/20260610_154032,Positive-control OF-MPC TD3 pretraining comparison.

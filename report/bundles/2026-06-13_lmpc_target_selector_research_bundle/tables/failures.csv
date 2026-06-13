@@ -1,0 +1,25 @@
+run_label,short_label,group,failure_reason,count,share_of_failures
+governed_reference_256,Governed 256,broad,tracking:optimal:dyn_residual,4911,0.5260282776349614
+governed_reference_256,Governed 256,broad,tracking:optimal_inaccurate:first_step_contraction,4385,0.46968723221936587
+governed_reference_256,Governed 256,broad,tracking:optimal_inaccurate:dyn_residual,21,0.002249357326478149
+governed_reference_256,Governed 256,broad,tracking:optimal:first_step_contraction,15,0.0016066838046272494
+governed_reference_256,Governed 256,broad,tracking:optimal:bound_violation,3,0.00032133676092544985
+governed_reference_256,Governed 256,broad,tracking:optimal_inaccurate:bound_violation,1,0.00010711225364181663
+bounded_mixed_256,Bounded 256,broad,tracking:optimal:dyn_residual,317185,0.8617448169249035
+bounded_mixed_256,Bounded 256,broad,tracking:infeasible:solver_status,40302,0.10949458395481332
+bounded_mixed_256,Bounded 256,broad,tracking:optimal_inaccurate:first_step_contraction,6028,0.016377186047333
+bounded_mixed_256,Bounded 256,broad,tracking:optimal_inaccurate:dyn_residual,2359,0.006409054725557159
+bounded_mixed_256,Bounded 256,broad,tracking:optimal:bound_violation,1555,0.004224705425282485
+bounded_mixed_256,Bounded 256,broad,tracking:optimal_inaccurate:bound_violation,423,0.0011492285497713768
+bounded_mixed_256,Bounded 256,broad,tracking:optimal_inaccurate:terminal_constraint,192,0.0005216356537969371
+bounded_mixed_256,Bounded 256,broad,tracking:optimal:first_step_contraction,21,5.7053899634039984e-05
+bounded_mixed_256,Bounded 256,broad,tracking:infeasible_inaccurate:solver_status,8,2.173481890820571e-05
+bounded_mixed_512,Bounded 512,broad,tracking:optimal:dyn_residual,317185,0.8617448169249035
+bounded_mixed_512,Bounded 512,broad,tracking:infeasible:solver_status,40302,0.10949458395481332
+bounded_mixed_512,Bounded 512,broad,tracking:optimal_inaccurate:first_step_contraction,6028,0.016377186047333
+bounded_mixed_512,Bounded 512,broad,tracking:optimal_inaccurate:dyn_residual,2359,0.006409054725557159
+bounded_mixed_512,Bounded 512,broad,tracking:optimal:bound_violation,1555,0.004224705425282485
+bounded_mixed_512,Bounded 512,broad,tracking:optimal_inaccurate:bound_violation,423,0.0011492285497713768
+bounded_mixed_512,Bounded 512,broad,tracking:optimal_inaccurate:terminal_constraint,192,0.0005216356537969371
+bounded_mixed_512,Bounded 512,broad,tracking:optimal:first_step_contraction,21,5.7053899634039984e-05
+bounded_mixed_512,Bounded 512,broad,tracking:infeasible_inaccurate:solver_status,8,2.173481890820571e-05
