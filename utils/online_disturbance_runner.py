@@ -90,7 +90,6 @@ PREDICT_H = PREDICT_HORIZON
 CONT_H = CONTROL_HORIZON
 RHO_LYAP = DIRECT_LMPC_RHO_LYAP
 LYAP_EPS = DIRECT_LMPC_LYAP_EPS
-PRETRAINED_ONLINE_LYAP_EPS = 1e-2
 LYAP_TOL = DIRECT_LMPC_LYAP_TOL
 SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
 TARGET_MODE = DIRECT_LMPC_TARGET_MODE
@@ -454,8 +453,6 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
 
 
 def _lyap_eps_for_preset(preset: OnlineTD3Preset) -> float:
-    if preset.pretrain_source is not None:
-        return float(PRETRAINED_ONLINE_LYAP_EPS)
     return float(LYAP_EPS)
 
 
@@ -815,14 +812,8 @@ def run_online_td3_disturbance_preset(
         "rho_lyap": RHO_LYAP,
         "lyap_eps": case_lyap_eps,
         "lyap_eps_default": LYAP_EPS,
-        "lyap_eps_pretrained_online_override": (
-            PRETRAINED_ONLINE_LYAP_EPS if preset.pretrain_source is not None else None
-        ),
-        "lyap_eps_override_reason": (
-            "pretrained online TD3 safety gate/diagnostic relaxation experiment"
-            if preset.pretrain_source is not None
-            else "default bounded-mixed Direct LMPC epsilon"
-        ),
+        "lyap_eps_pretrained_online_override": None,
+        "lyap_eps_override_reason": "default bounded-mixed Direct LMPC epsilon",
         "lyap_tol": LYAP_TOL,
         "slack_penalty": SLACK_PENALTY,
         "training_phase_config": dict(training_phase_config),
