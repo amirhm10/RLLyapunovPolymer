@@ -1,4 +1,4 @@
-"""Analyze the four pretrained online TD3 critic-reset disturbance runs."""
+"""Analyze pretrained online TD3 critic-reset and handoff-calibration runs."""
 
 from __future__ import annotations
 
@@ -53,11 +53,22 @@ BATCHES = {
             "OF-MPC pretrained no gate": "20260612_130553",
         },
     },
+    "handoff_calibrated": {
+        "label": "critic reset, eps 1e-2, 10-episode actor-frozen handoff",
+        "runs": {
+            "LMPC pretrained + gate": "20260612_205458",
+            "LMPC pretrained no gate": "20260612_205455",
+            "OF-MPC pretrained + gate": "20260612_205504",
+            "OF-MPC pretrained no gate": "20260612_205501",
+        },
+    },
 }
 
 CASE_TO_ROOT = {case: root for case, root, _gate in CASES}
 CASE_TO_GATE = {case: gate for case, _root, gate in CASES}
 CASE_ORDER = [case for case, _root, _gate in CASES]
+TARGET_BATCH = "handoff_calibrated"
+REFERENCE_BATCHES = ("critic_reset", "low_noise", "old_noise")
 PHASE_ORDER = ["BC", "handoff", "early full", "mid full", "tail 50"]
 
 
@@ -148,13 +159,21 @@ def arr_or_fill(arrays: np.lib.npyio.NpzFile, name: str, n: int, fill: float = 0
     return np.full(n, fill, dtype=float)
 
 
-def phase_slices(episode: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+def phase_slices(episode: pd.DataFrame, phase_cfg: dict[str, Any]) -> list[tuple[str, pd.DataFrame]]:
     n_ep = int(episode["episode"].max())
+    bc_eps = max(0, int(phase_cfg.get("behavior_clone_teacher_episodes", 20)))
+    handoff_eps = max(0, int(phase_cfg.get("handoff_episodes", 5)))
+    handoff_start = bc_eps + 1
+    handoff_end = bc_eps + handoff_eps
+    early_start = handoff_end + 1
+    early_end = min(n_ep, early_start + 49)
+    mid_start = early_end + 1
+    mid_end = max(mid_start, n_ep - 50)
     return [
-        ("BC", episode.loc[episode["episode"].between(1, 20)]),
-        ("handoff", episode.loc[episode["episode"].between(21, 25)]),
-        ("early full", episode.loc[episode["episode"].between(26, 75)]),
-        ("mid full", episode.loc[episode["episode"].between(76, 250)]),
+        ("BC", episode.loc[episode["episode"].between(1, bc_eps)]),
+        ("handoff", episode.loc[episode["episode"].between(handoff_start, handoff_end)]),
+        ("early full", episode.loc[episode["episode"].between(early_start, early_end)]),
+        ("mid full", episode.loc[episode["episode"].between(mid_start, mid_end)]),
         ("tail 50", episode.loc[episode["episode"].between(max(1, n_ep - 49), n_ep)]),
     ]
 
@@ -203,6 +222,10 @@ def load_run(case: str, batch: str, run_name: str) -> tuple[dict[str, Any], pd.D
         "critic_loaded_from_checkpoint": cfg.get("critic_loaded_from_checkpoint"),
         "bc_noise": phase_cfg.get("bc_behavior_noise"),
         "bc_std": phase_cfg.get("bc_exploration_std"),
+        "bc_update_mode": phase_cfg.get("bc_update_mode"),
+        "handoff_episodes": phase_cfg.get("handoff_episodes"),
+        "handoff_update_mode": phase_cfg.get("handoff_update_mode"),
+        "handoff_actor_bc_updates_per_step": phase_cfg.get("handoff_actor_bc_updates_per_step"),
         "handoff_std_end": phase_cfg.get("handoff_exploration_std_end"),
         "full_std_start": phase_cfg.get("full_rl_exploration_std_start"),
         "mean_reward_no_penalty": safe_mean(reward_no_penalty),
@@ -227,7 +250,7 @@ def load_run(case: str, batch: str, run_name: str) -> tuple[dict[str, Any], pd.D
     }
 
     phase_rows: list[dict[str, Any]] = []
-    for phase, part in phase_slices(episode):
+    for phase, part in phase_slices(episode, phase_cfg):
         if part.empty:
             continue
         start = int(part["step_start"].iloc[0])
@@ -277,27 +300,27 @@ def collect() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, dict[
     phases = pd.concat(phase_frames, ignore_index=True)
     deltas: list[dict[str, Any]] = []
     for case in CASE_ORDER:
-        reset = metrics.loc[(metrics["case"] == case) & (metrics["batch"] == "critic_reset")].iloc[0]
-        for reference in ("low_noise", "old_noise"):
+        target = metrics.loc[(metrics["case"] == case) & (metrics["batch"] == TARGET_BATCH)].iloc[0]
+        for reference in REFERENCE_BATCHES:
             ref = metrics.loc[(metrics["case"] == case) & (metrics["batch"] == reference)].iloc[0]
             deltas.append(
                 {
                     "case": case,
-                    "comparison": f"critic_reset - {reference}",
-                    "delta_mean_reward_no_penalty": reset["mean_reward_no_penalty"] - ref["mean_reward_no_penalty"],
-                    "delta_tail50_reward_no_penalty": reset["tail50_reward_no_penalty"] - ref["tail50_reward_no_penalty"],
-                    "delta_tail50_rmse": reset["tail50_output_rmse_mean"] - ref["tail50_output_rmse_mean"],
+                    "comparison": f"{TARGET_BATCH} - {reference}",
+                    "delta_mean_reward_no_penalty": target["mean_reward_no_penalty"] - ref["mean_reward_no_penalty"],
+                    "delta_tail50_reward_no_penalty": target["tail50_reward_no_penalty"] - ref["tail50_reward_no_penalty"],
+                    "delta_tail50_rmse": target["tail50_output_rmse_mean"] - ref["tail50_output_rmse_mean"],
                     "delta_actual_intervention_pp": 100.0
-                    * (reset["actual_intervention_rate"] - ref["actual_intervention_rate"]),
+                    * (target["actual_intervention_rate"] - ref["actual_intervention_rate"]),
                     "delta_diagnostic_unsafe_pp": 100.0
-                    * (reset["diagnostic_unsafe_rate"] - ref["diagnostic_unsafe_rate"]),
-                    "delta_mean_abs_du_phys": reset["mean_abs_du_phys"] - ref["mean_abs_du_phys"],
+                    * (target["diagnostic_unsafe_rate"] - ref["diagnostic_unsafe_rate"]),
+                    "delta_mean_abs_du_phys": target["mean_abs_du_phys"] - ref["mean_abs_du_phys"],
                 }
             )
             for phase in PHASE_ORDER:
                 r_phase = phases.loc[
                     (phases["case"] == case)
-                    & (phases["batch"] == "critic_reset")
+                    & (phases["batch"] == TARGET_BATCH)
                     & (phases["phase"] == phase)
                 ].iloc[0]
                 ref_phase = phases.loc[
@@ -323,17 +346,27 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
 
-    colors = {"old_noise": "#6f6f6f", "low_noise": "#c94f4f", "critic_reset": "#1f77b4"}
-    labels = {"old_noise": "old noise/no reset", "low_noise": "zero BC/no reset", "critic_reset": "critic reset"}
+    colors = {
+        "old_noise": "#6f6f6f",
+        "low_noise": "#c94f4f",
+        "critic_reset": "#1f77b4",
+        "handoff_calibrated": "#2ca02c",
+    }
+    labels = {
+        "old_noise": "old noise/no reset",
+        "low_noise": "zero BC/no reset",
+        "critic_reset": "critic reset",
+        "handoff_calibrated": "eps relaxed + calibrated handoff",
+    }
 
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 7.4), sharex=True)
     for ax, case in zip(axes.flat, CASE_ORDER):
-        for batch in ("old_noise", "low_noise", "critic_reset"):
+        for batch in ("old_noise", "low_noise", "critic_reset", "handoff_calibrated"):
             episode = meta[f"{case}::{batch}"]["episode"]
             y = moving_average(episode["reward_no_penalty_mean"].to_numpy(), window=5)
             ax.plot(episode["episode"], y, label=labels[batch], color=colors[batch], linewidth=1.7)
         ax.axvspan(1, 20, color="#e8f0fb", alpha=0.45, linewidth=0)
-        ax.axvspan(21, 25, color="#fff0cc", alpha=0.55, linewidth=0)
+        ax.axvspan(21, 30, color="#fff0cc", alpha=0.45, linewidth=0)
         ax.set_title(case)
         ax.set_yscale("symlog", linthresh=10)
         ax.grid(True, alpha=0.25)
@@ -344,12 +377,12 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     axes[0, 0].legend(loc="lower right", fontsize=8)
     fig.suptitle("Pretrained online TD3 reward traces", y=0.995)
     fig.tight_layout()
-    paths["reward_traces"] = FIG_DIR / "pretrained_reset_reward_traces.png"
+    paths["reward_traces"] = FIG_DIR / "pretrained_handoff_calibrated_reward_traces.png"
     fig.savefig(paths["reward_traces"], dpi=180)
     plt.close(fig)
 
     phase_delta = (
-        deltas.loc[deltas["comparison"] == "critic_reset - low_noise"]
+        deltas.loc[deltas["comparison"] == f"{TARGET_BATCH} - critic_reset"]
         .set_index("case")[[f"delta_{phase}_reward" for phase in PHASE_ORDER]]
         .loc[CASE_ORDER]
     )
@@ -363,15 +396,15 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     for i in range(values.shape[0]):
         for j in range(values.shape[1]):
             ax.text(j, i, fmt(values[i, j], 1), ha="center", va="center", fontsize=8)
-    ax.set_title("Critic-reset minus no-reset low-noise reward by phase")
+    ax.set_title("Handoff-calibrated minus previous critic-reset reward by phase")
     cb = fig.colorbar(im, ax=ax)
     cb.set_label("Delta reward no penalty")
     fig.tight_layout()
-    paths["phase_delta"] = FIG_DIR / "pretrained_reset_phase_delta_heatmap.png"
+    paths["phase_delta"] = FIG_DIR / "pretrained_handoff_calibrated_phase_delta_heatmap.png"
     fig.savefig(paths["phase_delta"], dpi=180)
     plt.close(fig)
 
-    reset = metrics.loc[metrics["batch"] == "critic_reset"].set_index("case").loc[CASE_ORDER]
+    reset = metrics.loc[metrics["batch"] == TARGET_BATCH].set_index("case").loc[CASE_ORDER]
     fig, axes = plt.subplots(1, 2, figsize=(11.6, 4.2))
     x = np.arange(len(CASE_ORDER))
     axes[0].bar(x, reset["tail50_reward_no_penalty"], color="#1f77b4")
@@ -382,20 +415,30 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     axes[1].set_xticks(x, CASE_ORDER, rotation=35, ha="right")
     axes[1].set_ylabel("Tail50 output RMSE")
     axes[1].grid(True, axis="y", alpha=0.25)
-    fig.suptitle("Tail performance for critic-reset batch")
+    fig.suptitle("Tail performance for handoff-calibrated batch")
     fig.tight_layout()
-    paths["tail_summary"] = FIG_DIR / "pretrained_reset_tail_summary.png"
+    paths["tail_summary"] = FIG_DIR / "pretrained_handoff_calibrated_tail_summary.png"
     fig.savefig(paths["tail_summary"], dpi=180)
     plt.close(fig)
 
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 7.0), sharex=True)
     for ax, case in zip(axes.flat, CASE_ORDER):
-        episode = meta[f"{case}::critic_reset"]["episode"]
-        local = episode.loc[episode["episode"].between(18, 35)]
-        ax.plot(local["episode"], local["reward_no_penalty_mean"], marker="o", label="reward", color="#1f77b4")
+        episode = meta[f"{case}::{TARGET_BATCH}"]["episode"]
+        previous = meta[f"{case}::critic_reset"]["episode"]
+        local = episode.loc[episode["episode"].between(18, 45)]
+        previous_local = previous.loc[previous["episode"].between(18, 45)]
+        ax.plot(
+            previous_local["episode"],
+            previous_local["reward_no_penalty_mean"],
+            marker=".",
+            label="previous reset",
+            color="#1f77b4",
+            alpha=0.7,
+        )
+        ax.plot(local["episode"], local["reward_no_penalty_mean"], marker="o", label="calibrated", color="#2ca02c")
         ax2 = ax.twinx()
         ax2.plot(local["episode"], local["output_rmse_mean"], marker="s", label="RMSE", color="#c94f4f")
-        ax.axvspan(21, 25, color="#fff0cc", alpha=0.65, linewidth=0)
+        ax.axvspan(21, 30, color="#fff0cc", alpha=0.55, linewidth=0)
         ax.set_title(case)
         ax.set_yscale("symlog", linthresh=10)
         ax.grid(True, alpha=0.25)
@@ -405,18 +448,19 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
             ax2.set_ylabel("Output RMSE")
     axes[1, 0].set_xlabel("Episode")
     axes[1, 1].set_xlabel("Episode")
-    fig.suptitle("Critic-reset handoff zoom", y=0.995)
+    axes[0, 0].legend(fontsize=8)
+    fig.suptitle("Handoff-calibrated transition zoom", y=0.995)
     fig.tight_layout()
-    paths["handoff_zoom"] = FIG_DIR / "pretrained_reset_handoff_zoom.png"
+    paths["handoff_zoom"] = FIG_DIR / "pretrained_handoff_calibrated_handoff_zoom.png"
     fig.savefig(paths["handoff_zoom"], dpi=180)
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(11.8, 4.2))
-    width = 0.28
+    width = 0.21
     x = np.arange(len(CASE_ORDER))
-    for idx, batch in enumerate(("old_noise", "low_noise", "critic_reset")):
+    for idx, batch in enumerate(("old_noise", "low_noise", "critic_reset", "handoff_calibrated")):
         part = metrics.loc[metrics["batch"] == batch].set_index("case").loc[CASE_ORDER]
-        offset = (idx - 1) * width
+        offset = (idx - 1.5) * width
         axes[0].bar(x + offset, 100.0 * part["actual_intervention_rate"], width, label=labels[batch], color=colors[batch])
         axes[1].bar(x + offset, 100.0 * part["diagnostic_unsafe_rate"], width, label=labels[batch], color=colors[batch])
     for ax in axes:
@@ -428,13 +472,13 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
     axes[1].set_title("No-gate monitor signal")
     axes[0].legend(fontsize=8)
     fig.tight_layout()
-    paths["safety"] = FIG_DIR / "pretrained_reset_safety_diagnostics.png"
+    paths["safety"] = FIG_DIR / "pretrained_handoff_calibrated_safety_diagnostics.png"
     fig.savefig(paths["safety"], dpi=180)
     plt.close(fig)
 
     fig, axes = plt.subplots(4, 2, figsize=(12.2, 9.5), sharex=True)
     for row_idx, case in enumerate(CASE_ORDER):
-        arrays = meta[f"{case}::critic_reset"]["arrays"]
+        arrays = meta[f"{case}::{TARGET_BATCH}"]["arrays"]
         y = np.asarray(arrays["y_system"], dtype=float)[:-1]
         sp = np.asarray(arrays["y_sp_phys_store"], dtype=float)
         n = min(y.shape[0], sp.shape[0])
@@ -450,9 +494,9 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
                 ax.legend(fontsize=8)
     axes[-1, 0].set_xlabel("Step")
     axes[-1, 1].set_xlabel("Step")
-    fig.suptitle("Critic-reset tail tracking snapshots, final 10 episodes", y=0.995)
+    fig.suptitle("Handoff-calibrated tail tracking snapshots, final 10 episodes", y=0.995)
     fig.tight_layout()
-    paths["tracking"] = FIG_DIR / "pretrained_reset_tail_tracking.png"
+    paths["tracking"] = FIG_DIR / "pretrained_handoff_calibrated_tail_tracking.png"
     fig.savefig(paths["tracking"], dpi=180)
     plt.close(fig)
 
@@ -462,9 +506,9 @@ def make_figures(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFra
 def make_tables(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFrame) -> dict[str, Path]:
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
     paths = {
-        "metrics": TABLE_DIR / "pretrained_reset_metrics.csv",
-        "phases": TABLE_DIR / "pretrained_reset_phase_metrics.csv",
-        "deltas": TABLE_DIR / "pretrained_reset_deltas.csv",
+        "metrics": TABLE_DIR / "pretrained_handoff_calibrated_metrics.csv",
+        "phases": TABLE_DIR / "pretrained_handoff_calibrated_phase_metrics.csv",
+        "deltas": TABLE_DIR / "pretrained_handoff_calibrated_deltas.csv",
     }
     metrics.to_csv(paths["metrics"], index=False)
     phases.to_csv(paths["phases"], index=False)
@@ -473,13 +517,16 @@ def make_tables(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFram
 
 
 def report_text(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFrame, figs: dict[str, Path], tables: dict[str, Path]) -> str:
-    reset = metrics.loc[metrics["batch"] == "critic_reset"].set_index("case").loc[CASE_ORDER]
-    low_delta = deltas.loc[deltas["comparison"] == "critic_reset - low_noise"].set_index("case").loc[CASE_ORDER]
-    old_delta = deltas.loc[deltas["comparison"] == "critic_reset - old_noise"].set_index("case").loc[CASE_ORDER]
+    current = metrics.loc[metrics["batch"] == TARGET_BATCH].set_index("case").loc[CASE_ORDER]
+    previous = metrics.loc[metrics["batch"] == "critic_reset"].set_index("case").loc[CASE_ORDER]
+    delta_prev = deltas.loc[deltas["comparison"] == f"{TARGET_BATCH} - critic_reset"].set_index("case").loc[CASE_ORDER]
+    delta_low = deltas.loc[deltas["comparison"] == f"{TARGET_BATCH} - low_noise"].set_index("case").loc[CASE_ORDER]
+    current_phase = phases.loc[phases["batch"] == TARGET_BATCH]
+    previous_phase = phases.loc[phases["batch"] == "critic_reset"]
 
     data_rows = []
     for case in CASE_ORDER:
-        r = reset.loc[case]
+        r = current.loc[case]
         data_rows.append(
             {
                 "Case": case,
@@ -487,12 +534,13 @@ def report_text(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFram
                 "Agent": r["initial_agent"],
                 "Teacher": r["teacher_source"],
                 "Gate": "active" if r["safety_gate"] else "monitor only",
+                "Handoff": int(r["handoff_episodes"]),
             }
         )
 
     perf_rows = []
     for case in CASE_ORDER:
-        r = reset.loc[case]
+        r = current.loc[case]
         perf_rows.append(
             {
                 "Case": case,
@@ -501,17 +549,18 @@ def report_text(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFram
                 "Tail RMSE": fmt(r["tail50_output_rmse_mean"]),
                 "Gate %": fmt(100.0 * r["actual_intervention_rate"]),
                 "Diag %": fmt(100.0 * r["diagnostic_unsafe_rate"]),
-                "Mean abs dU": fmt(r["mean_abs_du_phys"]),
+                "Worst ep": int(r["worst_episode"]),
             }
         )
 
-    delta_low_rows = []
+    delta_rows = []
     for case in CASE_ORDER:
-        d = low_delta.loc[case]
-        delta_low_rows.append(
+        d = delta_prev.loc[case]
+        delta_rows.append(
             {
                 "Case": case,
                 "Mean Rnp": fmt(d["delta_mean_reward_no_penalty"]),
+                "Handoff": fmt(d["delta_handoff_reward"]),
                 "Early": fmt(d["delta_early full_reward"]),
                 "Tail Rnp": fmt(d["delta_tail50_reward_no_penalty"]),
                 "Tail RMSE": fmt(d["delta_tail50_rmse"]),
@@ -521,54 +570,57 @@ def report_text(metrics: pd.DataFrame, phases: pd.DataFrame, deltas: pd.DataFram
         )
 
     phase_rows = []
-    reset_phase = phases.loc[phases["batch"] == "critic_reset"]
-    of_gate_handoff = reset_phase.loc[
-        (reset_phase["case"] == "OF-MPC pretrained + gate") & (reset_phase["phase"] == "handoff"),
-        "reward_no_penalty",
-    ].iloc[0]
     for case in CASE_ORDER:
         row = {"Case": case}
         for phase in ("BC", "handoff", "early full", "tail 50"):
-            value = reset_phase.loc[
-                (reset_phase["case"] == case) & (reset_phase["phase"] == phase),
+            value = current_phase.loc[
+                (current_phase["case"] == case) & (current_phase["phase"] == phase),
                 "reward_no_penalty",
             ].iloc[0]
             row[phase] = fmt(value)
         phase_rows.append(row)
 
-    handoff_rows = []
+    transition_rows = []
     for case in CASE_ORDER:
-        r = reset.loc[case]
-        phase = "handoff" if 21 <= int(r["worst_episode"]) <= 25 else "other"
-        handoff_rows.append(
+        r = current.loc[case]
+        prev = previous.loc[case]
+        prev_handoff = previous_phase.loc[
+            (previous_phase["case"] == case) & (previous_phase["phase"] == "handoff"),
+            "reward_no_penalty",
+        ].iloc[0]
+        cur_handoff = current_phase.loc[
+            (current_phase["case"] == case) & (current_phase["phase"] == "handoff"),
+            "reward_no_penalty",
+        ].iloc[0]
+        transition_rows.append(
             {
                 "Case": case,
-                "Worst ep": int(r["worst_episode"]),
-                "Phase": phase,
-                "Reward": fmt(r["worst_reward_no_penalty"]),
-                "RMSE": fmt(r["worst_output_rmse_mean"]),
+                "Prev worst": int(prev["worst_episode"]),
+                "New worst": int(r["worst_episode"]),
+                "Prev handoff": fmt(prev_handoff),
+                "New handoff": fmt(cur_handoff),
+                "New worst R": fmt(r["worst_reward_no_penalty"]),
             }
         )
 
-    old_delta_rows = []
+    low_rows = []
     for case in CASE_ORDER:
-        d = old_delta.loc[case]
-        old_delta_rows.append(
+        d = delta_low.loc[case]
+        low_rows.append(
             {
                 "Case": case,
                 "Mean Rnp": fmt(d["delta_mean_reward_no_penalty"]),
+                "Early": fmt(d["delta_early full_reward"]),
                 "Tail Rnp": fmt(d["delta_tail50_reward_no_penalty"]),
                 "Tail RMSE": fmt(d["delta_tail50_rmse"]),
-                "Gate pp": fmt(d["delta_actual_intervention_pp"]),
-                "Diag pp": fmt(d["delta_diagnostic_unsafe_pp"]),
             }
         )
 
-    config = reset.iloc[0]
-    lmpc_gate = reset.loc["LMPC pretrained + gate"]
-    lmpc_nogate = reset.loc["LMPC pretrained no gate"]
-    of_gate = reset.loc["OF-MPC pretrained + gate"]
-    of_nogate = reset.loc["OF-MPC pretrained no gate"]
+    config = current.iloc[0]
+    lmpc_gate = current.loc["LMPC pretrained + gate"]
+    lmpc_nogate = current.loc["LMPC pretrained no gate"]
+    of_gate = current.loc["OF-MPC pretrained + gate"]
+    of_nogate = current.loc["OF-MPC pretrained no gate"]
 
     return f"""# Pretrained Online TD3 Critic-Reset Batch Analysis
 
@@ -576,39 +628,46 @@ Date: 2026-06-12
 
 ## Question
 
-Four pretrained online TD3 disturbance runners were rerun after two targeted
-changes: the online BC phase for pretrained agents now uses tiny teacher-action
-noise, and the pretrained critic is reset before online training. This report
-analyzes whether the new runs support keeping the pretrained actor while
-discarding the offline critic.
+This report extends the earlier pretrained critic-reset analysis with the new
+four-run batch using the calibrated handoff schedule. The new batch keeps the
+pretrained actor, resets the pretrained critic, uses tiny BC exploration
+(`1e-4`), relaxes the pretrained Lyapunov tolerance to `lyap_eps=1e-2`, and
+extends handoff to 10 episodes with TD3 actor-gradient updates frozen during
+handoff.
 
-Short answer: the critic reset is strongly supported for the LMPC-pretrained
-runs and it removes the catastrophic early-full-RL collapse in all four
-pretrained cases. The remaining weakness is not the full-RL phase; it is a
-localized handoff transient in the OF-MPC-pretrained cases, especially episode
-23. The evidence therefore points toward keeping critic reset, but making the
-handoff more conservative when the critic is fresh.
+Short answer: this batch is much healthier. The catastrophic OF-MPC handoff
+failure from the previous critic-reset run disappears. The remaining transient
+has moved to episode 31, the first full-RL episode after handoff, and is much
+smaller. The best final tracking/reward still comes from LMPC-pretrained no
+gate, but all four pretrained cases now converge to a narrow performance band.
 
 ## Paper-Consistency Frame
 
-The framing follows the practical process-control style of Hamedi et al. (2026):
-MPC and OF-MPC remain the engineering reference points, RL is introduced as a
-policy-improvement mechanism, and unsafe online exploration is treated as a
-deployment limitation rather than a generic machine-learning inconvenience. It
-also follows the close-comparator logic of Khodaverdian et al. (2025): the RL
-actor proposes a control action, while a Lyapunov-based supervisory layer has
-final authority when the safety gate is active. The distinction here is that the
-certificate is computed for the identified output-disturbance model and a
-bounded Direct LMPC target, so the result should be stated as model-based
-practical one-step contraction rather than global nonlinear asymptotic
-stability to the raw setpoint.
+The interpretation remains aligned with the process-control framing in our
+paper and the close comparator by Khodaverdian et al.: MPC/OF-MPC provide the
+engineering reference behavior, TD3 supplies a learned policy prior, and the
+Lyapunov gate is a supervisory certification layer rather than a reward-shaping
+device. Because the certificate is computed for the identified
+output-disturbance model and a bounded mixed Direct LMPC target, the stability
+claim should remain practical and model-based:
+
+$$
+V(\\hat x_{{k+1}}-x_s)
+\\le
+\\rho V(\\hat x_k-x_s)+\\epsilon .
+$$
+
+For this new pretrained batch, $\\rho=0.99$ and
+$\\epsilon={fmt(config['lyap_eps'])}$. This is intentionally less restrictive
+than the previous $10^{{-3}}$ setting, so lower fallback frequency should not be
+overstated as a stronger stability result. It is a wider practical tube.
 
 ## Data Used
 
-| Case | Run | Agent | Teacher | Gate |
-| :--- | ---: | ---: | ---: | ---: |
+| Case | Run | Agent | Teacher | Gate | Handoff |
+| :--- | ---: | ---: | ---: | ---: | ---: |
 """ + "\n".join(
-        f"| {row['Case']} | {row['Run']} | {row['Agent']} | {row['Teacher']} | {row['Gate']} |"
+        f"| {row['Case']} | {row['Run']} | {row['Agent']} | {row['Teacher']} | {row['Gate']} | {row['Handoff']} |"
         for row in data_rows
     ) + f"""
 
@@ -617,112 +676,70 @@ All four current runs used:
 - disturbance-only plant mode, 300 episodes, and 400-step setpoint blocks;
 - bounded mixed Direct LMPC target selector, `bounded_mixed_u0p1_x0p1`;
 - `rho_lyap={fmt(config['rho_lyap'])}`, `lyap_eps={fmt(config['lyap_eps'])}`;
-- pretrained online BC std `0.0001` with Gaussian teacher-action perturbation;
-- pretrained actor loaded from checkpoint and critic reset before online TD3.
+- pretrained actor loaded from checkpoint and critic reset before online TD3;
+- BC update mode `critic_td_plus_actor_bc`;
+- handoff update mode `{config['handoff_update_mode']}`;
+- handoff actor BC updates per step `{fmt(config['handoff_actor_bc_updates_per_step'], 0)}`.
 
-The comparison batch `low_noise` is the immediately preceding pretrained
-low-noise batch with no critic reset and BC std `0`. The older `old_noise` batch
-is retained as context because it used moderate BC exploration (`0.02`) and no
-critic reset. The LMPC comparison to `old_noise` is partly confounded because
-the LMPC checkpoint changed between the old and current batches.
+The main reference is the immediately previous `critic_reset` batch:
+same pretrained-actor/critic-reset idea, but `lyap_eps=1e-3`, a 5-episode
+handoff, and full TD3 actor-gradient updates active during handoff. The older
+`low_noise` and `old_noise` batches remain context for the critic-reset story.
 
 ## Method Reconstruction
 
-The controller uses the identified output-disturbance state-space model in
-scaled deviation coordinates,
+The TD3 state remains the scaled augmented observer state, setpoint, and
+previous input:
 
 $$
-\\begin{{aligned}}
-\\hat z_{{k+1}} &= A_a \\hat z_k + B_a u_k + L\\left(y_k-C_a\\hat z_k\\right), \\\\
-\\hat y_k &= C_a\\hat z_k,
-\\end{{aligned}}
-$$
-
-where $\\hat z_k=[\\hat x_k^\\top,\\hat d_k^\\top]^\\top$ is the estimated
-augmented state. The TD3 actor observes
-
-$$
-s_k = \\left[
-\\mathrm{{scale}}_{{[-1,1]}}(\\hat z_k)^\\top,
-\\mathrm{{scale}}_{{[-1,1]}}(y_{{sp,k}})^\\top,
-\\mathrm{{scale}}_{{[-1,1]}}(u_{{k-1}})^\\top
+s_k =
+\\left[
+\\operatorname{{scale}}(\\hat z_k)^\\top,
+\\operatorname{{scale}}(y_{{sp,k}})^\\top,
+\\operatorname{{scale}}(u_{{k-1}})^\\top
 \\right]^\\top .
 $$
 
 The actor output $a_k\\in[-1,1]^{{n_u}}$ is mapped to the admissible input
-deviation interval as
+deviation interval by
 
 $$
-u_k^\\pi = u_{{\\min}} + \\frac{{a_k+1}}{{2}}(u_{{\\max}}-u_{{\\min}}).
+u_k^\\pi =
+u_{{\\min}} + \\frac{{a_k+1}}{{2}}(u_{{\\max}}-u_{{\\min}}).
 $$
 
-The online TD3 critic update uses the standard clipped double-Q target,
+The online BC phase is now:
 
 $$
-\\begin{{aligned}}
-\\tilde a_{{k+1}} &=
-\\mathrm{{clip}}\\left(
-\\pi_{{\\bar\\theta}}(s_{{k+1}})+\\epsilon,
--1,1
-\\right), \\\\
-y_k^Q &= r_k + \\gamma(1-d_k)
-\\min_i Q_{{\\bar\\phi_i}}(s_{{k+1}},\\tilde a_{{k+1}}),
-\\end{{aligned}}
+u_k^{{\\mathrm{{exec}}}} =
+u_k^T + \\xi_k,
+\\qquad
+\\xi_k\\sim\\mathcal N(0,10^{{-4}}I),
 $$
 
-with $\\gamma=0.99$ and policy delay 2. In BC, the critic receives executed
-online transitions, while the actor is supervised toward the clean teacher
-action:
+with replay receiving $(s_k,a_k^{{\\mathrm{{exec}}}},r_k,s_{{k+1}})$ for critic TD
+learning, while the actor-demo buffer receives the clean teacher action
+$a_k^T$. The actor BC loss is
 
 $$
-\\min_\\theta \\; \\mathbb{{E}}_{{(s,a_T)\\sim\\mathcal D_{{BC}}}}
+\\mathcal L_{{BC}}(\\theta)=
+\\mathbb E_{{(s,a_T)\\sim\\mathcal D_{{BC}}}}
 \\left\\|\\pi_\\theta(s)-a_T\\right\\|_2^2 .
 $$
 
-For the current batch, the pretrained initialization is
+The calibrated handoff phase executes
 
 $$
-\\theta_0 \\leftarrow \\theta_{{\\mathrm{{ckpt}}}}, \\qquad
-\\phi_0 \\sim \\mathrm{{Init}}, \\qquad
-\\bar\\phi_0 \\leftarrow \\phi_0,
-$$
-
-so the actor prior is retained but the offline critic is discarded.
-
-When the safety gate is active, a bounded Direct LMPC target
-$(x_s,u_s,y_s)$ is selected with visible regularization weights
-$w_u=w_x=0.1$. A candidate action is accepted only if the predicted first-step
-Lyapunov value satisfies
-
-$$
-V(\\hat x_{{k+1}}^{{cand}}-x_s)
-\\le
-\\rho V(\\hat x_k-x_s)+\\epsilon,
+u_k^{{\\mathrm{{exec}}}} =
+\\alpha_k u_k^T + (1-\\alpha_k)u_k^\\pi,
 \\qquad
-\\rho=0.99,\\quad \\epsilon=10^{{-3}}.
+\\alpha_k \\downarrow 0,
 $$
 
-If the inequality fails, Direct LMPC supplies the applied fallback action. In
-the no-gate runners, the same Direct LMPC computation is retained only as a
-monitor: the TD3 action is applied, actual intervention remains zero, and the
-diagnostic unsafe count estimates how often the safety layer would have acted.
-
-## Algorithm
-
-1. Load the pretrained TD3 checkpoint and infer actor/critic layer sizes.
-2. Copy the pretrained actor into the online agent.
-3. Reset the critic and target critic; reinitialize the critic optimizer.
-4. For BC episodes, execute the teacher action plus $\\mathcal N(0,10^{{-4}})$
-   noise, store the executed transition for critic learning, and store the clean
-   teacher action for actor BC.
-5. For handoff episodes, blend the teacher input and policy candidate with a
-   linearly decreasing teacher weight.
-6. For full RL episodes, execute the TD3 candidate subject to the selected
-   gate/no-gate logic.
-7. In safety-gate cases, apply the Direct LMPC fallback only when the candidate
-   fails the model-based contraction test.
-8. In no-gate cases, apply the TD3 action directly and log the Direct LMPC
-   diagnostic would-activate signal.
+but keeps TD3 actor-gradient updates off. During handoff, the critic still
+learns from the executed blended transitions and the actor remains supervised
+toward the clean teacher action. Full TD3 actor-gradient updates begin only
+after handoff.
 
 ## Current Batch Performance
 
@@ -733,32 +750,31 @@ diagnostic unsafe count estimates how often the safety layer would have acted.
         ("Tail RMSE", "Tail RMSE"),
         ("Gate %", "Gate %"),
         ("Diag %", "Diag %"),
-        ("Mean abs dU", "Mean abs dU"),
+        ("Worst ep", "Worst ep"),
     ])}
 
 ![Tail summary]({rel_report(figs['tail_summary'])})
 
-The LMPC-pretrained cases are now the strongest cases in the current batch.
-The LMPC no-gate run gives the best tail reward (`{fmt(lmpc_nogate['tail50_reward_no_penalty'])}`)
-and lowest tail RMSE (`{fmt(lmpc_nogate['tail50_output_rmse_mean'])}`). The LMPC safety-gate
-case is also stable in the learning sense, although its tail reward is slightly
-worse than its no-gate counterpart and it applies actual gate interventions in
-about `{fmt(100.0*lmpc_gate['actual_intervention_rate'])}%` of steps.
-
-The OF-MPC-pretrained cases should not be interpreted from their mean reward
-alone. Their tail behavior recovers to approximately the old bounded-mixed
-level, but their full-run mean is dominated by the handoff outlier discussed
-below.
+The four current runs are now tightly clustered. LMPC-pretrained no gate has
+the best tail reward (`{fmt(lmpc_nogate['tail50_reward_no_penalty'])}`) and the
+lowest tail RMSE (`{fmt(lmpc_nogate['tail50_output_rmse_mean'])}`). The
+safety-gate versions are only slightly behind, with actual interventions below
+`{fmt(100.0 * max(lmpc_gate['actual_intervention_rate'], of_gate['actual_intervention_rate']))}%`.
+OF-MPC-pretrained safety gate is no longer collapsing during handoff; its
+full-run mean is now `{fmt(of_gate['mean_reward_no_penalty'])}` rather than
+being dominated by a multi-thousand reward outlier.
 
 ![Reward traces]({rel_report(figs['reward_traces'])})
 
-## Critic Reset Versus No-Reset Low-Noise Batch
+## Change From Previous Critic-Reset Batch
 
-Positive reward deltas are better. Negative RMSE deltas are better.
+Positive reward deltas are better. Negative RMSE deltas are better. This is not
+a pure handoff ablation because `lyap_eps` also changed from `1e-3` to `1e-2`.
 
-{md_table(delta_low_rows, [
+{md_table(delta_rows, [
         ("Case", "Case"),
         ("Mean Rnp", "Mean Rnp"),
+        ("Handoff", "Handoff"),
         ("Early", "Early"),
         ("Tail Rnp", "Tail Rnp"),
         ("Tail RMSE", "Tail RMSE"),
@@ -768,17 +784,12 @@ Positive reward deltas are better. Negative RMSE deltas are better.
 
 ![Phase delta]({rel_report(figs['phase_delta'])})
 
-The central effect is clear: critic reset removes the early-full-RL collapse.
-Relative to the no-reset low-noise batch, early full-RL reward improves by
-`{fmt(low_delta.loc['LMPC pretrained + gate']['delta_early full_reward'])}` for LMPC + gate,
-`{fmt(low_delta.loc['LMPC pretrained no gate']['delta_early full_reward'])}` for LMPC no gate,
-`{fmt(low_delta.loc['OF-MPC pretrained + gate']['delta_early full_reward'])}` for OF-MPC + gate,
-and `{fmt(low_delta.loc['OF-MPC pretrained no gate']['delta_early full_reward'])}` for OF-MPC no gate.
-
-This supports the hypothesis that the offline critic was mismatched to the
-online reward scale and closed-loop state-action distribution. The actor
-pretraining remains useful, but the Q-function trained on offline synthetic
-labels is not a reliable online initialization.
+The main win is the handoff phase. Relative to the previous critic-reset batch,
+handoff reward improves by `{fmt(delta_prev.loc['LMPC pretrained + gate']['delta_handoff_reward'])}`
+for LMPC + gate, `{fmt(delta_prev.loc['LMPC pretrained no gate']['delta_handoff_reward'])}`
+for LMPC no gate, `{fmt(delta_prev.loc['OF-MPC pretrained + gate']['delta_handoff_reward'])}`
+for OF-MPC + gate, and `{fmt(delta_prev.loc['OF-MPC pretrained no gate']['delta_handoff_reward'])}`
+for OF-MPC no gate. That is the mechanism we were trying to fix.
 
 ## Phase Diagnosis
 
@@ -790,118 +801,106 @@ labels is not a reliable online initialization.
         ("tail 50", "Tail50"),
     ])}
 
-The BC phase is almost identical across the four current runs because the
-teacher action dominates and the added action noise is tiny. The important
-difference appears at handoff. For the OF-MPC-pretrained safety-gate run, the
-handoff average is `{fmt(of_gate_handoff)}` and the full-run mean is
-`{fmt(of_gate['mean_reward_no_penalty'])}` because episode 23 has a very large
-tracking failure. The same pattern appears, though less severely, in the OF-MPC
-no-gate run.
+The BC phase remains teacher-dominated and almost identical across the four
+runs. The calibrated handoff is now also controlled: reward is around `-12.6`
+instead of the previous OF-MPC handoff averages of roughly `-5376` with gate and
+`-1828` without gate. The new worst episode is episode 31 in every case, which
+is exactly the first episode after the 10-episode handoff. This means the
+remaining transient is now the release into full actor-gradient TD3, not the
+handoff blend itself.
 
-{md_table(handoff_rows, [
+{md_table(transition_rows, [
         ("Case", "Case"),
-        ("Worst ep", "Worst ep"),
-        ("Phase", "Phase"),
-        ("Reward", "Reward"),
-        ("RMSE", "RMSE"),
+        ("Prev worst", "Prev worst"),
+        ("New worst", "New worst"),
+        ("Prev handoff", "Prev handoff"),
+        ("New handoff", "New handoff"),
+        ("New worst R", "New worst R"),
     ])}
 
 ![Handoff zoom]({rel_report(figs['handoff_zoom'])})
 
-This is a mechanism-level result. Critic reset fixes the Q-scale mismatch, but
-the handoff currently begins full TD3 actor updates while the critic is still
-fresh and while the behavior action is a teacher-policy blend. That is a fragile
-combination: the critic is being calibrated online, the actor begins to trust
-its gradients, and the blend changes the executed distribution over only five
-episodes. The OF-MPC-pretrained actor is most sensitive to this transition.
+Mechanistically, the actor-frozen handoff did what it was supposed to do. The
+critic learns on the blended distribution before the actor is allowed to follow
+TD3 policy gradients. The remaining episode-31 shock suggests that the next
+possible refinement is a short post-handoff actor-gradient ramp, not another BC
+noise change.
 
-## Safety And Diagnostic Behavior
+## Safety And Monitor Behavior
 
 ![Safety diagnostics]({rel_report(figs['safety'])})
 
-Safety-gate interventions remain low in the current batch. This should be
-interpreted carefully: low intervention frequency does not mean the gate is
-irrelevant. It means the tested candidates usually satisfied the model-based
-one-step contraction condition. The no-gate monitor signal is more revealing
-for comparing policy aggressiveness. Diagnostic would-activate rates increase
-in both no-gate reset runs, reaching `{fmt(100.0*lmpc_nogate['diagnostic_unsafe_rate'])}%` for
-LMPC no gate and `{fmt(100.0*of_nogate['diagnostic_unsafe_rate'])}%` for OF-MPC no gate. Thus, the reset
-policy is better for reward/tracking in the LMPC no-gate case, but it also
-visits more actions that the Direct LMPC monitor would reject.
+The relaxed Lyapunov epsilon reduces actual interventions in the safety-gate
+pretrained runs and also reduces the no-gate diagnostic would-activate rate.
+The no-gate diagnostic rates are now only `{fmt(100.0*lmpc_nogate['diagnostic_unsafe_rate'])}%`
+for LMPC-pretrained no gate and `{fmt(100.0*of_nogate['diagnostic_unsafe_rate'])}%`
+for OF-MPC-pretrained no gate. This is favorable for practical operation, but
+the interpretation must be careful: a larger $\\epsilon$ accepts a wider
+practical contraction tube.
 
-The safety gate is not a raw tracking optimizer. It certifies a contraction
-condition around the bounded Direct LMPC target. During the OF-MPC handoff
-spike, the gate can accept or only lightly intervene because the model-based
-contraction condition is satisfied, even though raw setpoint tracking reward
-becomes poor. This is exactly why reports and the paper should separate
-practical safety certification from tracking-performance claims.
+The safety gate still does not optimize only for raw tracking. The Direct LMPC
+fallback solves a tracking problem toward the raw setpoint in the objective,
+but the contraction certificate is centered on the bounded mixed target
+$(x_s,u_s,y_s)$. Therefore tracking quality and safety-certificate activity
+must remain separate reported quantities.
 
 ## Tail Tracking
 
 ![Tail tracking]({rel_report(figs['tracking'])})
 
-The tail plots show that the critic-reset batch recovers after the handoff
-transient. Tail differences are modest compared with the early and handoff
-differences. This supports treating the OF-MPC issue as a transition-design
-problem rather than a final-policy failure.
+The tail tracking plots support the scalar metrics: the learned controllers
+recover after the transition and settle into a similar regime. The no-gate
+runners retain slightly better tail reward, while safety-gate runners buy a
+deployment mechanism with a small performance cost.
 
-## Context Against The Older Moderate-Noise Batch
+## Context Against The No-Reset Low-Noise Batch
 
-{md_table(old_delta_rows, [
+{md_table(low_rows, [
         ("Case", "Case"),
         ("Mean Rnp", "Mean Rnp"),
+        ("Early", "Early"),
         ("Tail Rnp", "Tail Rnp"),
         ("Tail RMSE", "Tail RMSE"),
-        ("Gate pp", "Gate pp"),
-        ("Diag pp", "Diag pp"),
     ])}
 
-Against the older moderate-noise batch, the strongest clean conclusion is for
-OF-MPC because the checkpoint is the same across batches. The reset version
-recovers OF-MPC tail reward almost exactly, but still has a worse full-run mean
-because of the handoff spike. For LMPC, comparison to the old batch is less
-clean because the LMPC checkpoint changed; the reset batch should primarily be
-compared to the immediately preceding low-noise LMPC batch that used the same
-bounded-mixed checkpoint.
+Against the no-reset low-noise batch, the new setup remains strongly better in
+the early online learning region. This preserves the earlier critic-reset
+conclusion: the pretrained actor is useful, but the offline critic should not
+be trusted as the initial online Q-function for the shaped closed-loop reward.
 
 ## Interpretation
 
-The current evidence supports three conclusions.
+The new evidence supports four conclusions.
 
-First, critic reset is a useful correction. It keeps the useful policy prior
-from pretraining while forcing the Q-functions to learn the online shaped reward,
-the safety/fallback penalty structure, and the closed-loop rollout
-distribution.
+First, critic reset should stay. It avoids the offline-to-online Q mismatch.
 
-Second, tiny BC exploration is not the source of the remaining problem. The BC
-episodes are well behaved. The failure is concentrated at handoff, after the
-system moves from pure teacher-executed behavior into teacher-policy blending
-and full TD3 actor updates.
+Second, the calibrated handoff should stay for pretrained agents. It directly
+removed the OF-MPC handoff collapse.
 
-Third, the safety-gate and no-gate comparisons should be read as deployment
-mechanism comparisons, not only tracking comparisons. In the no-gate cases,
-actual interventions are zero by design, but the Direct LMPC monitor indicates
-whether the same actions would have been rejected under the gate.
+Third, the remaining weak point is now the first full-RL episode after handoff.
+That is a much smaller and more localized issue than the previous handoff
+failure.
+
+Fourth, `lyap_eps=1e-2` appears operationally helpful, but it changes the safety
+tube. Reports and papers should state that this is a practical contraction
+certificate with a larger additive tolerance, not a tighter stability result.
 
 ## Recommended Next Experiment
 
-Keep critic reset for pretrained online runs, but change the handoff update
-logic before the next full batch:
+Keep the current setup as the new preferred pretrained online schedule and test
+one focused refinement:
 
-1. Keep the pretrained actor and reset critic.
-2. Keep pretrained BC std at `1e-4` or test `1e-3` as a small local-coverage
-   ablation.
-3. During handoff, collect blended teacher-policy transitions but freeze TD3
-   actor-gradient updates; use critic-only updates plus optional actor BC.
-4. Start full TD3 actor updates only after handoff, or after an additional
-   short critic-calibration window.
-5. Extend handoff from 5 episodes to 10-20 episodes for OF-MPC-pretrained runs,
-   or cap the policy weight increase per episode.
+1. Keep critic reset, BC std `1e-4`, and 10-episode calibrated handoff.
+2. Add a 3-5 episode post-handoff actor-gradient ramp:
+   critic TD remains active, actor BC may decay, and TD3 actor-gradient updates
+   start at reduced frequency or after a short delay.
+3. Compare specifically episodes 31-40, tail-50 reward, diagnostic unsafe rate,
+   and actual gate intervention rate.
+4. Run one pure ablation later with `lyap_eps=1e-3` under the calibrated
+   handoff, so the handoff effect and epsilon effect can be separated.
 
-This next experiment directly targets the observed mechanism. Simply changing
-BC noise again would miss the main issue: the critic reset helped, but the fresh
-critic needs a more conservative transition before actor-gradient updates are
-allowed to dominate.
+The current result is good enough that I would avoid changing BC noise again
+until the episode-31 release behavior is understood.
 
 ## Report Artifacts
 
@@ -913,13 +912,12 @@ allowed to dominate.
 ## Limitations
 
 - These are single-seed training runs, not seed-averaged final evidence.
-- The reported reward comparison uses `reward_no_penalty` for control
-  performance; training reward remains relevant for learning but is not a fair
-  cross-method control metric.
-- Frozen saved-agent evaluation is still needed before claiming final controller
-  performance.
-- The LMPC old-batch comparison is checkpoint-confounded; the reset-vs-low
-  comparison is the cleaner LMPC critic-reset test.
+- The latest batch changes both handoff logic and Lyapunov epsilon, so it is not
+  a pure handoff-only ablation.
+- `reward_no_penalty` is the fairer control-performance metric; training reward
+  includes gate/fallback shaping.
+- Frozen saved-agent evaluation is still needed before claiming final
+  deployment performance.
 """
 
 
