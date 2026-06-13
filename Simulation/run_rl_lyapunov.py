@@ -629,6 +629,28 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         raise ValueError("training_phase_config['handoff_blend'] must be 'linear' or 'none'.")
     if not bool(cfg.get("handoff_noise_policy_side_only", True)):
         raise ValueError("Only policy-side handoff exploration is supported.")
+    valid_update_modes = {
+        "buffer_only",
+        "critic_td_only",
+        "critic_td_plus_actor_bc",
+        "td3_full",
+    }
+    bc_update_mode = str(
+        cfg.get("bc_update_mode", "critic_td_plus_actor_bc")
+    ).strip().lower()
+    if bc_update_mode not in valid_update_modes:
+        raise ValueError(
+            "training_phase_config['bc_update_mode'] must be one of "
+            f"{sorted(valid_update_modes)}."
+        )
+    handoff_update_mode = str(
+        cfg.get("handoff_update_mode", "td3_full")
+    ).strip().lower()
+    if handoff_update_mode not in valid_update_modes:
+        raise ValueError(
+            "training_phase_config['handoff_update_mode'] must be one of "
+            f"{sorted(valid_update_modes)}."
+        )
 
     handoff_episodes = max(0, int(cfg.get("handoff_episodes", 0)))
     handoff_steps = handoff_episodes * int(time_in_sub_episodes)
@@ -642,7 +664,13 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "handoff_episodes": handoff_episodes,
         "handoff_steps": handoff_steps,
         "handoff_blend": handoff_blend,
+        "bc_update_mode": bc_update_mode,
+        "handoff_update_mode": handoff_update_mode,
         "bc_actor_updates_per_step": max(1, int(cfg.get("bc_actor_updates_per_step", 1))),
+        "handoff_actor_bc_updates_per_step": max(
+            0,
+            int(cfg.get("handoff_actor_bc_updates_per_step", 0)),
+        ),
         "bc_exploration_std": float(max(0.0, cfg.get("bc_exploration_std", 0.0))),
         "handoff_exploration_std_start": float(max(0.0, cfg.get("handoff_exploration_std_start", 0.0))),
         "handoff_exploration_std_end": float(max(0.0, cfg.get("handoff_exploration_std_end", 0.0))),
@@ -854,7 +882,9 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         )
         use_teacher_behavior = bc_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
         behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
-        training_update_mode = "no_learning_test" if test else "critic_td_plus_actor_bc"
+        training_update_mode = "no_learning_test" if test else str(
+            phase_cfg.get("bc_update_mode", "critic_td_plus_actor_bc")
+        )
     else:
         policy_phase = "full_rl"
         bc_end_step = int(phase_cfg.get("bc_end_step", 0))
@@ -878,7 +908,11 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
                 "gaussian",
             )
         )
-        training_update_mode = "no_learning_test" if test else "td3_full"
+        training_update_mode = "no_learning_test" if test else str(
+            phase_cfg.get("handoff_update_mode", "td3_full")
+            if handoff_active
+            else "td3_full"
+        )
 
     if "handoff_active" not in locals():
         handoff_active = False
@@ -932,6 +966,45 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         else:
             behavior_policy_source = "policy_nominal"
 
+    bc_update_mode = str(phase_cfg.get("bc_update_mode", "critic_td_plus_actor_bc")).strip().lower()
+    handoff_update_mode = str(phase_cfg.get("handoff_update_mode", "td3_full")).strip().lower()
+    run_critic_only_update = bool(
+        (not test)
+        and (
+            (
+                policy_phase == "behavior_clone_teacher"
+                and bc_update_mode in {"critic_td_only", "critic_td_plus_actor_bc"}
+            )
+            or (
+                handoff_active
+                and handoff_update_mode in {"critic_td_only", "critic_td_plus_actor_bc"}
+            )
+        )
+    )
+    run_actor_bc_update = bool(
+        (not test)
+        and (
+            (
+                policy_phase == "behavior_clone_teacher"
+                and bc_update_mode == "critic_td_plus_actor_bc"
+            )
+            or (
+                handoff_active
+                and handoff_update_mode == "critic_td_plus_actor_bc"
+            )
+        )
+    )
+    run_td3_full_update = bool(
+        (not test)
+        and policy_phase == "full_rl"
+        and ((not handoff_active) or handoff_update_mode == "td3_full")
+    )
+    actor_bc_updates_per_step = (
+        max(1, int(phase_cfg.get("handoff_actor_bc_updates_per_step", 1)))
+        if handoff_active
+        else max(1, int(phase_cfg.get("bc_actor_updates_per_step", 1)))
+    )
+
     return {
         "policy_phase": policy_phase,
         "behavior_policy_source": behavior_policy_source,
@@ -947,12 +1020,19 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         "handoff_step": int(handoff_step),
         "handoff_progress": float(handoff_progress),
         "explore_behavior": behavior_noise_mode != "none",
-        "push_demo": bool((not test) and (use_teacher_behavior or policy_phase == "behavior_clone_teacher")),
-        "run_critic_only_update": (not test) and (policy_phase == "behavior_clone_teacher"),
-        "run_actor_bc_update": (not test) and (policy_phase == "behavior_clone_teacher"),
-        "run_td3_full_update": (not test) and (policy_phase == "full_rl"),
+        "push_demo": bool(
+            (not test)
+            and (
+                use_teacher_behavior
+                or policy_phase == "behavior_clone_teacher"
+                or run_actor_bc_update
+            )
+        ),
+        "run_critic_only_update": run_critic_only_update,
+        "run_actor_bc_update": run_actor_bc_update,
+        "run_td3_full_update": run_td3_full_update,
         "training_update_mode": training_update_mode,
-        "bc_actor_updates_per_step": max(1, int(phase_cfg.get("bc_actor_updates_per_step", 1))),
+        "bc_actor_updates_per_step": actor_bc_updates_per_step,
     }
 
 
@@ -961,6 +1041,10 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["behavior_policy_source"] = str(phase_state.get("behavior_policy_source"))
     info["behavior_noise_mode"] = str(phase_state.get("behavior_noise_mode", "none"))
     info["training_update_mode"] = str(phase_state.get("training_update_mode"))
+    info["critic_td_update_active"] = bool(phase_state.get("run_critic_only_update", False))
+    info["actor_bc_update_active"] = bool(phase_state.get("run_actor_bc_update", False))
+    info["td3_full_update_active"] = bool(phase_state.get("run_td3_full_update", False))
+    info["actor_bc_updates_per_step"] = int(phase_state.get("bc_actor_updates_per_step", 0))
     info["handoff_active"] = bool(phase_state.get("handoff_active", False))
     info["handoff_alpha"] = float(phase_state.get("handoff_alpha", 0.0))
     info["handoff_teacher_weight"] = float(phase_state.get("handoff_teacher_weight", phase_state.get("handoff_alpha", 0.0)))

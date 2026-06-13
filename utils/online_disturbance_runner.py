@@ -136,6 +136,8 @@ DEFAULT_RESET_PRETRAINED_CRITIC = True
 WARMUP_EPISODES = 0
 BC_TEACHER_EPISODES = 20
 HANDOFF_EPISODES = 5
+PRETRAINED_HANDOFF_EPISODES = 10
+COLD_START_HANDOFF_EPISODES = HANDOFF_EPISODES
 
 
 @dataclass(frozen=True)
@@ -414,10 +416,21 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         if pretrained
         else COLD_START_HANDOFF_EXPLORATION_STD_END
     )
+    handoff_episodes = (
+        PRETRAINED_HANDOFF_EPISODES
+        if pretrained
+        else COLD_START_HANDOFF_EPISODES
+    )
+    handoff_update_mode = (
+        "critic_td_plus_actor_bc"
+        if pretrained
+        else "td3_full"
+    )
     return {
         "episode_unit": "cycle",
         "warmup_buffer_only_episodes": WARMUP_EPISODES,
         "behavior_clone_teacher_episodes": BC_TEACHER_EPISODES,
+        "bc_update_mode": "critic_td_plus_actor_bc",
         "bc_actor_updates_per_step": 4,
         "bc_exploration_std": bc_exploration_std,
         "handoff_exploration_std_start": handoff_exploration_std_start,
@@ -428,8 +441,10 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         "full_rl_exploration_decay_mode": "linear",
         "bc_teacher_policy": teacher_source,
         "bc_behavior_source": teacher_source,
-        "handoff_episodes": HANDOFF_EPISODES,
+        "handoff_episodes": handoff_episodes,
         "handoff_blend": "linear",
+        "handoff_update_mode": handoff_update_mode,
+        "handoff_actor_bc_updates_per_step": 1 if pretrained else 0,
         "warmup_behavior_source": teacher_source,
         "warmup_behavior_noise": "none",
         "bc_behavior_noise": "none" if bc_exploration_std <= 0.0 else "gaussian",
