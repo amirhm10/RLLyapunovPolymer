@@ -24,20 +24,20 @@ from utils.path_helpers import repo_path
 # This root runner is intentionally editable, following the style of
 # DirectLyapunovMPC.py. Change these values here for day-to-day experiments.
 
-MODE = "nominal"  # "disturb" or "nominal"
-N_TESTS = 1
-SET_POINTS_LEN = 20
+MODE = "disturb"  # "disturb" or "nominal"
+N_TESTS = 5
+SET_POINTS_LEN = 400
 
-# Safe default: short target-only smoke check.
-RUN_TARGET_ONLY = True
-RUN_CLOSED_LOOP = False
-FULL_RUN = False
-CONFIRM_FULL = False
+# Closed-loop disturbance test defaults. Keep mixed cases disabled below.
+RUN_TARGET_ONLY = False
+RUN_CLOSED_LOOP = True
+FULL_RUN = True
+CONFIRM_FULL = True
 THREADS = 1
-MAX_TARGET_EVALS = 100
-MAX_CLOSED_LOOP_STEPS = 50
-MAX_SOLVER_CALLS = 500
-MAX_WALL_CLOCK_SECONDS = 300.0
+MAX_TARGET_EVALS = 5000
+MAX_CLOSED_LOOP_STEPS = 5000
+MAX_SOLVER_CALLS = 5000
+MAX_WALL_CLOCK_SECONDS = 7200.0
 MAX_MEMORY_MB = 4096.0
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
