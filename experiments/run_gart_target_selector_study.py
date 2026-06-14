@@ -63,6 +63,8 @@ RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
     "disable_dx_rate": True,
+    "disable_x_smoothing": True,
+    "disable_y_smoothing": True,
     "input_headroom_frac": 0.01,
 }
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
@@ -82,7 +84,15 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 4.0},
     },
     {
-        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_du",
+        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_xy_smooth",
+        "overrides": GART_RELAXED_DY2_OVERRIDES,
+    },
+    {
+        "name": "T6_no_dx_rate_headroom_0p01_dy4_no_xy_smooth",
+        "overrides": GART_RELAXED_DY4_OVERRIDES,
+    },
+    {
+        "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
         "overrides": {
             "disable_dx_rate": True,
             "input_headroom_frac": 0.01,
@@ -91,11 +101,9 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "T6_probe_log_only",
+        "name": "T8_probe_log_only",
         "overrides": {
-            "disable_dx_rate": True,
-            "input_headroom_frac": 0.01,
-            "dy_rate_scale": 2.0,
+            **GART_RELAXED_DY2_OVERRIDES,
             "disable_du_rate": True,
             "contraction_probe_log_only": True,
         },

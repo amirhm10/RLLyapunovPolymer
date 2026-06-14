@@ -258,6 +258,26 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
     dy_s_max = np.asarray(values["dy_s_max"], dtype=float).copy()
     du_s_max = np.asarray(values["du_s_max"], dtype=float).copy()
     dx_s_max = np.asarray(values["dx_s_max"], dtype=float).copy()
+    du_template = np.asarray(values["du_s_max"], dtype=float)
+    dx_template = np.asarray(values["dx_s_max"], dtype=float)
+    dy_template = np.asarray(values["dy_s_max"], dtype=float)
+
+    def _diag_override(key: str, *, size: int, default: float, disable_key: str | None = None) -> np.ndarray:
+        raw = cfg.get(key)
+        if raw is None:
+            arr = np.full(size, float(default), dtype=float)
+        else:
+            vec = np.asarray(raw, dtype=float).reshape(-1)
+            if vec.size == 1:
+                arr = np.full(size, float(vec.item()), dtype=float)
+            elif vec.size == size:
+                arr = vec.copy()
+            else:
+                raise ValueError(f"{key} must be scalar or length {size}, got length {vec.size}.")
+        if disable_key is not None and bool(cfg.get(disable_key, False)):
+            arr = np.zeros(size, dtype=float)
+        return arr
+
     if bool(cfg.get("disable_dy_rate", False)):
         dy_s_max = None
     else:
@@ -292,10 +312,10 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         primary_tol_abs=float(cfg["primary_tol_abs"]),
         primary_tol_rel=float(cfg["primary_tol_rel"]),
         Wy_diag=np.asarray(values["Wy_diag"], dtype=float).copy(),
-        W_u_smooth_diag=np.ones_like(np.asarray(values["du_s_max"], dtype=float)),
-        W_x_smooth_diag=0.01 * np.ones_like(np.asarray(values["dx_s_max"], dtype=float)),
-        W_y_smooth_diag=np.ones_like(np.asarray(values["dy_s_max"], dtype=float)),
-        W_u_mid_diag=0.01 * np.ones_like(np.asarray(values["du_s_max"], dtype=float)),
+        W_u_smooth_diag=_diag_override("W_u_smooth_diag", size=du_template.size, default=1.0, disable_key="disable_u_smoothing"),
+        W_x_smooth_diag=_diag_override("W_x_smooth_diag", size=dx_template.size, default=0.01, disable_key="disable_x_smoothing"),
+        W_y_smooth_diag=_diag_override("W_y_smooth_diag", size=dy_template.size, default=1.0, disable_key="disable_y_smoothing"),
+        W_u_mid_diag=_diag_override("W_u_mid_diag", size=du_template.size, default=0.01, disable_key="disable_u_mid_tiebreak"),
         rho=float(cfg["rho"]),
         eps=float(cfg["eps"]),
         contraction_margin_tol=float(cfg["contraction_margin_tol"]),

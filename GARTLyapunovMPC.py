@@ -63,7 +63,7 @@ CASE_SPECS = [
         "objective": "raw",
         "lyapunov_mode": "hard",
         "target_overrides": GART_RELAXED_DY2_OVERRIDES,
-        "label": "GART raw, no dx_s rate, 1% headroom, dy scale 2",
+        "label": "GART raw, no dx_s rate, no x/y smoothing, 1% headroom, dy scale 2",
     },
     {
         "enabled": True,
@@ -71,7 +71,7 @@ CASE_SPECS = [
         "objective": "raw",
         "lyapunov_mode": "hard",
         "target_overrides": GART_RELAXED_DY4_OVERRIDES,
-        "label": "GART raw, no dx_s rate, 1% headroom, dy scale 4",
+        "label": "GART raw, no dx_s rate, no x/y smoothing, 1% headroom, dy scale 4",
     },
     {
         "enabled": False,
@@ -83,7 +83,7 @@ CASE_SPECS = [
             "dy_rate_scale": 2.0,
             "contraction_probe_log_only": True,
         },
-        "label": "Diagnostic only: same relaxed target, contraction probe log-only",
+        "label": "Diagnostic only: relaxed no x/y smoothing target, contraction probe log-only",
     },
     {
         "enabled": False,
