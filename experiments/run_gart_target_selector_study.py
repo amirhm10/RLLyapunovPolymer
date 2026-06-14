@@ -63,6 +63,7 @@ RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
     "disable_dx_rate": True,
+    "disable_u_mid_tiebreak": True,
     "disable_x_smoothing": True,
     "disable_y_smoothing": True,
     "input_headroom_frac": 0.01,
@@ -84,11 +85,11 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 4.0},
     },
     {
-        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_xy_smooth",
+        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_xy_smooth_no_umid",
         "overrides": GART_RELAXED_DY2_OVERRIDES,
     },
     {
-        "name": "T6_no_dx_rate_headroom_0p01_dy4_no_xy_smooth",
+        "name": "T6_no_dx_rate_headroom_0p01_dy4_no_xy_smooth_no_umid",
         "overrides": GART_RELAXED_DY4_OVERRIDES,
     },
     {
@@ -101,7 +102,7 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "T8_probe_log_only",
+        "name": "T8_no_umid_probe_log_only",
         "overrides": {
             **GART_RELAXED_DY2_OVERRIDES,
             "disable_du_rate": True,
@@ -501,7 +502,7 @@ def _observer_replay_payload(
     if source in {"gart_raw_objective", "gart_target_raw_objective"}:
         return run_gart_closed_loop_case(
             ctx,
-            case_name="gart_target_raw_no_dx_headroom_0p01_dy2_replay_source",
+            case_name="gart_target_raw_no_dx_headroom_0p01_dy2_no_umid_replay_source",
             mpc_objective="raw",
             lyapunov_mode="hard",
             mode=mode,
@@ -1141,13 +1142,13 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2",
+            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
             "target_overrides": GART_RELAXED_DY2_OVERRIDES,
         },
         {
-            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4",
+            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
             "target_overrides": GART_RELAXED_DY4_OVERRIDES,
