@@ -510,6 +510,19 @@ def run_gart_closed_loop_case(
         if step_idx in sub_changes:
             start = max(0, step_idx - int(time_in_sub_episodes) + 1)
             avg_rewards.append(float(np.mean(rewards[start : step_idx + 1])))
+            last = direct_info_storage[-1]
+            print(
+                "Sub_Episode:", sub_changes[step_idx],
+                "| avg. reward:", avg_rewards[-1],
+                "| target_mode:", "gart",
+                "| lyapunov_mode:", lyapunov_mode,
+                "| plant_mode:", mode,
+                "| success:", last.get("success"),
+                "| target_stage:", last.get("target_stage"),
+                "| contraction_margin:", last.get("contraction_margin"),
+                "| slack_lyap:", last.get("slack_lyap"),
+                "| nit:", last.get("solver_nit"),
+            )
 
     return {
         "case_name": case_name,
