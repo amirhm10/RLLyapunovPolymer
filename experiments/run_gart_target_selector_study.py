@@ -70,6 +70,11 @@ GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
 }
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
 GART_RELAXED_DY4_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 4.0}
+GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
+    "eta_y": 0.1,
+    "eta_u": 0.1,
+    "target_term_gate_enabled": False,
+}
 
 
 TARGET_ABLATION_CASES: list[dict[str, Any]] = [
@@ -1153,6 +1158,13 @@ def run_closed_loop(
             "lyapunov_mode": "hard",
             "target_overrides": GART_RELAXED_DY4_OVERRIDES,
         },
+        {
+            "case_name": "gart_target_mixed_no_dx_headroom_0p01_dy2_no_umid",
+            "objective": "mixed",
+            "lyapunov_mode": "hard",
+            "target_overrides": GART_RELAXED_DY2_OVERRIDES,
+            "mpc_overrides": GART_MIXED_MPC_OVERRIDES,
+        },
     ]
     records: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {}
@@ -1357,7 +1369,7 @@ def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
         target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
         max_target = max(100, estimated * max(target_multiplier, 1))
     if max_closed is None:
-        max_closed = max(20, 2 * estimated if args.closed_loop else 20)
+        max_closed = max(20, 3 * estimated if args.closed_loop else 20)
     if max_solver is None:
         max_solver = max(500, 2 * max_target + 2 * max_closed)
     return ResourceGuard(
