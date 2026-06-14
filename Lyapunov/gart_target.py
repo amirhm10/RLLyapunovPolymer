@@ -72,17 +72,32 @@ class GARTTargetConfig:
     eps: float = 1.0e-3
     contraction_margin_tol: float = 1.0e-8
     require_contraction_probe: bool = True
+    contraction_probe_log_only: bool = False
 
     governor_enabled: bool = True
     governor_grid: tuple[float, ...] = (1.0, 0.75, 0.5, 0.25, 0.0)
     governor_bisect_iters: int = 8
+
+    target_exact_tol: float = 1.0e-6
+    target_good_tol: float = 0.1
+    target_acceptable_tol: float = 0.5
+
+    margin_candidate_search_enabled: bool = False
+    margin_candidate_search_step_frac: float = 0.01
 
     solver_pref: tuple[str, ...] | None = None
 
 
 @dataclass
 class GARTTargetResult:
+    # Backward-compatible high-level result. After the correctness patch,
+    # success means the target is accepted and usable for LMPC.
     success: bool
+    solve_success: bool
+    accepted: bool
+    usable_for_lmpc: bool
+    rejection_reason: str | None
+
     status: str
     stage: str
 
@@ -104,6 +119,8 @@ class GARTTargetResult:
 
     terminal_alpha_min_feasible: bool
     contraction_probe_success: bool | None
+    contraction_probe_margin_good: float | None
+    # Compatibility alias for older logging paths. Positive is also good here.
     contraction_probe_margin: float | None
     contraction_probe_min_value: float | None
     contraction_probe_bound: float | None
@@ -618,6 +635,7 @@ def contraction_probe(
     if not HAS_CVXPY:
         return {
             "probe_success": False,
+            "probe_margin_good": None,
             "probe_margin": None,
             "probe_min_value": None,
             "probe_bound": None,
@@ -643,6 +661,7 @@ def contraction_probe(
     if not solve_info["success"]:
         return {
             "probe_success": False,
+            "probe_margin_good": None,
             "probe_margin": None,
             "probe_min_value": None,
             "probe_bound": V_bound,
@@ -655,10 +674,11 @@ def contraction_probe(
     u_star = np.asarray(u_var.value, dtype=float).reshape(B.shape[1])
     e_next_value = A @ xhat + B @ u_star - x_s
     V_min = float(e_next_value.T @ P_x @ e_next_value)
-    margin = float(V_bound - V_min)
+    margin_good = float(V_bound - V_min)
     return {
         "probe_success": True,
-        "probe_margin": margin,
+        "probe_margin_good": margin_good,
+        "probe_margin": margin_good,
         "probe_min_value": V_min,
         "probe_bound": V_bound,
         "probe_u": u_star.copy(),
@@ -672,6 +692,202 @@ def _input_headroom_min(u_s: np.ndarray | None, u_min: np.ndarray, u_max: np.nda
     if u_s is None:
         return None
     return float(min(np.min(u_s - u_min), np.min(u_max - u_s)))
+
+
+def evaluate_target_acceptance(
+    *,
+    solve_success: bool,
+    terminal_alpha_min_feasible: bool,
+    contraction_probe_success: bool | None,
+    config: GARTTargetConfig,
+) -> tuple[bool, str | None]:
+    if not solve_success:
+        return False, "target_solve_failed"
+    if not terminal_alpha_min_feasible:
+        return False, "terminal_alpha_infeasible"
+    if (
+        config.require_contraction_probe
+        and not bool(config.contraction_probe_log_only)
+        and not bool(contraction_probe_success)
+    ):
+        return False, "contraction_probe_failed"
+    return True, None
+
+
+def _target_quality_flags(target_error_inf: float | None, config: GARTTargetConfig) -> dict[str, bool | None]:
+    if target_error_inf is None:
+        return {
+            "target_exact": None,
+            "target_good": None,
+            "target_acceptable": None,
+            "target_unreachable": None,
+        }
+    value = float(target_error_inf)
+    return {
+        "target_exact": bool(value <= float(config.target_exact_tol)),
+        "target_good": bool(value <= float(config.target_good_tol)),
+        "target_acceptable": bool(value <= float(config.target_acceptable_tol)),
+        "target_unreachable": bool(value > float(config.target_acceptable_tol)),
+    }
+
+
+def _stage_probe(
+    *,
+    stage: GARTStageResult,
+    model: GARTModel,
+    xhat: np.ndarray,
+    P_x: np.ndarray | None,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    config: GARTTargetConfig,
+) -> dict[str, Any]:
+    if not stage.success or stage.x_s is None or P_x is None:
+        return {
+            "probe_success": None,
+            "probe_margin_good": None,
+            "probe_min_value": None,
+            "probe_bound": None,
+        }
+    probe = contraction_probe(
+        model.A,
+        model.B,
+        P_x,
+        xhat,
+        stage.x_s,
+        u_min,
+        u_max,
+        rho=config.rho,
+        eps=config.eps,
+        solver_pref=config.solver_pref,
+    )
+    margin_good = probe.get("probe_margin_good", probe.get("probe_margin"))
+    success = probe.get("probe_success")
+    if success is not None and margin_good is not None:
+        success = bool(float(margin_good) >= -float(config.contraction_margin_tol))
+    return {
+        "probe_success": success,
+        "probe_margin_good": margin_good,
+        "probe_min_value": probe.get("probe_min_value"),
+        "probe_bound": probe.get("probe_bound"),
+        "probe_status": probe.get("probe_status"),
+        "probe_solver": probe.get("probe_solver"),
+    }
+
+
+def _primary_shell(stage1: GARTStageResult, config: GARTTargetConfig) -> float | None:
+    if stage1.primary_cost is None:
+        return None
+    return float(stage1.primary_cost) + float(config.primary_tol_abs) + float(config.primary_tol_rel) * max(
+        1.0, float(stage1.primary_cost)
+    )
+
+
+def _numeric_rate_ok(
+    *,
+    x_s: np.ndarray,
+    u_s: np.ndarray,
+    y_s: np.ndarray,
+    prev_target: GARTTargetState | None,
+    config: GARTTargetConfig,
+) -> bool:
+    if prev_target is None or not bool(prev_target.valid):
+        return True
+    if prev_target.y_s is not None and config.dy_s_max is not None:
+        dy = _as_vector(config.dy_s_max, "dy_s_max", y_s.size)
+        if np.any(np.abs(y_s - _as_vector(prev_target.y_s, "prev_target.y_s", y_s.size)) > dy + 1.0e-10):
+            return False
+    if prev_target.u_s is not None and config.du_s_max is not None:
+        du = _as_vector(config.du_s_max, "du_s_max", u_s.size)
+        if np.any(np.abs(u_s - _as_vector(prev_target.u_s, "prev_target.u_s", u_s.size)) > du + 1.0e-10):
+            return False
+    if prev_target.x_s is not None and config.dx_s_max is not None:
+        dx = _as_vector(config.dx_s_max, "dx_s_max", x_s.size)
+        if np.any(np.abs(x_s - _as_vector(prev_target.x_s, "prev_target.x_s", x_s.size)) > dx + 1.0e-10):
+            return False
+    return True
+
+
+def _margin_candidate_search(
+    *,
+    model: GARTModel,
+    d_cert: np.ndarray,
+    reference: np.ndarray,
+    stage1: GARTStageResult,
+    stage2: GARTStageResult,
+    bounds: dict[str, Any],
+    prev_target: GARTTargetState | None,
+    config: GARTTargetConfig,
+    xhat: np.ndarray,
+    P_x: np.ndarray | None,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+) -> GARTStageResult:
+    if not bool(config.margin_candidate_search_enabled) or not stage2.success or stage2.u_s is None or P_x is None:
+        return stage2
+    shell = _primary_shell(stage1, config)
+    if shell is None:
+        return stage2
+    try:
+        u_lo = _as_vector(bounds["u_lo"], "u_lo", model.n_u)
+        u_hi = _as_vector(bounds["u_hi"], "u_hi", model.n_u)
+        reference = _as_vector(reference, "reference", model.n_y)
+        d_cert = _as_vector(d_cert, "d_cert", model.n_y)
+        Wy = _diag_vector(config.Wy_diag, model.n_y, default=1.0)
+        step = max(float(config.margin_candidate_search_step_frac), 0.0) * np.maximum(u_hi - u_lo, 1.0e-8)
+        if np.all(step <= 0.0):
+            return stage2
+        steady_matrix = np.eye(model.n_x) - model.A
+        best = stage2
+        best_probe = _stage_probe(stage=stage2, model=model, xhat=xhat, P_x=P_x, u_min=u_min, u_max=u_max, config=config)
+        best_margin = best_probe.get("probe_margin_good")
+        best_margin_value = -np.inf if best_margin is None else float(best_margin)
+        deltas = np.array(np.meshgrid(*[[-s, 0.0, s] for s in step], indexing="ij"), dtype=float).reshape(model.n_u, -1).T
+        for delta in deltas:
+            u_candidate = np.clip(np.asarray(stage2.u_s, dtype=float).reshape(model.n_u) + delta, u_lo, u_hi)
+            x_candidate = np.linalg.lstsq(steady_matrix, model.B @ u_candidate, rcond=None)[0].reshape(model.n_x)
+            y_candidate = np.asarray(model.C @ x_candidate + model.Cd @ d_cert, dtype=float).reshape(model.n_y)
+            primary = float(np.sum((Wy * (y_candidate - reference)) ** 2))
+            if primary > shell + 1.0e-10:
+                continue
+            if not _numeric_rate_ok(x_s=x_candidate, u_s=u_candidate, y_s=y_candidate, prev_target=prev_target, config=config):
+                continue
+            probe = _stage_probe(
+                stage=GARTStageResult(True, "margin_search", "candidate", None, x_candidate, u_candidate, y_candidate, primary),
+                model=model,
+                xhat=xhat,
+                P_x=P_x,
+                u_min=u_min,
+                u_max=u_max,
+                config=config,
+            )
+            margin = probe.get("probe_margin_good")
+            margin_value = -np.inf if margin is None else float(margin)
+            if margin_value > best_margin_value:
+                best_margin_value = margin_value
+                best = GARTStageResult(
+                    True,
+                    "margin_search",
+                    "selected",
+                    None,
+                    x_candidate,
+                    u_candidate,
+                    y_candidate,
+                    primary,
+                    tiebreak_cost=stage2.tiebreak_cost,
+                    objective_value=stage2.objective_value,
+                    diagnostics={
+                        "source_stage": stage2.stage,
+                        "primary_shell": shell,
+                        "probe": probe,
+                    },
+                )
+        if best is not stage2:
+            best.diagnostics["margin_search_improved_probe_margin_good"] = best_margin_value
+            best.diagnostics["stage2_probe_margin_good"] = best_probe.get("probe_margin_good")
+        return best
+    except Exception as exc:
+        stage2.diagnostics["margin_candidate_search_error"] = repr(exc)
+        return stage2
 
 
 def _result_from_candidate(
@@ -700,6 +916,7 @@ def _result_from_candidate(
     rate_y, rate_u, rate_x = _target_rates(candidate.x_s, candidate.u_s, y_s, prev_target)
     probe = {
         "probe_success": None,
+        "probe_margin_good": None,
         "probe_margin": None,
         "probe_min_value": None,
         "probe_bound": None,
@@ -720,8 +937,19 @@ def _result_from_candidate(
             solver_pref=config.solver_pref,
         )
     probe_success = probe.get("probe_success")
-    if probe_success is not None and probe.get("probe_margin") is not None:
-        probe_success = bool(float(probe["probe_margin"]) >= -float(config.contraction_margin_tol))
+    probe_margin_good = probe.get("probe_margin_good", probe.get("probe_margin"))
+    if probe_success is not None and probe_margin_good is not None:
+        probe_success = bool(float(probe_margin_good) >= -float(config.contraction_margin_tol))
+        probe["probe_success"] = probe_success
+    solve_success = bool(candidate.success)
+    accepted, rejection_reason = evaluate_target_acceptance(
+        solve_success=solve_success,
+        terminal_alpha_min_feasible=bool(terminal_feasible),
+        contraction_probe_success=probe_success,
+        config=config,
+    )
+    target_error_inf = None if target_error is None else _inf_norm(target_error)
+    target_flags = _target_quality_flags(target_error_inf, config)
     diagnostics = {
         "stage_status": candidate.status,
         "stage_solver": candidate.solver,
@@ -729,11 +957,20 @@ def _result_from_candidate(
         "reference": reference.copy(),
         "target_stage_diagnostics": candidate.diagnostics,
         "contraction_probe": probe,
+        "solve_success": solve_success,
+        "accepted": accepted,
+        "usable_for_lmpc": accepted,
+        "rejection_reason": rejection_reason,
+        **target_flags,
     }
     if extra_diagnostics:
         diagnostics.update(extra_diagnostics)
     return GARTTargetResult(
-        success=bool(candidate.success),
+        success=accepted,
+        solve_success=solve_success,
+        accepted=accepted,
+        usable_for_lmpc=accepted,
+        rejection_reason=rejection_reason,
         status=status,
         stage=candidate.stage,
         x_s=None if candidate.x_s is None else candidate.x_s.copy(),
@@ -743,7 +980,7 @@ def _result_from_candidate(
         d_raw=d_raw.copy(),
         r_cmd=reference.copy(),
         target_error=None if target_error is None else target_error.copy(),
-        target_error_inf=None if target_error is None else _inf_norm(target_error),
+        target_error_inf=target_error_inf,
         primary_cost=candidate.primary_cost,
         tiebreak_cost=candidate.tiebreak_cost,
         governor_alpha=governor_alpha,
@@ -751,7 +988,8 @@ def _result_from_candidate(
         hold_previous=bool(hold_previous),
         terminal_alpha_min_feasible=bool(terminal_feasible),
         contraction_probe_success=probe_success,
-        contraction_probe_margin=probe.get("probe_margin"),
+        contraction_probe_margin_good=probe_margin_good,
+        contraction_probe_margin=probe_margin_good,
         contraction_probe_min_value=probe.get("probe_min_value"),
         contraction_probe_bound=probe.get("probe_bound"),
         target_rate_y_inf=rate_y,
@@ -763,13 +1001,7 @@ def _result_from_candidate(
 
 
 def _candidate_accepted(result: GARTTargetResult, config: GARTTargetConfig) -> bool:
-    if not result.success:
-        return False
-    if not result.terminal_alpha_min_feasible:
-        return False
-    if config.require_contraction_probe and not bool(result.contraction_probe_success):
-        return False
-    return True
+    return bool(result.accepted and result.usable_for_lmpc)
 
 
 def _reference_motion_ok(y_sp: np.ndarray, prev_target: GARTTargetState | None, config: GARTTargetConfig) -> bool:
@@ -808,7 +1040,27 @@ def _solve_candidate(
         bounds = {"u_lo": u_lo, "u_hi": u_hi}
         stage1 = solve_stage1_closest_reachable(model, xhat, d_cert, reference, bounds, prev_target, config)
         stage2 = solve_stage2_tiebreak(model, d_cert, reference, stage1, bounds, prev_target, config) if stage1.success else stage1
+        stage1_probe = _stage_probe(stage=stage1, model=model, xhat=xhat, P_x=P_x, u_min=u_min, u_max=u_max, config=config)
+        stage2_probe = _stage_probe(stage=stage2, model=model, xhat=xhat, P_x=P_x, u_min=u_min, u_max=u_max, config=config)
+        stage2_minus_stage1 = None
+        if stage1_probe.get("probe_margin_good") is not None and stage2_probe.get("probe_margin_good") is not None:
+            stage2_minus_stage1 = float(stage2_probe["probe_margin_good"]) - float(stage1_probe["probe_margin_good"])
         candidate = stage2 if stage2.success else stage1
+        if stage2.success:
+            candidate = _margin_candidate_search(
+                model=model,
+                d_cert=d_cert,
+                reference=reference,
+                stage1=stage1,
+                stage2=stage2,
+                bounds=bounds,
+                prev_target=prev_target,
+                config=config,
+                xhat=xhat,
+                P_x=P_x,
+                u_min=u_min,
+                u_max=u_max,
+            )
         diagnostics = {
             "u_tight_lower": u_lo.copy(),
             "u_tight_upper": u_hi.copy(),
@@ -816,6 +1068,14 @@ def _solve_candidate(
             "terminal_tightening": terminal_tightening.copy(),
             "stage1": stage1,
             "stage2": stage2,
+            "stage1_probe": stage1_probe,
+            "stage2_probe": stage2_probe,
+            "stage1_probe_margin_good": stage1_probe.get("probe_margin_good"),
+            "stage2_probe_margin_good": stage2_probe.get("probe_margin_good"),
+            "stage2_minus_stage1_probe_margin_good": stage2_minus_stage1,
+            "stage1_primary_cost": stage1.primary_cost,
+            "stage2_primary_cost": stage2.primary_cost,
+            "stage2_tiebreak_cost": stage2.tiebreak_cost,
         }
         if extra_diagnostics:
             diagnostics.update(extra_diagnostics)
@@ -842,6 +1102,10 @@ def _solve_candidate(
     except Exception as exc:
         return GARTTargetResult(
             success=False,
+            solve_success=False,
+            accepted=False,
+            usable_for_lmpc=False,
+            rejection_reason="target_solve_failed",
             status=f"{status}_failed",
             stage="exception",
             x_s=None,
@@ -859,6 +1123,7 @@ def _solve_candidate(
             hold_previous=bool(hold_previous),
             terminal_alpha_min_feasible=False,
             contraction_probe_success=None,
+            contraction_probe_margin_good=None,
             contraction_probe_margin=None,
             contraction_probe_min_value=None,
             contraction_probe_bound=None,
@@ -919,7 +1184,7 @@ def _hold_previous_result(
 
 
 def _state_from_result(result: GARTTargetResult, prior: GARTTargetState | None) -> GARTTargetState:
-    if result.success and result.x_s is not None and result.u_s is not None and result.y_s is not None:
+    if result.accepted and result.x_s is not None and result.u_s is not None and result.y_s is not None:
         last_step = 0 if prior is None else int(prior.last_success_step) + 1
         return GARTTargetState(
             d_cert=None if result.d_cert is None else result.d_cert.copy(),
@@ -1000,11 +1265,19 @@ def select_gart_target(
     if _candidate_accepted(raw_result, config) and _reference_motion_ok(y_sp, prev_target, config):
         return raw_result, _state_from_result(raw_result, state)
 
-    if prev_target is None or not config.governor_enabled:
-        if raw_result.success and prev_target is None:
-            raw_result.status = "initial_fallback_no_previous_target"
-            raw_result.diagnostics["initial_raw_acceptance_failed"] = raw_result.diagnostics.get("contraction_probe")
+    if prev_target is None:
+        if raw_result.accepted:
+            raw_result.status = "initial_target_accepted"
             return raw_result, _state_from_result(raw_result, state)
+        raw_result.status = "initial_target_rejected"
+        raw_result.usable_for_lmpc = False
+        raw_result.success = False
+        raw_result.accepted = False
+        raw_result.rejection_reason = raw_result.rejection_reason or "initial_target_rejected"
+        raw_result.diagnostics["initial_raw_acceptance_failed"] = raw_result.diagnostics.get("contraction_probe")
+        return raw_result, _state_from_result(raw_result, state)
+
+    if not config.governor_enabled:
         return raw_result, _state_from_result(raw_result, state)
 
     r_prev = np.asarray(prev_target.r_cmd if prev_target.r_cmd is not None else prev_target.y_s, dtype=float).reshape(model.n_y)

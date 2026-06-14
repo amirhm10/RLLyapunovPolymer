@@ -43,6 +43,12 @@ class GARTMPCConfig:
     rho: float = 0.99
     eps: float = 1.0e-3
     alpha_terminal_min: float = 1.0e-8
+    target_term_gate_enabled: bool = True
+    target_term_gate_delta_y: float = 0.5
+    target_term_gate_min_alpha: float = 0.5
+    target_term_gate_disable_on_hold: bool = True
+    eta_y_when_gated: float | None = None
+    eta_u_when_gated: float | None = None
     solver_options: dict[str, Any] | None = None
 
 
@@ -74,7 +80,62 @@ def _as_mode(value: str, allowed: tuple[str, ...], name: str) -> str:
 def _target_attr(target: GARTTargetResult | dict[str, Any], name: str) -> Any:
     if isinstance(target, dict):
         return target.get(name)
-    return getattr(target, name)
+    return getattr(target, name, None)
+
+
+def effective_target_objective_weights(
+    *,
+    target: GARTTargetResult | dict[str, Any],
+    config: GARTMPCConfig,
+) -> tuple[float, float, dict[str, Any]]:
+    eta_y = float(config.eta_y_when_gated if config.eta_y_when_gated is not None else config.eta_y)
+    eta_u = float(config.eta_u_when_gated if config.eta_u_when_gated is not None else config.eta_u)
+
+    if not bool(config.target_term_gate_enabled):
+        return eta_y, eta_u, {
+            "target_term_gate_active": False,
+            "target_terms_enabled": True,
+            "target_term_gate_reason": "disabled",
+            "eta_y_eff": eta_y,
+            "eta_u_eff": eta_u,
+        }
+
+    mismatch = _target_attr(target, "target_error_inf")
+    alpha = _target_attr(target, "governor_alpha")
+    hold = bool(_target_attr(target, "hold_previous"))
+
+    reasons: list[str] = []
+    enabled = True
+    if mismatch is None or float(mismatch) > float(config.target_term_gate_delta_y):
+        enabled = False
+        reasons.append("target_setpoint_mismatch")
+    if alpha is not None and float(alpha) < float(config.target_term_gate_min_alpha):
+        enabled = False
+        reasons.append("governor_alpha_too_small")
+    if config.target_term_gate_disable_on_hold and hold:
+        enabled = False
+        reasons.append("hold_previous")
+
+    if not enabled:
+        return 0.0, 0.0, {
+            "target_term_gate_active": True,
+            "target_terms_enabled": False,
+            "target_term_gate_reason": ",".join(reasons),
+            "ungated_eta_y": eta_y,
+            "ungated_eta_u": eta_u,
+            "eta_y_eff": 0.0,
+            "eta_u_eff": 0.0,
+        }
+
+    return eta_y, eta_u, {
+        "target_term_gate_active": True,
+        "target_terms_enabled": True,
+        "target_term_gate_reason": "ok",
+        "ungated_eta_y": eta_y,
+        "ungated_eta_u": eta_u,
+        "eta_y_eff": eta_y,
+        "eta_u_eff": eta_u,
+    }
 
 
 def _make_solution_report(
@@ -124,9 +185,13 @@ def _make_solution_report(
             eps_lyap=lyap_eps,
         )
         report.update(contraction)
+    mpc_contraction_violation = report.get("contraction_margin")
+    mpc_contraction_margin_good = None if mpc_contraction_violation is None else -float(mpc_contraction_violation)
     y_pred = (LMPC_obj.C @ x_pred[:, 1:]).T
     report.update(
         {
+            "mpc_contraction_violation": mpc_contraction_violation,
+            "mpc_contraction_margin_good": mpc_contraction_margin_good,
             "y_target": y_sp.copy(),
             "y_s": y_s.copy(),
             "y_s_minus_y_sp": y_s - y_sp,
@@ -176,6 +241,10 @@ def solve_gart_lmpc_step(
         "method": "gart_lmpc",
         "lyapunov_mode": lyapunov_mode,
         "target_success": bool(_target_attr(target, "success")),
+        "target_solve_success": _target_attr(target, "solve_success"),
+        "target_accepted": _target_attr(target, "accepted"),
+        "target_usable_for_lmpc": _target_attr(target, "usable_for_lmpc"),
+        "target_rejection_reason": _target_attr(target, "rejection_reason"),
         "target_status": _target_attr(target, "status"),
         "target_stage": _target_attr(target, "stage"),
         "target_error_inf": _target_attr(target, "target_error_inf"),
@@ -183,6 +252,7 @@ def solve_gart_lmpc_step(
         "governor_active": _target_attr(target, "governor_active"),
         "hold_previous": _target_attr(target, "hold_previous"),
         "contraction_probe_success": _target_attr(target, "contraction_probe_success"),
+        "contraction_probe_margin_good": _target_attr(target, "contraction_probe_margin_good"),
         "contraction_probe_margin": _target_attr(target, "contraction_probe_margin"),
         "input_headroom_min": _target_attr(target, "input_headroom_min"),
         "u_prev_dev": u_prev_dev.copy(),
@@ -190,9 +260,22 @@ def solve_gart_lmpc_step(
         "slack_lyap": 0.0,
     }
 
-    if not bool(_target_attr(target, "success")):
+    usable_attr = _target_attr(target, "usable_for_lmpc")
+    accepted_attr = _target_attr(target, "accepted")
+    target_usable = bool(usable_attr if usable_attr is not None else (accepted_attr if accepted_attr is not None else _target_attr(target, "success")))
+
+    if not target_usable:
         u_hold = np.clip(u_prev_dev, u_dev_min, u_dev_max)
-        step_info.update({"method": "gart_target_fail_hold_prev", "u_apply": u_hold.copy(), "message": "target solve failed"})
+        step_info.update(
+            {
+                "method": "gart_target_not_usable_hold_prev",
+                "u_apply": u_hold.copy(),
+                "message": _target_attr(target, "rejection_reason") or "target not usable for LMPC",
+                "target_solve_success": _target_attr(target, "solve_success"),
+                "target_accepted": _target_attr(target, "accepted"),
+                "target_usable_for_lmpc": _target_attr(target, "usable_for_lmpc"),
+            }
+        )
         return u_hold, np.tile(u_hold, NC), step_info
 
     x_s = _as_vector(_target_attr(target, "x_s"), "target.x_s", n_x)
@@ -230,6 +313,8 @@ def solve_gart_lmpc_step(
     R_us = _diag_matrix(config.R_us_diag, n_u, default=1.0)
     Rdu = _diag_matrix(config.Rdu_diag, n_u, default=0.0)
     use_soft_slack = bool(lyapunov_mode == "soft" and config.first_step_contraction_on)
+    eta_y_eff, eta_u_eff, target_gate_info = effective_target_objective_weights(target=target, config=config)
+    step_info.update(target_gate_info)
 
     u_var = cp.Variable((NC, n_u))
     x_var = cp.Variable((n_aug, NP + 1))
@@ -252,12 +337,12 @@ def solve_gart_lmpc_step(
         if getattr(LMPC_obj, "D", None) is not None:
             y_expr = y_expr + LMPC_obj.D @ u_var[ctrl_idx, :]
         objective += cp.quad_form(y_expr - y_sp, Q_raw)
-        if float(config.eta_y) != 0.0:
-            objective += float(config.eta_y) * cp.quad_form(y_expr - y_s, Q_target)
+        if float(eta_y_eff) != 0.0:
+            objective += float(eta_y_eff) * cp.quad_form(y_expr - y_s, Q_target)
 
-    if float(config.eta_u) != 0.0:
+    if float(eta_u_eff) != 0.0:
         for ctrl_idx in range(NC):
-            objective += float(config.eta_u) * cp.quad_form(u_var[ctrl_idx, :] - u_s, R_us)
+            objective += float(eta_u_eff) * cp.quad_form(u_var[ctrl_idx, :] - u_s, R_us)
     if np.any(np.diag(Rdu) > 0.0):
         objective += cp.quad_form(u_var[0, :] - u_prev_dev, Rdu)
         for ctrl_idx in range(1, NC):
@@ -409,4 +494,4 @@ def solve_gart_lmpc_step(
     return u_hold, np.tile(u_hold, NC), step_info
 
 
-__all__ = ["GARTMPCConfig", "solve_gart_lmpc_step", "jsonable"]
+__all__ = ["GARTMPCConfig", "effective_target_objective_weights", "solve_gart_lmpc_step", "jsonable"]

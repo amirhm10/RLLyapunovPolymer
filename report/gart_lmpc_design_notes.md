@@ -193,3 +193,28 @@ L_h\|x_k-x_{s,k}\|
 $$
 
 This is why the implementation logs both $y-y_s$ and $y_s-y_{sp}$ instead of hiding unreachable references behind clean target-centered tracking.
+
+## Correctness Patch Addendum
+
+The 2026-06-14 correctness patch changes the default GART interpretation:
+
+- `success` now means the target is accepted and usable for LMPC.
+- `solve_success` separately records whether the target QP solved.
+- `accepted` and `usable_for_lmpc` gate whether the MPC may use the target.
+- `rejection_reason` records why a solved target was refused.
+
+The working controller candidate is:
+
+$$
+\text{GART target for Lyapunov centering}
++
+\text{raw } y_{sp}\text{ performance objective}.
+$$
+
+The mixed target-centered terms remain implemented but are no longer default. They are guarded by target mismatch, governor alpha, and hold-previous status. This reflects the disturbance-run evidence: contraction can hold around $x_s$ while raw tracking fails if $y_s$ is far from $y_{sp}$.
+
+The sign convention is now explicit:
+
+- `contraction_probe_margin_good = V_{bound}-V_{min}` for the target probe, so positive is good.
+- `mpc_contraction_violation` keeps the MPC report convention, where positive means violation.
+- `mpc_contraction_margin_good = -mpc_contraction_violation`, so positive is good.

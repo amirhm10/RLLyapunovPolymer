@@ -6,13 +6,16 @@ from datetime import datetime
 from pathlib import Path
 from pprint import pprint
 
+from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
+
+set_single_thread_env(1)
+
 from experiments.run_gart_target_selector_study import (
     _build_context,
     _jsonable,
     run_closed_loop,
-    run_target_only,
+    run_synthetic_target_only,
 )
-from utils.direct_lyapunov_study import DIRECT_DISTURBANCE_SETPOINT_LEN
 from utils.path_helpers import repo_path
 
 
@@ -21,14 +24,21 @@ from utils.path_helpers import repo_path
 # This root runner is intentionally editable, following the style of
 # DirectLyapunovMPC.py. Change these values here for day-to-day experiments.
 
-MODE = "disturb"  # "disturb" or "nominal"
-N_TESTS = 5
-SET_POINTS_LEN = DIRECT_DISTURBANCE_SETPOINT_LEN
+MODE = "nominal"  # "disturb" or "nominal"
+N_TESTS = 1
+SET_POINTS_LEN = 20
 
-# The target-only study is useful for debugging the selector, but it can take a
-# while at SET_POINTS_LEN=400. Keep it off for normal closed-loop monitoring.
-RUN_TARGET_ONLY = False
-RUN_CLOSED_LOOP = True
+# Safe default: short target-only smoke check.
+RUN_TARGET_ONLY = True
+RUN_CLOSED_LOOP = False
+FULL_RUN = False
+CONFIRM_FULL = False
+THREADS = 1
+MAX_TARGET_EVALS = 100
+MAX_CLOSED_LOOP_STEPS = 50
+MAX_SOLVER_CALLS = 500
+MAX_WALL_CLOCK_SECONDS = 300.0
+MAX_MEMORY_MB = 4096.0
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
@@ -51,14 +61,14 @@ CASE_SPECS = [
         "label": "GART target, raw y_sp objective",
     },
     {
-        "enabled": True,
+        "enabled": False,
         "case_name": "gart_target_mixed_objective",
         "objective": "mixed",
         "lyapunov_mode": "hard",
         "label": "GART target, mixed objective",
     },
     {
-        "enabled": True,
+        "enabled": False,
         "case_name": "gart_target_mixed_soft",
         "objective": "mixed",
         "lyapunov_mode": "soft",
@@ -87,6 +97,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--set-points-len", type=int, default=SET_POINTS_LEN)
     parser.add_argument("--target-only", action=argparse.BooleanOptionalAction, default=RUN_TARGET_ONLY)
     parser.add_argument("--closed-loop", action=argparse.BooleanOptionalAction, default=RUN_CLOSED_LOOP)
+    parser.add_argument("--full", action="store_true", default=FULL_RUN)
+    parser.add_argument("--confirm-full", action="store_true", default=CONFIRM_FULL)
+    parser.add_argument("--threads", type=int, default=THREADS)
+    parser.add_argument("--max-target-evals", type=int, default=MAX_TARGET_EVALS)
+    parser.add_argument("--max-closed-loop-steps", type=int, default=MAX_CLOSED_LOOP_STEPS)
+    parser.add_argument("--max-solver-calls", type=int, default=MAX_SOLVER_CALLS)
+    parser.add_argument("--max-wall-clock-seconds", type=float, default=MAX_WALL_CLOCK_SECONDS)
+    parser.add_argument("--max-memory-mb", type=float, default=MAX_MEMORY_MB)
     parser.add_argument("--timestamp", default=TIMESTAMP)
     return parser.parse_args()
 
@@ -98,6 +116,14 @@ def _config_from_script() -> argparse.Namespace:
         set_points_len=SET_POINTS_LEN,
         target_only=RUN_TARGET_ONLY,
         closed_loop=RUN_CLOSED_LOOP,
+        full=FULL_RUN,
+        confirm_full=CONFIRM_FULL,
+        threads=THREADS,
+        max_target_evals=MAX_TARGET_EVALS,
+        max_closed_loop_steps=MAX_CLOSED_LOOP_STEPS,
+        max_solver_calls=MAX_SOLVER_CALLS,
+        max_wall_clock_seconds=MAX_WALL_CLOCK_SECONDS,
+        max_memory_mb=MAX_MEMORY_MB,
         timestamp=TIMESTAMP,
     )
 
@@ -106,7 +132,23 @@ def run_configured_study() -> dict:
     args = _parse_args() if ALLOW_CLI_OVERRIDES else _config_from_script()
     if not args.target_only and not args.closed_loop:
         raise ValueError("At least one of RUN_TARGET_ONLY or RUN_CLOSED_LOOP must be enabled.")
+    if args.full and not args.confirm_full:
+        raise RuntimeError("Full GART runs require both --full and --confirm-full.")
+    if not args.full:
+        full_like = args.mode == "disturb" or int(args.n_tests) > 1 or int(args.set_points_len) > 20
+        if full_like and not args.confirm_full:
+            raise RuntimeError("Non-smoke GART runs require --full --confirm-full.")
 
+    set_single_thread_env(args.threads)
+    guard = ResourceGuard(
+        GARTStudyLimits(
+            max_target_evals=int(args.max_target_evals),
+            max_closed_loop_steps=int(args.max_closed_loop_steps),
+            max_solver_calls=int(args.max_solver_calls),
+            max_wall_clock_seconds=float(args.max_wall_clock_seconds),
+            max_memory_mb=None if args.max_memory_mb is None or float(args.max_memory_mb) <= 0.0 else float(args.max_memory_mb),
+        )
+    )
     timestamp = args.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     root = Path(repo_path())
     ctx = _build_context()
@@ -118,6 +160,9 @@ def run_configured_study() -> dict:
         "set_points_len": int(args.set_points_len),
         "run_target_only": bool(args.target_only),
         "run_closed_loop": bool(args.closed_loop),
+        "full": bool(args.full),
+        "confirm_full": bool(args.confirm_full),
+        "resource_limits": guard.limits.__dict__.copy(),
         "enabled_cases": [case[0] for case in _enabled_case_tuples()],
     }
 
@@ -126,11 +171,12 @@ def run_configured_study() -> dict:
 
     if args.target_only:
         target_dir = root / "results" / "GARTTargetSelectorStudy" / timestamp
-        summaries["target_only"] = run_target_only(
+        summaries["target_only"] = run_synthetic_target_only(
             ctx,
             target_dir,
             n_tests=int(args.n_tests),
             set_points_len=int(args.set_points_len),
+            guard=guard,
         )
         summaries["target_only_dir"] = str(target_dir.relative_to(root))
 
@@ -143,6 +189,7 @@ def run_configured_study() -> dict:
             n_tests=int(args.n_tests),
             set_points_len=int(args.set_points_len),
             case_specs=_enabled_case_tuples(),
+            guard=guard,
         )
         summaries["closed_loop_dir"] = str(lmpc_dir.relative_to(root))
 

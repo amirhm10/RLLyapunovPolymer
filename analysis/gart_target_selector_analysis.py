@@ -62,10 +62,17 @@ def summarize_target_only(target_dir: str | Path) -> dict[str, Any]:
         "target_dir": str(target_dir),
         "n_steps": len(rows),
         "target_success_rate": _mean_bool(rows, "target_success"),
+        "target_solve_success_rate": _mean_bool(rows, "target_solve_success"),
+        "target_accepted_rate": _mean_bool(rows, "target_accepted"),
+        "target_usable_rate": _mean_bool(rows, "target_usable_for_lmpc"),
         "governor_active_rate": _mean_bool(rows, "governor_active"),
         "hold_previous_rate": _mean_bool(rows, "hold_previous"),
-        "unreachable_rate": _mean_bool(rows, "classified_unreachable"),
+        "target_exact_rate": _mean_bool(rows, "target_exact"),
+        "target_good_rate": _mean_bool(rows, "target_good"),
+        "target_acceptable_rate": _mean_bool(rows, "target_acceptable"),
+        "unreachable_rate": _mean_bool(rows, "target_unreachable"),
         "target_error_inf": _numeric_summary(rows, "target_error_inf"),
+        "contraction_probe_margin_good": _numeric_summary(rows, "contraction_probe_margin_good"),
         "contraction_probe_margin": _numeric_summary(rows, "contraction_probe_margin"),
         "input_headroom_min": _numeric_summary(rows, "input_headroom_min"),
     }
@@ -98,7 +105,8 @@ def make_analysis_plots(target_dir: str | Path | None = None, lmpc_dir: str | Pa
             with np.load(arrays_path) as data:
                 y_sp = np.asarray(data["y_sp"], dtype=float)
                 y_s = np.asarray(data["y_s"], dtype=float)
-                margins = np.asarray(data["contraction_probe_margin"], dtype=float)
+                margin_key = "contraction_probe_margin_good" if "contraction_probe_margin_good" in data else "contraction_probe_margin"
+                margins = np.asarray(data[margin_key], dtype=float)
             plot_dir = target_dir / "analysis_plots"
             plot_dir.mkdir(parents=True, exist_ok=True)
             steps = np.arange(y_s.shape[0])

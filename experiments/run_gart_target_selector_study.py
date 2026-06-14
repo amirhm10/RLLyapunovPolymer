@@ -42,6 +42,7 @@ from utils.gart_defaults import (
     make_gart_mpc_config,
     make_gart_target_config,
 )
+from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.path_helpers import repo_path
 from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
@@ -58,6 +59,36 @@ SLACK_PENALTY = 1.0e6
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
+
+
+TARGET_ABLATION_CASES: list[dict[str, Any]] = [
+    {"name": "T0_current", "overrides": {}},
+    {"name": "T1_no_dx_rate", "overrides": {"disable_dx_rate": True}},
+    {"name": "T2_no_dx_rate_headroom_0p01", "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01}},
+    {
+        "name": "T3_no_dx_rate_headroom_0p01_dy2",
+        "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 2.0},
+    },
+    {
+        "name": "T4_no_dx_rate_headroom_0p01_dy2_no_du",
+        "overrides": {
+            "disable_dx_rate": True,
+            "input_headroom_frac": 0.01,
+            "dy_rate_scale": 2.0,
+            "disable_du_rate": True,
+        },
+    },
+    {
+        "name": "T5_probe_log_only",
+        "overrides": {
+            "disable_dx_rate": True,
+            "input_headroom_frac": 0.01,
+            "dy_rate_scale": 2.0,
+            "disable_du_rate": True,
+            "contraction_probe_log_only": True,
+        },
+    },
+]
 
 
 def _jsonable(value: Any) -> Any:
@@ -144,7 +175,13 @@ def _make_system(setup: dict[str, Any]) -> PolymerCSTR:
     )
 
 
-def _build_context() -> dict[str, Any]:
+def _build_context(
+    *,
+    results_roots: list[str] | None = None,
+    max_result_files: int = 3,
+    max_npz_bytes: int = 100_000_000,
+    max_rows_per_array: int = 2000,
+) -> dict[str, Any]:
     setup = _build_polymer_setup()
     steady_states = setup["steady_states"]
     system_data = load_and_prepare_system_data(
@@ -207,7 +244,14 @@ def _build_context() -> dict[str, Any]:
         bonus_p=0.6,
         bonus_c=20.0,
     )
-    discovered = discover_gart_case_values(system_data, setup)
+    discovered = discover_gart_case_values(
+        system_data,
+        setup,
+        results_roots=results_roots,
+        max_result_files=max_result_files,
+        max_npz_bytes=max_npz_bytes,
+        max_rows_per_array=max_rows_per_array,
+    )
     return {
         "setup": setup,
         "system_data": system_data,
@@ -244,11 +288,118 @@ def _setpoint_schedule(ctx: dict[str, Any], *, n_tests: int, set_points_len: int
     )
 
 
-def run_target_only(ctx: dict[str, Any], output_dir: Path, *, n_tests: int, set_points_len: int) -> dict[str, Any]:
+def _target_classification(error_inf: float | None, target_config: Any) -> dict[str, bool]:
+    if error_inf is None:
+        return {
+            "target_exact": False,
+            "target_good": False,
+            "target_acceptable": False,
+            "target_unreachable": False,
+            "classified_unreachable": False,
+        }
+    value = float(error_inf)
+    exact = value <= float(getattr(target_config, "target_exact_tol", 1.0e-6))
+    good = value <= float(getattr(target_config, "target_good_tol", 0.1))
+    acceptable = value <= float(getattr(target_config, "target_acceptable_tol", 0.5))
+    unreachable = value > float(getattr(target_config, "target_acceptable_tol", 0.5))
+    return {
+        "target_exact": bool(exact),
+        "target_good": bool(good),
+        "target_acceptable": bool(acceptable),
+        "target_unreachable": bool(unreachable),
+        "classified_unreachable": bool(unreachable),
+    }
+
+
+def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_name: str) -> dict[str, Any]:
+    diag = result.diagnostics if isinstance(result.diagnostics, dict) else {}
+    classification = _target_classification(result.target_error_inf, target_config)
+    return {
+        "step": step_idx,
+        "target_only_mode": mode_name,
+        "target_success": result.success,
+        "target_solve_success": result.solve_success,
+        "target_accepted": result.accepted,
+        "target_usable_for_lmpc": result.usable_for_lmpc,
+        "target_rejection_reason": result.rejection_reason,
+        "target_status": result.status,
+        "target_stage": result.stage,
+        "target_error_inf": result.target_error_inf,
+        "target_rate_y_inf": result.target_rate_y_inf,
+        "target_rate_u_inf": result.target_rate_u_inf,
+        "target_rate_x_inf": result.target_rate_x_inf,
+        "d_cert_delta_inf": diag.get("disturbance", {}).get("d_cert_delta_inf"),
+        "input_headroom_min": result.input_headroom_min,
+        "contraction_probe_success": result.contraction_probe_success,
+        "contraction_probe_margin_good": result.contraction_probe_margin_good,
+        "contraction_probe_margin": result.contraction_probe_margin,
+        "stage1_probe_margin_good": diag.get("stage1_probe_margin_good"),
+        "stage2_probe_margin_good": diag.get("stage2_probe_margin_good"),
+        "stage2_minus_stage1_probe_margin_good": diag.get("stage2_minus_stage1_probe_margin_good"),
+        "stage1_primary_cost": diag.get("stage1_primary_cost"),
+        "stage2_primary_cost": diag.get("stage2_primary_cost"),
+        "stage2_tiebreak_cost": diag.get("stage2_tiebreak_cost"),
+        "governor_alpha": result.governor_alpha,
+        "governor_active": result.governor_active,
+        "hold_previous": result.hold_previous,
+        **classification,
+    }
+
+
+def _save_target_only_outputs(
+    output_dir: Path,
+    *,
+    records: list[dict[str, Any]],
+    y_sp: np.ndarray,
+    y_s_store: list[Any],
+    r_cmd_store: list[Any],
+    d_cert_store: list[Any],
+    margin_store: list[Any],
+    target_config: Any,
+    discovered: dict[str, Any],
+    extra_arrays: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_dir / "target_only_steps.csv", records)
+    arrays = {
+        "y_sp": np.asarray(y_sp, dtype=float),
+        "y_s": np.asarray(y_s_store, dtype=float),
+        "r_cmd": np.asarray(r_cmd_store, dtype=float),
+        "d_cert": np.asarray(d_cert_store, dtype=float),
+        "contraction_probe_margin": np.asarray(margin_store, dtype=float),
+        "contraction_probe_margin_good": np.asarray(margin_store, dtype=float),
+    }
+    if extra_arrays:
+        arrays.update(extra_arrays)
+    np.savez_compressed(output_dir / "target_only_arrays.npz", **arrays)
+    summary = _summarize_step_records(records, case_name=records[0].get("target_only_mode", "target_only") if records else "target_only")
+    _write_json(output_dir / "target_only_summary.json", summary)
+    _write_json(output_dir / "target_only_config.json", {"target_config": asdict(target_config), "discovered": discovered})
+    _make_target_plots(
+        output_dir / "plots",
+        np.asarray(y_sp, dtype=float),
+        np.asarray(y_s_store, dtype=float),
+        np.asarray(d_cert_store, dtype=float),
+        np.asarray(margin_store, dtype=float),
+        records,
+    )
+    return summary
+
+
+def run_synthetic_target_only(
+    ctx: dict[str, Any],
+    output_dir: Path,
+    *,
+    n_tests: int,
+    set_points_len: int,
+    target_overrides: dict[str, Any] | None = None,
+    guard: ResourceGuard | None = None,
+) -> dict[str, Any]:
+    """Selector self-consistency mode: overwrites xhat with accepted x_s."""
     y_sp, nFE, *_ = _setpoint_schedule(ctx, n_tests=n_tests, set_points_len=set_points_len)
     system_data = ctx["system_data"]
     lmpc_obj = ctx["lmpc_obj"]
-    target_config = make_gart_target_config(ctx["discovered"])
+    target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
     target_state: GARTTargetState | None = None
     xhat_aug = np.zeros(lmpc_obj.A.shape[0], dtype=float)
     records: list[dict[str, Any]] = []
@@ -258,6 +409,8 @@ def run_target_only(ctx: dict[str, Any], output_dir: Path, *, n_tests: int, set_
     margin_store = []
 
     for step_idx in range(int(nFE)):
+        if guard is not None:
+            guard.tick_target()
         y_sp_k = get_y_sp_step(y_sp, step_idx, lmpc_obj.C.shape[0])
         result, target_state = select_gart_target(
             lmpc_obj.A,
@@ -273,49 +426,162 @@ def run_target_only(ctx: dict[str, Any], output_dir: Path, *, n_tests: int, set_
             K_x=lmpc_obj.K_x,
             innovation=None,
         )
-        if result.success and result.x_s is not None:
+        if result.accepted and result.x_s is not None:
             xhat_aug[: result.x_s.size] = result.x_s
             if result.d_cert is not None:
                 xhat_aug[result.x_s.size :] = result.d_cert
-        row = {
-            "step": step_idx,
-            "target_success": result.success,
-            "target_status": result.status,
-            "target_stage": result.stage,
-            "target_error_inf": result.target_error_inf,
-            "target_rate_y_inf": result.target_rate_y_inf,
-            "target_rate_u_inf": result.target_rate_u_inf,
-            "target_rate_x_inf": result.target_rate_x_inf,
-            "d_cert_delta_inf": result.diagnostics.get("disturbance", {}).get("d_cert_delta_inf"),
-            "input_headroom_min": result.input_headroom_min,
-            "contraction_probe_success": result.contraction_probe_success,
-            "contraction_probe_margin": result.contraction_probe_margin,
-            "governor_alpha": result.governor_alpha,
-            "governor_active": result.governor_active,
-            "hold_previous": result.hold_previous,
-            "classified_unreachable": bool(result.target_error_inf is not None and result.target_error_inf > 1.0e-6),
-        }
-        records.append(row)
+        records.append(_target_step_row(step_idx, result, target_config, mode_name="synthetic_target_only"))
         y_s_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.y_s is None else result.y_s)
         r_cmd_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.r_cmd is None else result.r_cmd)
         d_cert_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.d_cert is None else result.d_cert)
-        margin_store.append(np.nan if result.contraction_probe_margin is None else result.contraction_probe_margin)
+        margin_store.append(np.nan if result.contraction_probe_margin_good is None else result.contraction_probe_margin_good)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(output_dir / "target_only_steps.csv", records)
-    np.savez_compressed(
-        output_dir / "target_only_arrays.npz",
+    return _save_target_only_outputs(
+        output_dir,
+        records=records,
         y_sp=np.asarray(y_sp, dtype=float),
-        y_s=np.asarray(y_s_store, dtype=float),
-        r_cmd=np.asarray(r_cmd_store, dtype=float),
-        d_cert=np.asarray(d_cert_store, dtype=float),
-        contraction_probe_margin=np.asarray(margin_store, dtype=float),
+        y_s_store=y_s_store,
+        r_cmd_store=r_cmd_store,
+        d_cert_store=d_cert_store,
+        margin_store=margin_store,
+        target_config=target_config,
+        discovered=ctx["discovered"],
     )
-    summary = _summarize_step_records(records, case_name="target_only")
-    _write_json(output_dir / "target_only_summary.json", summary)
-    _write_json(output_dir / "target_only_config.json", {"target_config": asdict(target_config), "discovered": ctx["discovered"]})
-    _make_target_plots(output_dir / "plots", np.asarray(y_sp, dtype=float), np.asarray(y_s_store, dtype=float), np.asarray(d_cert_store, dtype=float), np.asarray(margin_store, dtype=float), records)
-    return summary
+
+
+def run_target_only(ctx: dict[str, Any], output_dir: Path, *, n_tests: int, set_points_len: int) -> dict[str, Any]:
+    return run_synthetic_target_only(ctx, output_dir, n_tests=n_tests, set_points_len=set_points_len)
+
+
+def _payload_from_npz(path: str | Path) -> dict[str, Any]:
+    with np.load(path, allow_pickle=True) as data:
+        return {key: np.asarray(data[key]) for key in data.files}
+
+
+def _observer_replay_payload(
+    ctx: dict[str, Any],
+    *,
+    replay_source: str,
+    replay_path: str | None,
+    mode: str,
+    n_tests: int,
+    set_points_len: int,
+    replay_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = str(replay_source).strip().lower()
+    if replay_payload is not None:
+        return replay_payload
+    if source == "explicit_npz":
+        if not replay_path:
+            raise ValueError("replay_path is required when replay_source='explicit_npz'.")
+        return _payload_from_npz(replay_path)
+    if source == "old_governed_reference":
+        return _run_old_governed_reference(ctx, mode=mode, n_tests=n_tests, set_points_len=set_points_len)
+    if source in {"gart_raw_objective", "gart_target_raw_objective"}:
+        return run_gart_closed_loop_case(
+            ctx,
+            case_name="gart_target_raw_objective_replay_source",
+            mpc_objective="raw",
+            lyapunov_mode="hard",
+            mode=mode,
+            n_tests=n_tests,
+            set_points_len=set_points_len,
+        )
+    raise ValueError("replay_source must be old_governed_reference, gart_raw_objective, or explicit_npz.")
+
+
+def run_observer_replay_target_only(
+    ctx: dict[str, Any],
+    output_dir: Path,
+    *,
+    replay_source: str,
+    n_tests: int,
+    set_points_len: int,
+    replay_path: str | None = None,
+    mode: str = "nominal",
+    replay_payload: dict[str, Any] | None = None,
+    target_overrides: dict[str, Any] | None = None,
+    guard: ResourceGuard | None = None,
+) -> dict[str, Any]:
+    payload = _observer_replay_payload(
+        ctx,
+        replay_source=replay_source,
+        replay_path=replay_path,
+        mode=mode,
+        n_tests=n_tests,
+        set_points_len=set_points_len,
+        replay_payload=replay_payload,
+    )
+    lmpc_obj = ctx["lmpc_obj"]
+    n_outputs = int(lmpc_obj.C.shape[0])
+    xhatdhat = np.asarray(payload["xhatdhat"], dtype=float)
+    if xhatdhat.shape[0] != int(lmpc_obj.A.shape[0]) and xhatdhat.shape[1] == int(lmpc_obj.A.shape[0]):
+        xhatdhat = xhatdhat.T
+    y_sp = np.asarray(payload.get("y_sp"), dtype=float)
+    if y_sp.ndim != 2:
+        raise ValueError("Replay payload must contain 2D y_sp.")
+    n_steps = min(int(xhatdhat.shape[1] - 1), int(y_sp.shape[0]))
+    target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
+    target_state: GARTTargetState | None = None
+    records: list[dict[str, Any]] = []
+    y_s_store = []
+    r_cmd_store = []
+    d_cert_store = []
+    margin_store = []
+    xhat_used = []
+    data_min = ctx["system_data"]["data_min"]
+    data_max = ctx["system_data"]["data_max"]
+    n_inputs = int(lmpc_obj.B.shape[1])
+    y_ss_scaled = apply_min_max(ctx["setup"]["steady_states"]["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
+    y_system = payload.get("y_system")
+
+    for step_idx in range(n_steps):
+        if guard is not None:
+            guard.tick_target()
+        xhat_aug = xhatdhat[:, step_idx].copy()
+        xhat_used.append(xhat_aug.copy())
+        y_sp_k = get_y_sp_step(y_sp, step_idx, n_outputs)
+        innovation = None
+        if y_system is not None:
+            y_arr = np.asarray(y_system, dtype=float)
+            if y_arr.ndim == 2 and step_idx < y_arr.shape[0]:
+                y_prev_scaled = apply_min_max(y_arr[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
+                innovation = y_prev_scaled - np.asarray(lmpc_obj.C @ xhat_aug, dtype=float).reshape(-1)
+        result, target_state = select_gart_target(
+            lmpc_obj.A,
+            lmpc_obj.B,
+            lmpc_obj.C,
+            xhat_aug,
+            y_sp_k,
+            ctx["u_dev_min"],
+            ctx["u_dev_max"],
+            state=target_state,
+            config=target_config,
+            P_x=lmpc_obj.P_x,
+            K_x=lmpc_obj.K_x,
+            innovation=innovation,
+        )
+        records.append(_target_step_row(step_idx, result, target_config, mode_name="observer_replay_target_only"))
+        y_s_store.append(np.full(n_outputs, np.nan) if result.y_s is None else result.y_s)
+        r_cmd_store.append(np.full(n_outputs, np.nan) if result.r_cmd is None else result.r_cmd)
+        d_cert_store.append(np.full(n_outputs, np.nan) if result.d_cert is None else result.d_cert)
+        margin_store.append(np.nan if result.contraction_probe_margin_good is None else result.contraction_probe_margin_good)
+
+    return _save_target_only_outputs(
+        output_dir,
+        records=records,
+        y_sp=y_sp[:n_steps, :],
+        y_s_store=y_s_store,
+        r_cmd_store=r_cmd_store,
+        d_cert_store=d_cert_store,
+        margin_store=margin_store,
+        target_config=target_config,
+        discovered=ctx["discovered"],
+        extra_arrays={
+            "replay_xhatdhat_used": np.asarray(xhat_used, dtype=float),
+            "replay_xhatdhat_original": xhatdhat[:, :n_steps].T.copy(),
+        },
+    )
 
 
 def run_gart_closed_loop_case(
@@ -327,6 +593,9 @@ def run_gart_closed_loop_case(
     mode: str,
     n_tests: int,
     set_points_len: int,
+    target_overrides: dict[str, Any] | None = None,
+    mpc_overrides: dict[str, Any] | None = None,
+    guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     setup = ctx["setup"]
     system_data = ctx["system_data"]
@@ -366,10 +635,12 @@ def run_gart_closed_loop_case(
     avg_rewards: list[float] = []
     target_state: GARTTargetState | None = None
     IC_opt = ctx["ic_opt"].copy()
-    target_config = make_gart_target_config(ctx["discovered"])
-    mpc_config = make_gart_mpc_config(ctx["discovered"], objective=mpc_objective, lyapunov_mode=lyapunov_mode)
+    target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
+    mpc_config = make_gart_mpc_config(ctx["discovered"], objective=mpc_objective, lyapunov_mode=lyapunov_mode, **(mpc_overrides or {}))
 
     for step_idx in range(int(nFE)):
+        if guard is not None:
+            guard.tick_closed_loop()
         x0_aug = xhatdhat[:, step_idx].copy()
         scaled_current_input = apply_min_max(system.current_input, data_min[:n_inputs], data_max[:n_inputs])
         u_prev_dev = scaled_current_input - ss_scaled_inputs
@@ -377,6 +648,8 @@ def run_gart_closed_loop_case(
         y_prev_scaled = apply_min_max(y_mpc[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
         yhat_now = np.asarray(lmpc_obj.C @ x0_aug, dtype=float).reshape(-1)
         innovation = y_prev_scaled - yhat_now
+        if guard is not None:
+            guard.tick_target()
         target_result, target_state = select_gart_target(
             lmpc_obj.A,
             lmpc_obj.B,
@@ -405,14 +678,20 @@ def run_gart_closed_loop_case(
                 "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
                 "governor_probe_available": target_result.contraction_probe_success is not None,
                 "governor_probe_success": target_result.contraction_probe_success,
+                "governor_probe_margin_good": target_result.contraction_probe_margin_good,
                 "governor_probe_margin": target_result.contraction_probe_margin,
                 "governor_probe_min_value": target_result.contraction_probe_min_value,
                 "governor_probe_bound": target_result.contraction_probe_bound,
                 "governor_probe_status": target_result.status,
+                "target_solve_success": target_result.solve_success,
+                "target_accepted": target_result.accepted,
+                "target_usable_for_lmpc": target_result.usable_for_lmpc,
+                "target_rejection_reason": target_result.rejection_reason,
                 "target_rate_inf": target_result.target_rate_y_inf,
                 "command_move_inf": target_result.target_rate_y_inf,
                 "input_headroom_frac": target_config.input_headroom_frac,
                 "residual_total_norm": target_result.target_error_inf,
+                **_target_classification(target_result.target_error_inf, target_config),
             }
         )
         target_info_storage.append(target_info)
@@ -429,6 +708,8 @@ def run_gart_closed_loop_case(
             ctx["u_dev_max"],
             mpc_config,
         )
+        if guard is not None:
+            guard.tick_solver()
 
         u_scaled = u_dev_apply + ss_scaled_inputs
         u_phys = reverse_min_max(u_scaled, data_min[:n_inputs], data_max[:n_inputs])
@@ -471,10 +752,14 @@ def run_gart_closed_loop_case(
                 "target_stage": target_result.stage,
                 "target_residual_total_norm": target_result.target_error_inf,
                 "target_quality_enabled": True,
-                "target_quality_ok": bool(target_result.success),
+                "target_quality_ok": bool(target_result.accepted),
                 "target_quality_reason": target_result.status,
                 "target_quality_mismatch_inf": target_result.target_error_inf,
                 "target_quality_residual_norm": target_result.target_error_inf,
+                "target_solve_success": target_result.solve_success,
+                "target_accepted": target_result.accepted,
+                "target_usable_for_lmpc": target_result.usable_for_lmpc,
+                "target_rejection_reason": target_result.rejection_reason,
                 "d_s": None if d_s is None else d_s.copy(),
                 "r_cmd": None if r_cmd is None else r_cmd.copy(),
                 "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
@@ -482,10 +767,12 @@ def run_gart_closed_loop_case(
                 "target_rate_inf": target_result.target_rate_y_inf,
                 "governor_probe_available": target_result.contraction_probe_success is not None,
                 "governor_probe_success": target_result.contraction_probe_success,
+                "governor_probe_margin_good": target_result.contraction_probe_margin_good,
                 "governor_probe_margin": target_result.contraction_probe_margin,
                 "governor_probe_min_value": target_result.contraction_probe_min_value,
                 "governor_probe_bound": target_result.contraction_probe_bound,
                 "governor_probe_status": target_result.status,
+                **_target_classification(target_result.target_error_inf, target_config),
                 "command_move_inf": target_result.target_rate_y_inf,
                 "input_headroom_frac": target_config.input_headroom_frac,
                 "y_current_scaled": y_current_scaled.copy(),
@@ -622,13 +909,26 @@ def _summarize_step_records(records: list[dict[str, Any]], *, case_name: str) ->
         "case_name": case_name,
         "n_steps": len(records),
         "target_success_rate": mean_bool("target_success"),
+        "target_solve_success_rate": mean_bool("target_solve_success"),
+        "target_accepted_rate": mean_bool("target_accepted"),
+        "target_usable_rate": mean_bool("target_usable_for_lmpc"),
         "solver_success_rate": mean_bool("success"),
         "mean_target_error_inf": nanmean("target_error_inf"),
         "p95_target_error_inf": nanp95("target_error_inf"),
+        "mean_contraction_probe_margin_good": nanmean("contraction_probe_margin_good"),
         "mean_contraction_probe_margin": nanmean("contraction_probe_margin"),
+        "contraction_probe_success_rate": mean_bool("contraction_probe_success"),
         "governor_active_rate": mean_bool("governor_active"),
         "hold_previous_rate": mean_bool("hold_previous"),
-        "unreachable_rate": mean_bool("classified_unreachable"),
+        "target_exact_rate": mean_bool("target_exact"),
+        "target_good_rate": mean_bool("target_good"),
+        "target_acceptable_rate": mean_bool("target_acceptable"),
+        "unreachable_rate": mean_bool("target_unreachable"),
+        "mean_governor_alpha": nanmean("governor_alpha"),
+        "p05_input_headroom": None
+        if np.all(~np.isfinite(np.array([np.nan if row.get("input_headroom_min") is None else float(row.get("input_headroom_min")) for row in records], dtype=float)))
+        else float(np.nanquantile(np.array([np.nan if row.get("input_headroom_min") is None else float(row.get("input_headroom_min")) for row in records], dtype=float), 0.05)),
+        "mean_terminal_alpha": nanmean("alpha_terminal"),
         "mean_slack_lyap": nanmean("slack_lyap"),
         "p95_slack_lyap": nanp95("slack_lyap"),
     }
@@ -649,6 +949,9 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
     governor = []
     holds = []
     target_success = []
+    target_solve_success = []
+    target_accepted = []
+    target_usable = []
     contraction_probe = []
     slack = []
     solver_success = []
@@ -664,6 +967,9 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         governor.append(1.0 if bool(row.get("governor_active", False)) else 0.0)
         holds.append(1.0 if bool(row.get("hold_previous", False)) else 0.0)
         target_success.append(1.0 if bool(row.get("target_success", False)) else 0.0)
+        target_solve_success.append(1.0 if bool(row.get("target_solve_success", row.get("target_success", False))) else 0.0)
+        target_accepted.append(1.0 if bool(row.get("target_accepted", row.get("target_success", False))) else 0.0)
+        target_usable.append(1.0 if bool(row.get("target_usable_for_lmpc", row.get("target_success", False))) else 0.0)
         contraction_probe.append(1.0 if bool(row.get("contraction_probe_success", row.get("governor_probe_success", False))) else 0.0)
         slack.append(float(row.get("slack_lyap", 0.0) or 0.0))
         solver_success.append(1.0 if bool(row.get("success", False)) else 0.0)
@@ -681,13 +987,16 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         "max_target_error_inf": None if not target_err else float(np.max(target_err)),
         "solver_success_rate": float(np.mean(solver_success)) if solver_success else None,
         "target_success_rate": float(np.mean(target_success)) if target_success else None,
+        "target_solve_success_rate": float(np.mean(target_solve_success)) if target_solve_success else None,
+        "target_accepted_rate": float(np.mean(target_accepted)) if target_accepted else None,
+        "target_usable_rate": float(np.mean(target_usable)) if target_usable else None,
         "contraction_satisfied_rate": float(np.mean(contraction_probe)) if contraction_probe else None,
         "mean_slack_lyap": float(np.mean(slack)) if slack else None,
         "p95_slack_lyap": float(np.quantile(slack, 0.95)) if slack else None,
         "mean_abs_delta_u": None if du.size == 0 else float(np.mean(np.abs(du))),
         "governor_active_rate": float(np.mean(governor)) if governor else None,
         "hold_previous_rate": float(np.mean(holds)) if holds else None,
-        "unreachable_rate": None if not target_err else float(np.mean(np.asarray(target_err) > 1.0e-6)),
+        "unreachable_rate": None if not target_err else float(np.mean(np.asarray(target_err) > 0.5)),
     }
 
 
@@ -768,13 +1077,12 @@ def run_closed_loop(
     n_tests: int,
     set_points_len: int,
     case_specs: list[tuple[str, str | None, str | None]] | None = None,
+    guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         ("old_governed_reference", None, None),
         ("gart_target_raw_objective", "raw", "hard"),
-        ("gart_target_mixed_objective", "mixed", "hard"),
-        ("gart_target_mixed_soft", "mixed", "soft"),
     ]
     records: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {}
@@ -792,6 +1100,7 @@ def run_closed_loop(
                 mode=mode,
                 n_tests=n_tests,
                 set_points_len=set_points_len,
+                guard=guard,
             )
         case_dir = output_dir / case_name
         _save_case_payload(case_dir, payload)
@@ -817,6 +1126,62 @@ def run_closed_loop(
     }
     _write_json(output_dir / "summary.json", summary)
     _make_closed_loop_plots(output_dir / "plots", output_dir, records)
+    return summary
+
+
+def run_target_ablation_study(
+    ctx: dict[str, Any],
+    output_dir: Path,
+    *,
+    mode: str,
+    n_tests: int,
+    set_points_len: int,
+    replay_source: str = "old_governed_reference",
+    replay_path: str | None = None,
+    guard: ResourceGuard | None = None,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    artifacts: dict[str, Any] = {}
+    replay_payload = _observer_replay_payload(
+        ctx,
+        replay_source=replay_source,
+        replay_path=replay_path,
+        mode=mode,
+        n_tests=n_tests,
+        set_points_len=set_points_len,
+    )
+    for case in TARGET_ABLATION_CASES:
+        name = str(case["name"])
+        case_dir = output_dir / name
+        summary = run_observer_replay_target_only(
+            ctx,
+            case_dir,
+            replay_source=replay_source,
+            replay_path=replay_path,
+            mode=mode,
+            n_tests=n_tests,
+            set_points_len=set_points_len,
+            replay_payload=replay_payload,
+            target_overrides=dict(case.get("overrides", {})),
+            guard=guard,
+        )
+        row = dict(summary)
+        row["case_name"] = name
+        row["overrides"] = json.dumps(_jsonable(case.get("overrides", {})))
+        records.append(row)
+        artifacts[name] = {"case_dir": str(case_dir.relative_to(REPO_ROOT))}
+    _write_csv(output_dir / "target_ablation_comparison.csv", records)
+    summary = {
+        "status": "completed",
+        "mode": mode,
+        "n_tests": int(n_tests),
+        "set_points_len": int(set_points_len),
+        "replay_source": replay_source,
+        "records": records,
+        "artifacts": artifacts,
+    }
+    _write_json(output_dir / "summary.json", summary)
     return summary
 
 
@@ -881,20 +1246,80 @@ def _make_closed_loop_plots(plot_dir: Path, run_dir: Path, records: list[dict[st
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run GART target-selector and GART-LMPC smoke studies.")
-    parser.add_argument("--mode", choices=["nominal", "disturb"], default="disturb")
-    parser.add_argument("--n-tests", type=int, default=5)
-    parser.add_argument("--set-points-len", type=int, default=DIRECT_DISTURBANCE_SETPOINT_LEN)
-    parser.add_argument("--target-only", action="store_true")
-    parser.add_argument("--closed-loop", action="store_true")
+    parser.add_argument("--mode", choices=["nominal", "disturb"], default="nominal")
+    parser.add_argument("--n-tests", type=int, default=1)
+    parser.add_argument("--set-points-len", type=int, default=20)
+    parser.add_argument("--target-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--closed-loop", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--target-only-mode", choices=["synthetic", "observer-replay"], default="synthetic")
+    parser.add_argument("--replay-source", choices=["old_governed_reference", "gart_raw_objective", "explicit_npz"], default="old_governed_reference")
+    parser.add_argument("--replay-path", default=None)
+    parser.add_argument("--target-ablation", action="store_true")
+    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--confirm-full", action="store_true")
+    parser.add_argument("--max-target-evals", type=int, default=None)
+    parser.add_argument("--max-closed-loop-steps", type=int, default=None)
+    parser.add_argument("--max-solver-calls", type=int, default=None)
+    parser.add_argument("--max-wall-clock-seconds", type=float, default=300.0)
+    parser.add_argument("--max-memory-mb", type=float, default=4096.0)
+    parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--timestamp", default=None)
     return parser.parse_args()
 
 
+def _estimated_steps(n_tests: int, set_points_len: int) -> int:
+    return max(int(n_tests), 1) * max(int(set_points_len), 1) * 2
+
+
+def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
+    estimated = _estimated_steps(args.n_tests, args.set_points_len)
+    max_target = args.max_target_evals
+    max_closed = args.max_closed_loop_steps
+    max_solver = args.max_solver_calls
+    if max_target is None:
+        target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
+        max_target = max(100, estimated * max(target_multiplier, 1))
+    if max_closed is None:
+        max_closed = max(20, estimated if args.closed_loop else 20)
+    if max_solver is None:
+        max_solver = max(500, 2 * max_target + 2 * max_closed)
+    return ResourceGuard(
+        GARTStudyLimits(
+            max_target_evals=max_target,
+            max_closed_loop_steps=max_closed,
+            max_solver_calls=max_solver,
+            max_wall_clock_seconds=float(args.max_wall_clock_seconds),
+            max_memory_mb=None if args.max_memory_mb is None or args.max_memory_mb <= 0 else float(args.max_memory_mb),
+        )
+    )
+
+
+def _apply_runtime_safety(args: argparse.Namespace) -> None:
+    if args.smoke:
+        args.mode = "nominal"
+        args.n_tests = 1
+        args.set_points_len = 20
+        args.target_only = True
+        args.closed_loop = False
+    if args.full and not args.confirm_full:
+        raise RuntimeError("Full GART runs require both --full and --confirm-full.")
+    if not args.full:
+        full_like = args.mode == "disturb" or int(args.n_tests) > 1 or int(args.set_points_len) > 20
+        if full_like and not args.confirm_full:
+            raise RuntimeError(
+                "Non-smoke GART runs require --full --confirm-full. "
+                "Use --smoke or keep nominal n_tests=1 set_points_len=20 for default checks."
+            )
+    if not args.target_only and not args.closed_loop and not args.target_ablation:
+        args.target_only = True
+
+
 def main() -> dict[str, Any]:
     args = parse_args()
-    if not args.target_only and not args.closed_loop:
-        args.target_only = True
-        args.closed_loop = True
+    set_single_thread_env(args.threads)
+    _apply_runtime_safety(args)
+    guard = _resource_guard_from_args(args)
     timestamp = args.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     ctx = _build_context()
     root = Path(repo_path())
@@ -904,14 +1329,54 @@ def main() -> dict[str, Any]:
         "n_tests": int(args.n_tests),
         "set_points_len": int(args.set_points_len),
         "disturbance_after_step": False,
+        "target_only_mode": args.target_only_mode,
+        "resource_limits": asdict(guard.limits),
     }
     if args.target_only:
         target_dir = root / "results" / "GARTTargetSelectorStudy" / timestamp
-        summaries["target_only"] = run_target_only(ctx, target_dir, n_tests=args.n_tests, set_points_len=args.set_points_len)
+        if args.target_only_mode == "observer-replay":
+            summaries["target_only"] = run_observer_replay_target_only(
+                ctx,
+                target_dir,
+                replay_source=args.replay_source,
+                replay_path=args.replay_path,
+                mode=args.mode,
+                n_tests=args.n_tests,
+                set_points_len=args.set_points_len,
+                guard=guard,
+            )
+        else:
+            summaries["target_only"] = run_synthetic_target_only(
+                ctx,
+                target_dir,
+                n_tests=args.n_tests,
+                set_points_len=args.set_points_len,
+                guard=guard,
+            )
         summaries["target_only_dir"] = str(target_dir.relative_to(root))
+    if args.target_ablation:
+        ablation_dir = root / "results" / "GARTTargetAblation" / timestamp
+        summaries["target_ablation"] = run_target_ablation_study(
+            ctx,
+            ablation_dir,
+            mode=args.mode,
+            n_tests=args.n_tests,
+            set_points_len=args.set_points_len,
+            replay_source=args.replay_source,
+            replay_path=args.replay_path,
+            guard=guard,
+        )
+        summaries["target_ablation_dir"] = str(ablation_dir.relative_to(root))
     if args.closed_loop:
         lmpc_dir = root / "results" / "GARTLMPC" / timestamp
-        summaries["closed_loop"] = run_closed_loop(ctx, lmpc_dir, mode=args.mode, n_tests=args.n_tests, set_points_len=args.set_points_len)
+        summaries["closed_loop"] = run_closed_loop(
+            ctx,
+            lmpc_dir,
+            mode=args.mode,
+            n_tests=args.n_tests,
+            set_points_len=args.set_points_len,
+            guard=guard,
+        )
         summaries["closed_loop_dir"] = str(lmpc_dir.relative_to(root))
     print(json.dumps(_jsonable(summaries), indent=2))
     return summaries

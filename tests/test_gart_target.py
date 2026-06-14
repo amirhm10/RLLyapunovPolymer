@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from Lyapunov.gart_lmpc import GARTMPCConfig, solve_gart_lmpc_step
 from Lyapunov.gart_target import (
     CertifiedDisturbanceConfig,
     GARTTargetConfig,
@@ -69,6 +71,9 @@ def test_exact_reachable_target():
         P_x=np.array([[1.0]]),
         K_x=np.array([[0.0]]),
     )
+    assert result.solve_success is True
+    assert result.accepted is True
+    assert result.usable_for_lmpc is True
     assert result.success is True
     assert result.governor_alpha == pytest.approx(1.0)
     assert result.hold_previous is False
@@ -92,6 +97,9 @@ def test_unreachable_target_due_to_input_bounds_is_closest_reachable():
         P_x=np.array([[1.0]]),
         K_x=np.array([[0.0]]),
     )
+    assert result.solve_success is True
+    assert result.accepted is True
+    assert result.usable_for_lmpc is True
     assert result.success is True
     assert result.target_error_inf > 0.0
     assert result.input_headroom_min >= -1.0e-7
@@ -147,7 +155,7 @@ def test_certified_disturbance_rate_limit():
 def test_contraction_probe_failure_is_reported():
     A_aug, B_aug, C_aug = _augmented_model(A=1.2, B=1.0)
     cfg = _config(rho=0.1, eps=0.0)
-    result, _ = select_gart_target(
+    result, state = select_gart_target(
         A_aug,
         B_aug,
         C_aug,
@@ -160,7 +168,83 @@ def test_contraction_probe_failure_is_reported():
         P_x=np.array([[1.0]]),
         K_x=np.array([[0.0]]),
     )
+    assert result.solve_success is True
+    assert result.accepted is False
+    assert result.usable_for_lmpc is False
+    assert result.success is False
     assert result.contraction_probe_success is False
+    assert result.rejection_reason == "contraction_probe_failed"
+    assert state.valid is False
+
+
+def test_no_previous_target_rejected_does_not_store_state():
+    A_aug, B_aug, C_aug = _augmented_model(A=1.2, B=1.0)
+    result, state = select_gart_target(
+        A_aug,
+        B_aug,
+        C_aug,
+        np.array([1.0, 0.0]),
+        np.array([0.0]),
+        np.array([-0.1]),
+        np.array([0.1]),
+        state=None,
+        config=_config(rho=0.1, eps=0.0),
+        P_x=np.array([[1.0]]),
+        K_x=np.array([[0.0]]),
+    )
+    assert result.solve_success is True
+    assert result.accepted is False
+    assert result.success is False
+    assert state.valid is False
+
+
+def test_lmpc_refuses_unaccepted_target():
+    lmpc_obj = SimpleNamespace(
+        A=np.eye(2),
+        B=np.array([[1.0], [0.0]]),
+        C=np.array([[1.0, 1.0]]),
+        NP=2,
+        NC=1,
+    )
+    target = {
+        "success": False,
+        "solve_success": True,
+        "accepted": False,
+        "usable_for_lmpc": False,
+        "rejection_reason": "contraction_probe_failed",
+        "status": "initial_target_rejected",
+        "stage": "stage2",
+        "target_error_inf": 0.0,
+        "governor_alpha": 1.0,
+        "governor_active": False,
+        "hold_previous": False,
+        "contraction_probe_success": False,
+        "contraction_probe_margin_good": -1.0,
+        "input_headroom_min": 1.0,
+    }
+    cfg = GARTMPCConfig(
+        Q_raw_diag=np.array([1.0]),
+        Q_target_diag=np.array([1.0]),
+        R_us_diag=np.array([1.0]),
+        Rdu_diag=np.array([1.0]),
+        lyapunov_mode="hard",
+    )
+    u_apply, ic_next, step_info = solve_gart_lmpc_step(
+        lmpc_obj,
+        np.zeros(2),
+        np.zeros(1),
+        target,
+        np.array([0.2]),
+        np.zeros(1),
+        ((-1.0, 1.0),),
+        np.array([-1.0]),
+        np.array([1.0]),
+        cfg,
+    )
+    assert step_info["method"] == "gart_target_not_usable_hold_prev"
+    assert step_info["message"] == "contraction_probe_failed"
+    assert u_apply[0] == pytest.approx(0.2)
+    assert ic_next[0] == pytest.approx(0.2)
 
 
 def test_result_diagnostics_are_json_serializable():
@@ -179,3 +263,69 @@ def test_result_diagnostics_are_json_serializable():
         K_x=np.array([[0.0]]),
     )
     json.dumps(result.to_dict())
+
+
+def test_recursive_result_scanning_disabled_by_default():
+    from utils.gart_defaults import discover_gart_case_values
+
+    system_data = {
+        "A_aug": np.eye(2),
+        "B_aug": np.array([[1.0], [0.0]]),
+        "C_aug": np.array([[1.0, 1.0]]),
+        "b_min": np.array([-1.0]),
+        "b_max": np.array([1.0]),
+        "min_max_dict": {
+            "x_min": np.array([-1.0, -1.0]),
+            "x_max": np.array([1.0, 1.0]),
+            "y_sp_min": np.array([-1.0]),
+            "y_sp_max": np.array([1.0]),
+        },
+    }
+    values = discover_gart_case_values(system_data, {"steady_states": {}}, results_roots=None)
+    assert values["quantiles"]["d_q005"] is None
+    assert values["quantiles"]["dy_abs_q95"] is None
+
+
+def test_observer_replay_target_only_does_not_overwrite_observer(tmp_path):
+    runner = pytest.importorskip("experiments.run_gart_target_selector_study")
+    lmpc_obj = SimpleNamespace(
+        A=np.array([[0.5, 0.0], [0.0, 1.0]]),
+        B=np.array([[1.0], [0.0]]),
+        C=np.array([[1.0, 1.0]]),
+        P_x=np.array([[1.0]]),
+        K_x=np.array([[0.0]]),
+    )
+    ctx = {
+        "lmpc_obj": lmpc_obj,
+        "u_dev_min": np.array([-1.0]),
+        "u_dev_max": np.array([1.0]),
+        "system_data": {"data_min": np.array([0.0, 0.0]), "data_max": np.array([1.0, 1.0])},
+        "setup": {"steady_states": {"y_ss": np.array([0.0])}},
+        "discovered": {
+            "d_rate_max": np.array([0.5]),
+            "d_min": np.array([-1.0]),
+            "d_max": np.array([1.0]),
+            "dy_s_max": np.array([1.0]),
+            "du_s_max": np.array([1.0]),
+            "dx_s_max": np.array([1.0]),
+            "Wy_diag": np.array([1.0]),
+            "du_s_max": np.array([1.0]),
+        },
+    }
+    replay_xhatdhat = np.array([[0.0, 0.2, 0.4], [0.0, 0.0, 0.0]])
+    replay_payload = {
+        "xhatdhat": replay_xhatdhat.copy(),
+        "y_sp": np.array([[0.0], [0.2]]),
+    }
+    runner.run_observer_replay_target_only(
+        ctx,
+        tmp_path,
+        replay_source="explicit_npz",
+        replay_path=None,
+        n_tests=1,
+        set_points_len=1,
+        replay_payload=replay_payload,
+    )
+    with np.load(tmp_path / "target_only_arrays.npz") as data:
+        assert np.allclose(data["replay_xhatdhat_used"], replay_xhatdhat[:, :2].T)
+        assert np.allclose(data["replay_xhatdhat_original"], replay_xhatdhat[:, :2].T)

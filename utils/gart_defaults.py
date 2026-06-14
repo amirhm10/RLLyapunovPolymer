@@ -22,8 +22,14 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "alpha_d": 0.2,
     "alpha_d_slow": 0.02,
     "freeze_on_bad_innovation": False,
-    "eta_y": 0.05,
-    "eta_u": 0.05,
+    "eta_y": 0.0,
+    "eta_u": 0.0,
+    "target_term_gate_enabled": True,
+    "target_term_gate_delta_y": 0.5,
+    "target_term_gate_min_alpha": 0.5,
+    "target_term_gate_disable_on_hold": True,
+    "eta_y_when_gated": None,
+    "eta_u_when_gated": None,
     "slack_penalty": 1.0e6,
 }
 
@@ -52,43 +58,87 @@ def _finite_quantile(values: list[np.ndarray], q: float, size: int) -> np.ndarra
     return np.quantile(arr, q, axis=0)
 
 
+def _empty_quantiles() -> dict[str, np.ndarray | None]:
+    return {
+        "d_q005": None,
+        "d_q995": None,
+        "dd_abs_q95": None,
+        "dy_abs_q95": None,
+        "du_abs_q95": None,
+        "dx_abs_q95": None,
+    }
+
+
 def _npz_arrays(root: Path) -> list[Path]:
     if not root.exists():
         return []
     return list(root.rglob("*.npz"))
 
 
-def _collect_result_quantiles(results_roots: list[str] | None, n_x: int, n_y: int, n_u: int) -> dict[str, np.ndarray | None]:
-    roots = [Path(path) for path in (results_roots or ["results"])]
+def _subsample_rows(arr: np.ndarray, max_rows: int) -> np.ndarray:
+    arr = np.asarray(arr, dtype=float)
+    max_rows = max(int(max_rows), 1)
+    if arr.ndim == 0 or arr.shape[0] <= max_rows:
+        return arr
+    idx = np.linspace(0, arr.shape[0] - 1, max_rows).astype(int)
+    return arr[idx]
+
+
+def _collect_result_quantiles(
+    results_roots: list[str] | None,
+    n_x: int,
+    n_y: int,
+    n_u: int,
+    *,
+    max_result_files: int = 3,
+    max_npz_bytes: int = 100_000_000,
+    max_rows_per_array: int = 2000,
+) -> dict[str, np.ndarray | None]:
+    if not results_roots:
+        return _empty_quantiles()
+    roots = [Path(path) for path in results_roots]
     d_samples: list[np.ndarray] = []
     dd_samples: list[np.ndarray] = []
     dy_samples: list[np.ndarray] = []
     du_samples: list[np.ndarray] = []
     dx_samples: list[np.ndarray] = []
+    files_read = 0
 
     for root in roots:
         for npz_path in _npz_arrays(root):
+            if files_read >= int(max_result_files):
+                break
+            try:
+                if npz_path.stat().st_size > int(max_npz_bytes):
+                    continue
+            except OSError:
+                continue
             try:
                 with np.load(npz_path, allow_pickle=True) as data:
                     if "xhatdhat" in data:
                         xhatdhat = np.asarray(data["xhatdhat"], dtype=float)
                         if xhatdhat.ndim == 2 and n_y <= min(xhatdhat.shape):
                             d_trace = xhatdhat[-n_y:, :].T if xhatdhat.shape[0] >= n_x + n_y else xhatdhat[:, -n_y:]
+                            d_trace = _subsample_rows(d_trace, max_rows_per_array)
                             d_samples.append(d_trace)
                             if d_trace.shape[0] > 1:
                                 dd_samples.append(np.diff(d_trace, axis=0))
                     if "y_target_store" in data:
                         y_trace = np.asarray(data["y_target_store"], dtype=float).reshape(-1, n_y)
+                        y_trace = _subsample_rows(y_trace, max_rows_per_array)
                         if y_trace.shape[0] > 1:
                             dy_samples.append(np.diff(y_trace, axis=0))
                     if "u_target_dev_store" in data:
                         u_trace = np.asarray(data["u_target_dev_store"], dtype=float).reshape(-1, n_u)
+                        u_trace = _subsample_rows(u_trace, max_rows_per_array)
                         if u_trace.shape[0] > 1:
                             du_samples.append(np.diff(u_trace, axis=0))
                     if "x_target_store" in data:
                         x_trace = np.asarray(data["x_target_store"], dtype=float).reshape(-1, n_x)
+                        x_trace = _subsample_rows(x_trace, max_rows_per_array)
                         if x_trace.shape[0] > 1:
                             dx_samples.append(np.diff(x_trace, axis=0))
+                    files_read += 1
             except Exception:
                 continue
 
@@ -107,6 +157,9 @@ def discover_gart_case_values(
     setup: Any,
     *,
     results_roots: list[str] | None = None,
+    max_result_files: int = 3,
+    max_npz_bytes: int = 100_000_000,
+    max_rows_per_array: int = 2000,
 ) -> dict[str, Any]:
     A_aug = np.asarray(system_data["A_aug"], dtype=float)
     B_aug = np.asarray(system_data["B_aug"], dtype=float)
@@ -133,7 +186,15 @@ def discover_gart_case_values(
         y_sp_min = -np.ones(n_y)
         y_sp_max = np.ones(n_y)
 
-    quant = _collect_result_quantiles(results_roots, n_x, n_y, n_u)
+    quant = _collect_result_quantiles(
+        results_roots,
+        n_x,
+        n_y,
+        n_u,
+        max_result_files=max_result_files,
+        max_npz_bytes=max_npz_bytes,
+        max_rows_per_array=max_rows_per_array,
+    )
     d_min = d_range_min.copy()
     d_max = d_range_max.copy()
     if quant["d_q005"] is not None and quant["d_q995"] is not None:
@@ -194,6 +255,22 @@ def discover_gart_case_values(
 def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTargetConfig:
     cfg = dict(GART_INITIAL_DEFAULTS)
     cfg.update(overrides)
+    dy_s_max = np.asarray(values["dy_s_max"], dtype=float).copy()
+    du_s_max = np.asarray(values["du_s_max"], dtype=float).copy()
+    dx_s_max = np.asarray(values["dx_s_max"], dtype=float).copy()
+    if bool(cfg.get("disable_dy_rate", False)):
+        dy_s_max = None
+    else:
+        dy_s_max = float(cfg.get("dy_rate_scale", 1.0)) * dy_s_max
+    if bool(cfg.get("disable_du_rate", False)):
+        du_s_max = None
+    else:
+        du_s_max = float(cfg.get("du_rate_scale", 1.0)) * du_s_max
+    if bool(cfg.get("disable_dx_rate", False)):
+        dx_s_max = None
+    else:
+        dx_s_max = float(cfg.get("dx_rate_scale", 1.0)) * dx_s_max
+    input_headroom_frac = cfg.get("input_headroom_frac")
     disturbance = CertifiedDisturbanceConfig(
         alpha_d=float(cfg["alpha_d"]),
         alpha_d_slow=float(cfg["alpha_d_slow"]),
@@ -206,11 +283,12 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
     )
     return GARTTargetConfig(
         disturbance=disturbance,
-        input_headroom_frac=float(cfg["input_headroom_frac"]),
+        input_headroom_frac=float(0.03 if input_headroom_frac is None else input_headroom_frac),
+        output_headroom_frac=float(cfg.get("output_headroom_frac", 0.0)),
         alpha_terminal_min=float(cfg["alpha_terminal_min"]),
-        dy_s_max=np.asarray(values["dy_s_max"], dtype=float).copy(),
-        du_s_max=np.asarray(values["du_s_max"], dtype=float).copy(),
-        dx_s_max=np.asarray(values["dx_s_max"], dtype=float).copy(),
+        dy_s_max=None if dy_s_max is None else dy_s_max.copy(),
+        du_s_max=None if du_s_max is None else du_s_max.copy(),
+        dx_s_max=None if dx_s_max is None else dx_s_max.copy(),
         primary_tol_abs=float(cfg["primary_tol_abs"]),
         primary_tol_rel=float(cfg["primary_tol_rel"]),
         Wy_diag=np.asarray(values["Wy_diag"], dtype=float).copy(),
@@ -222,9 +300,15 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         eps=float(cfg["eps"]),
         contraction_margin_tol=float(cfg["contraction_margin_tol"]),
         require_contraction_probe=bool(cfg.get("require_contraction_probe", True)),
+        contraction_probe_log_only=bool(cfg.get("contraction_probe_log_only", False)),
         governor_enabled=bool(cfg.get("governor_enabled", True)),
         governor_grid=tuple(cfg.get("governor_grid", (1.0, 0.75, 0.5, 0.25, 0.0))),
         governor_bisect_iters=int(cfg.get("governor_bisect_iters", 8)),
+        target_exact_tol=float(cfg.get("target_exact_tol", 1.0e-6)),
+        target_good_tol=float(cfg.get("target_good_tol", 0.1)),
+        target_acceptable_tol=float(cfg.get("target_acceptable_tol", 0.5)),
+        margin_candidate_search_enabled=bool(cfg.get("margin_candidate_search_enabled", False)),
+        margin_candidate_search_step_frac=float(cfg.get("margin_candidate_search_step_frac", 0.01)),
         solver_pref=cfg.get("solver_pref"),
     )
 
@@ -255,6 +339,12 @@ def make_gart_mpc_config(values: dict[str, Any], *, objective: str = "mixed", ly
         rho=float(cfg["rho"]),
         eps=float(cfg["eps"]),
         alpha_terminal_min=float(cfg["alpha_terminal_min"]),
+        target_term_gate_enabled=bool(cfg.get("target_term_gate_enabled", True)),
+        target_term_gate_delta_y=float(cfg.get("target_term_gate_delta_y", 0.5)),
+        target_term_gate_min_alpha=float(cfg.get("target_term_gate_min_alpha", 0.5)),
+        target_term_gate_disable_on_hold=bool(cfg.get("target_term_gate_disable_on_hold", True)),
+        eta_y_when_gated=cfg.get("eta_y_when_gated"),
+        eta_u_when_gated=cfg.get("eta_u_when_gated"),
         solver_options=cfg.get("solver_options"),
     )
 
