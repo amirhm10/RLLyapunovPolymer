@@ -6,9 +6,9 @@ This report rewrites the earlier post-patch run note into a scenario-level analy
 
 Move forward with:
 
-`gart_target_raw_no_dx_headroom_0p01_dy2`
+`gart_target_raw_no_dx_headroom_0p01_dy2_no_umid`
 
-using the latest no-`x_s/y_s` smoothing configuration from `results/GARTLMPC/20260614_134444`.
+using the latest no-`x_s/y_s` smoothing and no-`u_mid` tie-breaker configuration from `results/GARTLMPC/20260614_141830`.
 
 This is the best forward method because it fixes the main target-selector failure mode without changing the closed-loop tracking objective:
 
@@ -20,6 +20,8 @@ This is the best forward method because it fixes the main target-selector failur
 - physical tracking RMSE remains close to the old governed-reference baseline.
 
 Do not move forward with mixed objective yet. Mixed objective still penalizes the controller toward `y_s/u_s`; when `y_s` is imperfect, mixed tracking pulls away from the raw setpoint. Raw objective is the stable path for RL safety integration.
+
+The no-`u_mid` run was nearly identical to the previous no-`x_s/y_s` run, so the midpoint term was not the dominant source of target conservatism. It is still cleaner to remove it for pretraining and online RL exploration because the only remaining stage-2 tie-breaker is now actuator-continuity smoothing to the actual previously applied input.
 
 ## Method Summary
 
@@ -34,8 +36,7 @@ Stage 2 stays inside the stage-1 primary-cost shell and applies only tie-breaker
 
 $$
 \min_{x_s,u_s}\;
-\|W_{\mathrm{mid}}(u_s-u_{\mathrm{mid}})\|_2^2
-+ \|W_u(u_s-u_{t-1})\|_2^2 .
+\|W_u(u_s-u_{t-1})\|_2^2 .
 $$
 
 The previous `x_s/y_s` smoothing terms are disabled for the forward cases:
@@ -44,6 +45,12 @@ $$
 \|W_x(x_s-x_{s,\mathrm{prev}})\|_2^2
 + \|W_y(y_s-y_{s,\mathrm{prev}})\|_2^2
 = 0.
+$$
+
+The midpoint input tie-breaker is also disabled:
+
+$$
+\|W_{\mathrm{mid}}(u_s-u_{\mathrm{mid}})\|_2^2 = 0.
 $$
 
 The MPC objective for the forward GART cases remains raw setpoint tracking:
@@ -192,6 +199,8 @@ Target quality:
 | relaxed dy2, no x/y smooth | 0.458 | 0.769 | 0.231 | `previous_applied_input` |
 | relaxed dy4, no x/y smooth | 0.458 | 0.769 | 0.231 | `previous_applied_input` |
 
+The following comparison figures include all scenarios through the final no-`u_mid` run.
+
 ![Tracking comparison](figures/gart_scenario_analysis_2026-06-14/closed_loop_rmse_by_scenario.png)
 
 ![Target mismatch comparison](figures/gart_scenario_analysis_2026-06-14/target_mismatch_by_scenario.png)
@@ -206,7 +215,51 @@ Interpretation:
 
 Decision:
 
-Use the dy2 no-`x_s/y_s` smoothing case as the forward controller. Keep dy4 as a sensitivity option, not the default, because it gives no meaningful tracking or target-quality benefit in these data.
+This case is viable and already clean enough for RL. The next case removes the remaining midpoint input tie-breaker to test whether the selector still needs any tie-breaker other than smoothing to the actual previous input.
+
+## Case Study 5: Relaxed Target With No X/Y Smoothing And No U-Mid
+
+Run:
+
+- `results/GARTLMPC/20260614_141830`
+
+Configuration:
+
+- `input_headroom_frac = 0.01`
+- `dx_s_max = None`
+- `dy_rate_scale = 2.0` or `4.0`
+- `W_u_smooth_diag = [1.0, 1.0]`
+- `W_x_smooth_diag = [0.0, ..., 0.0]`
+- `W_y_smooth_diag = [0.0, 0.0]`
+- `W_u_mid_diag = [0.0, 0.0]`
+- stage-2 input smoothing source: `previous_applied_input`
+- contraction probe required
+- raw objective only: `eta_y = 0.0`, `eta_u = 0.0`
+
+Performance:
+
+| Case | Reward Mean | Output RMSE | Target Mean | Target Max | Hold Rate |
+|---|---:|---:|---:|---:|---:|
+| no `u_mid` dy2 | -4.157946 | 0.370104 | 0.561271 | 4.958675 | 0.000 |
+| no `u_mid` dy4 | -4.157946 | 0.370104 | 0.561353 | 4.958675 | 0.000 |
+
+Target quality:
+
+| Case | Good | Acceptable | Unreachable | Stage-2 Smoothing |
+|---|---:|---:|---:|---|
+| no `u_mid` dy2 | 0.458 | 0.769 | 0.231 | `previous_applied_input` |
+| no `u_mid` dy4 | 0.458 | 0.769 | 0.231 | `previous_applied_input` |
+
+Interpretation:
+
+- Removing `u_mid` did not materially change tracking, target mismatch, hold rate, or contraction reliability.
+- Therefore, the midpoint tie-breaker was not the dominant source of conservatism.
+- The no-`u_mid` form is still preferable for pretraining and RL exploration because the only remaining stage-2 tie-breaker is actuator continuity relative to the actual plant input.
+- Dy4 again gives no meaningful advantage over dy2.
+
+Decision:
+
+Use `gart_target_raw_no_dx_headroom_0p01_dy2_no_umid` as the forward controller. Keep dy4 as a sensitivity option, not the default, because it gives no meaningful tracking or target-quality benefit in these data.
 
 ## Cross-Scenario Summary
 
@@ -218,6 +271,8 @@ Use the dy2 no-`x_s/y_s` smoothing case as the forward controller. Keep dy4 as a
 | relaxed dy4, x/y smooth | `20260614_133147` | -4.157946 | 0.370104 | 0.562021 | 1.000 | 1.000 |
 | relaxed dy2, no x/y smooth | `20260614_134444` | -4.157946 | 0.370104 | 0.561282 | 1.000 | 1.000 |
 | relaxed dy4, no x/y smooth | `20260614_134444` | -4.157946 | 0.370104 | 0.561340 | 1.000 | 1.000 |
+| no `u_mid` dy2 | `20260614_141830` | -4.157946 | 0.370104 | 0.561271 | 1.000 | 1.000 |
+| no `u_mid` dy4 | `20260614_141830` | -4.157946 | 0.370104 | 0.561353 | 1.000 | 1.000 |
 
 Target quality summary:
 
@@ -228,13 +283,15 @@ Target quality summary:
 | relaxed dy4, x/y smooth | 0.458 | 0.769 | 0.231 | 0.000 |
 | relaxed dy2, no x/y smooth | 0.458 | 0.769 | 0.231 | 0.000 |
 | relaxed dy4, no x/y smooth | 0.458 | 0.769 | 0.231 | 0.000 |
+| no `u_mid` dy2 | 0.458 | 0.769 | 0.231 | 0.000 |
+| no `u_mid` dy4 | 0.458 | 0.769 | 0.231 | 0.000 |
 
 ## What Is Okay To Go Forward
 
 Recommended forward method:
 
 ```text
-gart_target_raw_no_dx_headroom_0p01_dy2
+gart_target_raw_no_dx_headroom_0p01_dy2_no_umid
 ```
 
 with:
@@ -246,6 +303,7 @@ dy_rate_scale = 2.0
 W_u_smooth_diag = [1.0, 1.0]
 W_x_smooth_diag = zeros
 W_y_smooth_diag = zeros
+W_u_mid_diag = zeros
 stage2_u_smooth_source = previous_applied_input
 eta_y = 0.0
 eta_u = 0.0
@@ -260,6 +318,7 @@ Why this is the forward method:
 - It keeps the performance objective aligned with the raw setpoint.
 - It fixes the target hold issue.
 - It avoids using `x_s/y_s` smoothing as an artificial prior during random or aggressive references.
+- It removes the midpoint input prior, leaving only physical actuator-continuity smoothing to `u_{t-1}`.
 - It preserves good numerical reliability.
 
 Do not move forward with:
@@ -270,7 +329,7 @@ Do not move forward with:
 
 ## Next Steps
 
-1. Use `gart_target_raw_no_dx_headroom_0p01_dy2` as the default GART-LMPC controller.
+1. Use `gart_target_raw_no_dx_headroom_0p01_dy2_no_umid` as the default GART-LMPC controller.
 2. Run the same configuration under RL exploration, but keep the MPC objective raw and use the GART target only for certification.
 3. Add RL diagnostics for:
    - target accepted/usable rate
@@ -279,5 +338,4 @@ Do not move forward with:
    - first-step contraction margin
    - input movement
    - safety fallback/refusal rate
-4. Only revisit mixed objective after the RL closed-loop target-quality logs remain close to the dy2 no-`x_s/y_s` smoothing results.
-
+4. Only revisit mixed objective after the RL closed-loop target-quality logs remain close to the dy2 no-`x_s/y_s`/no-`u_mid` smoothing results.
