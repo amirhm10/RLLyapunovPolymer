@@ -873,7 +873,7 @@ def _make_closed_loop_plots(plot_dir: Path, run_dir: Path, records: list[dict[st
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run GART target-selector and GART-LMPC smoke studies.")
-    parser.add_argument("--mode", choices=["nominal", "disturb"], default="nominal")
+    parser.add_argument("--mode", choices=["nominal", "disturb"], default="disturb")
     parser.add_argument("--n-tests", type=int, default=5)
     parser.add_argument("--set-points-len", type=int, default=DIRECT_DISTURBANCE_SETPOINT_LEN)
     parser.add_argument("--target-only", action="store_true")
