@@ -539,6 +539,7 @@ def solve_stage2_tiebreak(
     bounds: dict[str, Any],
     prev_target: GARTTargetState | None,
     config: GARTTargetConfig,
+    u_smooth_ref: np.ndarray | None = None,
 ) -> GARTStageResult:
     if not HAS_CVXPY:
         raise ImportError("CVXPY is required for GART target selection.")
@@ -577,9 +578,17 @@ def solve_stage2_tiebreak(
 
     u_mid = 0.5 * (u_lo + u_hi)
     objective = cp.sum_squares(cp.multiply(W_mid, u_var - u_mid))
+    u_smooth_source = None
+    if u_smooth_ref is not None:
+        u_smooth_target = _as_vector(u_smooth_ref, "u_smooth_ref", model.n_u)
+        u_smooth_source = "previous_applied_input"
+        objective += cp.sum_squares(cp.multiply(W_u, u_var - u_smooth_target))
+    else:
+        u_smooth_target = None
     if prev_target is not None and bool(prev_target.valid):
-        if prev_target.u_s is not None:
+        if u_smooth_target is None and prev_target.u_s is not None:
             objective += cp.sum_squares(cp.multiply(W_u, u_var - _as_vector(prev_target.u_s, "prev_target.u_s", model.n_u)))
+            u_smooth_source = "previous_target_u_s"
         if prev_target.x_s is not None:
             objective += cp.sum_squares(cp.multiply(W_x, x_var - _as_vector(prev_target.x_s, "prev_target.x_s", model.n_x)))
         if prev_target.y_s is not None:
@@ -615,7 +624,7 @@ def solve_stage2_tiebreak(
         primary,
         tiebreak_cost=solve_info.get("objective_value"),
         objective_value=solve_info.get("objective_value"),
-        diagnostics={"solve_info": solve_info, "primary_shell": primary_shell},
+        diagnostics={"solve_info": solve_info, "primary_shell": primary_shell, "u_smooth_source": u_smooth_source},
     )
 
 
@@ -1028,6 +1037,7 @@ def _solve_candidate(
     K_x: np.ndarray | None,
     u_min: np.ndarray,
     u_max: np.ndarray,
+    u_smooth_ref: np.ndarray | None,
     governor_alpha: float | None,
     governor_active: bool,
     hold_previous: bool,
@@ -1039,7 +1049,11 @@ def _solve_candidate(
         terminal_feasible = bool(np.all(u_lo <= u_hi))
         bounds = {"u_lo": u_lo, "u_hi": u_hi}
         stage1 = solve_stage1_closest_reachable(model, xhat, d_cert, reference, bounds, prev_target, config)
-        stage2 = solve_stage2_tiebreak(model, d_cert, reference, stage1, bounds, prev_target, config) if stage1.success else stage1
+        stage2 = (
+            solve_stage2_tiebreak(model, d_cert, reference, stage1, bounds, prev_target, config, u_smooth_ref=u_smooth_ref)
+            if stage1.success
+            else stage1
+        )
         stage1_probe = _stage_probe(stage=stage1, model=model, xhat=xhat, P_x=P_x, u_min=u_min, u_max=u_max, config=config)
         stage2_probe = _stage_probe(stage=stage2, model=model, xhat=xhat, P_x=P_x, u_min=u_min, u_max=u_max, config=config)
         stage2_minus_stage1 = None
@@ -1076,6 +1090,7 @@ def _solve_candidate(
             "stage1_primary_cost": stage1.primary_cost,
             "stage2_primary_cost": stage2.primary_cost,
             "stage2_tiebreak_cost": stage2.tiebreak_cost,
+            "stage2_u_smooth_source": stage2.diagnostics.get("u_smooth_source") if isinstance(stage2.diagnostics, dict) else None,
         }
         if extra_diagnostics:
             diagnostics.update(extra_diagnostics)
@@ -1223,6 +1238,7 @@ def select_gart_target(
     P_x: Any,
     K_x: Any,
     innovation: np.ndarray | None = None,
+    u_smooth_ref: Any | None = None,
 ) -> tuple[GARTTargetResult, GARTTargetState]:
     xhat_aug_raw = _as_vector(xhat_aug_raw, "xhat_aug_raw")
     y_sp = _as_vector(y_sp, "y_sp")
@@ -1231,6 +1247,7 @@ def select_gart_target(
         raise ValueError("xhat_aug_raw has incorrect size.")
     u_min = _as_vector(u_min, "u_min", model.n_u)
     u_max = _as_vector(u_max, "u_max", model.n_u)
+    u_smooth_arr = None if u_smooth_ref is None else _as_vector(u_smooth_ref, "u_smooth_ref", model.n_u)
     P_x_arr = None if P_x is None else _as_float_array(P_x, "P_x", ndim=2)
     K_x_arr = None if K_x is None else _as_float_array(K_x, "K_x", ndim=2)
     xhat = xhat_aug_raw[: model.n_x].copy()
@@ -1256,6 +1273,7 @@ def select_gart_target(
         K_x=K_x_arr,
         u_min=u_min,
         u_max=u_max,
+        u_smooth_ref=u_smooth_arr,
         governor_alpha=1.0,
         governor_active=False,
         hold_previous=False,
@@ -1299,6 +1317,7 @@ def select_gart_target(
             K_x=K_x_arr,
             u_min=u_min,
             u_max=u_max,
+            u_smooth_ref=u_smooth_arr,
             governor_alpha=alpha,
             governor_active=True,
             hold_previous=False,
@@ -1330,6 +1349,7 @@ def select_gart_target(
                 K_x=K_x_arr,
                 u_min=u_min,
                 u_max=u_max,
+                u_smooth_ref=u_smooth_arr,
                 governor_alpha=mid,
                 governor_active=True,
                 hold_previous=False,

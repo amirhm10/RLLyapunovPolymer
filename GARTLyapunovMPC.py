@@ -11,6 +11,9 @@ from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread
 set_single_thread_env(1)
 
 from experiments.run_gart_target_selector_study import (
+    GART_RELAXED_DY2_OVERRIDES,
+    GART_RELAXED_DY4_OVERRIDES,
+    GART_RELAXED_TARGET_OVERRIDES,
     _build_context,
     _jsonable,
     run_closed_loop,
@@ -34,31 +37,53 @@ RUN_CLOSED_LOOP = True
 FULL_RUN = True
 CONFIRM_FULL = True
 THREADS = 1
-MAX_TARGET_EVALS = 5000
-MAX_CLOSED_LOOP_STEPS = 5000
-MAX_SOLVER_CALLS = 5000
-MAX_WALL_CLOCK_SECONDS = 7200.0
+MAX_TARGET_EVALS = 10000
+MAX_CLOSED_LOOP_STEPS = 10000
+MAX_SOLVER_CALLS = 10000
+MAX_WALL_CLOCK_SECONDS = 14400.0
 MAX_MEMORY_MB = 4096.0
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
 TIMESTAMP = None
+TARGET_ONLY_OVERRIDES = GART_RELAXED_DY2_OVERRIDES
 
 # Toggle individual closed-loop cases here.
 CASE_SPECS = [
     {
-        "enabled": True,
+        "enabled": False,
         "case_name": "old_governed_reference",
         "objective": None,
         "lyapunov_mode": None,
-        "label": "Old governed-reference Direct LMPC",
+        "label": "Old governed-reference Direct LMPC (disabled; retained for manual comparison only)",
     },
     {
         "enabled": True,
-        "case_name": "gart_target_raw_objective",
+        "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2",
         "objective": "raw",
         "lyapunov_mode": "hard",
-        "label": "GART target, raw y_sp objective",
+        "target_overrides": GART_RELAXED_DY2_OVERRIDES,
+        "label": "GART raw, no dx_s rate, 1% headroom, dy scale 2",
+    },
+    {
+        "enabled": True,
+        "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4",
+        "objective": "raw",
+        "lyapunov_mode": "hard",
+        "target_overrides": GART_RELAXED_DY4_OVERRIDES,
+        "label": "GART raw, no dx_s rate, 1% headroom, dy scale 4",
+    },
+    {
+        "enabled": False,
+        "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2_probe_log_only",
+        "objective": "raw",
+        "lyapunov_mode": "hard",
+        "target_overrides": {
+            **GART_RELAXED_TARGET_OVERRIDES,
+            "dy_rate_scale": 2.0,
+            "contraction_probe_log_only": True,
+        },
+        "label": "Diagnostic only: same relaxed target, contraction probe log-only",
     },
     {
         "enabled": False,
@@ -82,9 +107,15 @@ CASE_SPECS = [
 ALLOW_CLI_OVERRIDES = True
 
 
-def _enabled_case_tuples() -> list[tuple[str, str | None, str | None]]:
+def _enabled_case_specs() -> list[dict[str, object]]:
     return [
-        (str(case["case_name"]), case.get("objective"), case.get("lyapunov_mode"))
+        {
+            "case_name": str(case["case_name"]),
+            "objective": case.get("objective"),
+            "lyapunov_mode": case.get("lyapunov_mode"),
+            "target_overrides": case.get("target_overrides"),
+            "mpc_overrides": case.get("mpc_overrides"),
+        }
         for case in CASE_SPECS
         if bool(case.get("enabled", True))
     ]
@@ -163,7 +194,8 @@ def run_configured_study() -> dict:
         "full": bool(args.full),
         "confirm_full": bool(args.confirm_full),
         "resource_limits": guard.limits.__dict__.copy(),
-        "enabled_cases": [case[0] for case in _enabled_case_tuples()],
+        "enabled_cases": [str(case["case_name"]) for case in _enabled_case_specs()],
+        "target_only_overrides": TARGET_ONLY_OVERRIDES,
     }
 
     print("GART-LMPC editable runner configuration:")
@@ -176,6 +208,7 @@ def run_configured_study() -> dict:
             target_dir,
             n_tests=int(args.n_tests),
             set_points_len=int(args.set_points_len),
+            target_overrides=TARGET_ONLY_OVERRIDES,
             guard=guard,
         )
         summaries["target_only_dir"] = str(target_dir.relative_to(root))
@@ -188,7 +221,7 @@ def run_configured_study() -> dict:
             mode=str(args.mode),
             n_tests=int(args.n_tests),
             set_points_len=int(args.set_points_len),
-            case_specs=_enabled_case_tuples(),
+            case_specs=_enabled_case_specs(),
             guard=guard,
         )
         summaries["closed_loop_dir"] = str(lmpc_dir.relative_to(root))

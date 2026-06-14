@@ -61,6 +61,14 @@ SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 
+GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
+    "disable_dx_rate": True,
+    "input_headroom_frac": 0.01,
+}
+GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
+GART_RELAXED_DY4_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 4.0}
+
+
 TARGET_ABLATION_CASES: list[dict[str, Any]] = [
     {"name": "T0_current", "overrides": {}},
     {"name": "T1_no_dx_rate", "overrides": {"disable_dx_rate": True}},
@@ -70,7 +78,11 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 2.0},
     },
     {
-        "name": "T4_no_dx_rate_headroom_0p01_dy2_no_du",
+        "name": "T4_no_dx_rate_headroom_0p01_dy4",
+        "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 4.0},
+    },
+    {
+        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_du",
         "overrides": {
             "disable_dx_rate": True,
             "input_headroom_frac": 0.01,
@@ -79,7 +91,7 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "T5_probe_log_only",
+        "name": "T6_probe_log_only",
         "overrides": {
             "disable_dx_rate": True,
             "input_headroom_frac": 0.01,
@@ -339,6 +351,7 @@ def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_nam
         "stage1_primary_cost": diag.get("stage1_primary_cost"),
         "stage2_primary_cost": diag.get("stage2_primary_cost"),
         "stage2_tiebreak_cost": diag.get("stage2_tiebreak_cost"),
+        "stage2_u_smooth_source": diag.get("stage2_u_smooth_source"),
         "governor_alpha": result.governor_alpha,
         "governor_active": result.governor_active,
         "hold_previous": result.hold_previous,
@@ -480,12 +493,13 @@ def _observer_replay_payload(
     if source in {"gart_raw_objective", "gart_target_raw_objective"}:
         return run_gart_closed_loop_case(
             ctx,
-            case_name="gart_target_raw_objective_replay_source",
+            case_name="gart_target_raw_no_dx_headroom_0p01_dy2_replay_source",
             mpc_objective="raw",
             lyapunov_mode="hard",
             mode=mode,
             n_tests=n_tests,
             set_points_len=set_points_len,
+            target_overrides=GART_RELAXED_DY2_OVERRIDES,
         )
     raise ValueError("replay_source must be old_governed_reference, gart_raw_objective, or explicit_npz.")
 
@@ -532,8 +546,10 @@ def run_observer_replay_target_only(
     data_min = ctx["system_data"]["data_min"]
     data_max = ctx["system_data"]["data_max"]
     n_inputs = int(lmpc_obj.B.shape[1])
+    ss_scaled_inputs = apply_min_max(ctx["setup"]["steady_states"]["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
     y_ss_scaled = apply_min_max(ctx["setup"]["steady_states"]["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
     y_system = payload.get("y_system")
+    u_applied_phys = payload.get("u_applied_phys")
 
     for step_idx in range(n_steps):
         if guard is not None:
@@ -547,6 +563,14 @@ def run_observer_replay_target_only(
             if y_arr.ndim == 2 and step_idx < y_arr.shape[0]:
                 y_prev_scaled = apply_min_max(y_arr[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
                 innovation = y_prev_scaled - np.asarray(lmpc_obj.C @ xhat_aug, dtype=float).reshape(-1)
+        if u_applied_phys is not None and step_idx > 0:
+            u_arr = np.asarray(u_applied_phys, dtype=float)
+            if u_arr.ndim == 2 and step_idx - 1 < u_arr.shape[0]:
+                u_smooth_ref = apply_min_max(u_arr[step_idx - 1, :], data_min[:n_inputs], data_max[:n_inputs]) - ss_scaled_inputs
+            else:
+                u_smooth_ref = np.zeros(n_inputs, dtype=float)
+        else:
+            u_smooth_ref = np.zeros(n_inputs, dtype=float)
         result, target_state = select_gart_target(
             lmpc_obj.A,
             lmpc_obj.B,
@@ -560,6 +584,7 @@ def run_observer_replay_target_only(
             P_x=lmpc_obj.P_x,
             K_x=lmpc_obj.K_x,
             innovation=innovation,
+            u_smooth_ref=u_smooth_ref,
         )
         records.append(_target_step_row(step_idx, result, target_config, mode_name="observer_replay_target_only"))
         y_s_store.append(np.full(n_outputs, np.nan) if result.y_s is None else result.y_s)
@@ -663,10 +688,12 @@ def run_gart_closed_loop_case(
             P_x=lmpc_obj.P_x,
             K_x=lmpc_obj.K_x,
             innovation=innovation,
+            u_smooth_ref=u_prev_dev,
         )
         r_cmd = None if target_result.r_cmd is None else np.asarray(target_result.r_cmd, dtype=float).reshape(n_outputs)
         y_s = None if target_result.y_s is None else np.asarray(target_result.y_s, dtype=float).reshape(n_outputs)
         d_s = None if target_result.d_cert is None else np.asarray(target_result.d_cert, dtype=float).reshape(n_outputs)
+        target_diag = target_result.diagnostics if isinstance(target_result.diagnostics, dict) else {}
         target_info = target_result.to_dict()
         target_info.update(
             {
@@ -690,6 +717,7 @@ def run_gart_closed_loop_case(
                 "target_rate_inf": target_result.target_rate_y_inf,
                 "command_move_inf": target_result.target_rate_y_inf,
                 "input_headroom_frac": target_config.input_headroom_frac,
+                "stage2_u_smooth_source": target_diag.get("stage2_u_smooth_source"),
                 "residual_total_norm": target_result.target_error_inf,
                 **_target_classification(target_result.target_error_inf, target_config),
             }
@@ -765,6 +793,7 @@ def run_gart_closed_loop_case(
                 "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
                 "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
                 "target_rate_inf": target_result.target_rate_y_inf,
+                "stage2_u_smooth_source": target_diag.get("stage2_u_smooth_source"),
                 "governor_probe_available": target_result.contraction_probe_success is not None,
                 "governor_probe_success": target_result.contraction_probe_success,
                 "governor_probe_margin_good": target_result.contraction_probe_margin_good,
@@ -1069,6 +1098,28 @@ def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[st
         return None, None
 
 
+def _normalize_case_spec(case: Any) -> dict[str, Any]:
+    if isinstance(case, dict):
+        return {
+            "case_name": str(case["case_name"]),
+            "objective": case.get("objective"),
+            "lyapunov_mode": case.get("lyapunov_mode"),
+            "target_overrides": case.get("target_overrides"),
+            "mpc_overrides": case.get("mpc_overrides"),
+        }
+    if isinstance(case, (tuple, list)):
+        if len(case) < 3:
+            raise ValueError("Closed-loop tuple case specs must contain case_name, objective, and lyapunov_mode.")
+        return {
+            "case_name": str(case[0]),
+            "objective": case[1],
+            "lyapunov_mode": case[2],
+            "target_overrides": case[3] if len(case) > 3 else None,
+            "mpc_overrides": case[4] if len(case) > 4 else None,
+        }
+    raise TypeError(f"Unsupported closed-loop case spec type: {type(case)!r}")
+
+
 def run_closed_loop(
     ctx: dict[str, Any],
     output_dir: Path,
@@ -1076,17 +1127,31 @@ def run_closed_loop(
     mode: str,
     n_tests: int,
     set_points_len: int,
-    case_specs: list[tuple[str, str | None, str | None]] | None = None,
+    case_specs: list[Any] | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
-        ("old_governed_reference", None, None),
-        ("gart_target_raw_objective", "raw", "hard"),
+        {
+            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2",
+            "objective": "raw",
+            "lyapunov_mode": "hard",
+            "target_overrides": GART_RELAXED_DY2_OVERRIDES,
+        },
+        {
+            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4",
+            "objective": "raw",
+            "lyapunov_mode": "hard",
+            "target_overrides": GART_RELAXED_DY4_OVERRIDES,
+        },
     ]
     records: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {}
-    for case_name, objective, lyap_mode in cases:
+    for raw_case in cases:
+        case = _normalize_case_spec(raw_case)
+        case_name = str(case["case_name"])
+        objective = case.get("objective")
+        lyap_mode = case.get("lyapunov_mode")
         print(f"[GART] running {case_name} ({mode}, n_tests={n_tests}, set_points_len={set_points_len})")
         if case_name == "old_governed_reference":
             payload = _run_old_governed_reference(ctx, mode=mode, n_tests=n_tests, set_points_len=set_points_len)
@@ -1100,6 +1165,8 @@ def run_closed_loop(
                 mode=mode,
                 n_tests=n_tests,
                 set_points_len=set_points_len,
+                target_overrides=case.get("target_overrides"),
+                mpc_overrides=case.get("mpc_overrides"),
                 guard=guard,
             )
         case_dir = output_dir / case_name
@@ -1136,7 +1203,7 @@ def run_target_ablation_study(
     mode: str,
     n_tests: int,
     set_points_len: int,
-    replay_source: str = "old_governed_reference",
+    replay_source: str = "gart_raw_objective",
     replay_path: str | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
@@ -1252,7 +1319,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--closed-loop", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--target-only-mode", choices=["synthetic", "observer-replay"], default="synthetic")
-    parser.add_argument("--replay-source", choices=["old_governed_reference", "gart_raw_objective", "explicit_npz"], default="old_governed_reference")
+    parser.add_argument("--replay-source", choices=["old_governed_reference", "gart_raw_objective", "explicit_npz"], default="gart_raw_objective")
     parser.add_argument("--replay-path", default=None)
     parser.add_argument("--target-ablation", action="store_true")
     parser.add_argument("--smoke", action="store_true")
@@ -1281,7 +1348,7 @@ def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
         target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
         max_target = max(100, estimated * max(target_multiplier, 1))
     if max_closed is None:
-        max_closed = max(20, estimated if args.closed_loop else 20)
+        max_closed = max(20, 2 * estimated if args.closed_loop else 20)
     if max_solver is None:
         max_solver = max(500, 2 * max_target + 2 * max_closed)
     return ResourceGuard(
@@ -1330,6 +1397,7 @@ def main() -> dict[str, Any]:
         "set_points_len": int(args.set_points_len),
         "disturbance_after_step": False,
         "target_only_mode": args.target_only_mode,
+        "target_only_overrides": GART_RELAXED_DY2_OVERRIDES,
         "resource_limits": asdict(guard.limits),
     }
     if args.target_only:
@@ -1343,6 +1411,7 @@ def main() -> dict[str, Any]:
                 mode=args.mode,
                 n_tests=args.n_tests,
                 set_points_len=args.set_points_len,
+                target_overrides=GART_RELAXED_DY2_OVERRIDES,
                 guard=guard,
             )
         else:
@@ -1351,6 +1420,7 @@ def main() -> dict[str, Any]:
                 target_dir,
                 n_tests=args.n_tests,
                 set_points_len=args.set_points_len,
+                target_overrides=GART_RELAXED_DY2_OVERRIDES,
                 guard=guard,
             )
         summaries["target_only_dir"] = str(target_dir.relative_to(root))
