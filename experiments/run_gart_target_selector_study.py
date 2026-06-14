@@ -18,8 +18,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from Lyapunov.direct_lyapunov_mpc import (
+    build_direct_lyapunov_run_bundle,
     design_direct_lyapunov_mpc_solver,
+    make_direct_lyapunov_comparison_record,
     run_direct_output_disturbance_lyapunov_mpc,
+    save_direct_lyapunov_debug_artifacts,
 )
 from Lyapunov.gart_lmpc import solve_gart_lmpc_step
 from Lyapunov.gart_target import GARTTargetState, jsonable, select_gart_target
@@ -27,7 +30,12 @@ from Simulation.mpc import MpcSolver, compute_observer_gain
 from Simulation.run_mpc_lyapunov import _reset_system_on_entry, _set_system_input_phys, _system_io_phys
 from Simulation.system_functions import PolymerCSTR
 from TD3Agent.reward_functions import make_reward_fn_relative_QR
-from utils.direct_lyapunov_study import governed_reference_case_spec
+from utils.direct_lyapunov_study import (
+    DIRECT_DISTURBANCE_SETPOINT_LEN,
+    DIRECT_TWO_SETPOINT_Y_PHYS,
+    direct_disturbance_test_cycle,
+    governed_reference_case_spec,
+)
 from utils.gart_defaults import (
     discover_gart_case_values,
     gart_rl_observation,
@@ -36,7 +44,7 @@ from utils.gart_defaults import (
 )
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.path_helpers import repo_path
-from utils.polymer_td3_defaults import DEFAULT_DIRECT_SETPOINT_Y_PHYS, DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
+from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.td3_helpers import load_and_prepare_system_data
 from utils.lyapunov_utils import get_y_sp_step
@@ -141,7 +149,7 @@ def _build_context() -> dict[str, Any]:
     steady_states = setup["steady_states"]
     system_data = load_and_prepare_system_data(
         steady_states=steady_states,
-        setpoint_y=DEFAULT_DIRECT_SETPOINT_Y_PHYS.copy(),
+        setpoint_y=DIRECT_TWO_SETPOINT_Y_PHYS.copy(),
         u_min=DEFAULT_U_MIN_PHYS,
         u_max=DEFAULT_U_MAX_PHYS,
         system_dict_path=os.path.join("Data", "system_dict"),
@@ -155,7 +163,7 @@ def _build_context() -> dict[str, Any]:
     data_max = system_data["data_max"]
     n_inputs = int(B_aug.shape[1])
 
-    y_sp_scenario = apply_min_max(DEFAULT_DIRECT_SETPOINT_Y_PHYS, data_min[n_inputs:], data_max[n_inputs:]) - apply_min_max(
+    y_sp_scenario = apply_min_max(DIRECT_TWO_SETPOINT_Y_PHYS, data_min[n_inputs:], data_max[n_inputs:]) - apply_min_max(
         steady_states["y_ss"], data_min[n_inputs:], data_max[n_inputs:]
     )
     poles = np.array([0.44619852, 0.33547649, 0.36380595, 0.70467118, 0.3562966, 0.42900673, 0.4228262, 0.96916776, 0.91230187])
@@ -219,7 +227,7 @@ def _build_context() -> dict[str, Any]:
 
 def _setpoint_schedule(ctx: dict[str, Any], *, n_tests: int, set_points_len: int, force_final_test: bool = True) -> tuple[Any, ...]:
     setup = ctx["setup"]
-    test_cycle = [False] * int(n_tests)
+    test_cycle = direct_disturbance_test_cycle(int(n_tests))
     return generate_setpoints_training_rl_gradually(
         ctx["y_sp_scenario"],
         int(n_tests),
@@ -383,8 +391,30 @@ def run_gart_closed_loop_case(
             K_x=lmpc_obj.K_x,
             innovation=innovation,
         )
+        r_cmd = None if target_result.r_cmd is None else np.asarray(target_result.r_cmd, dtype=float).reshape(n_outputs)
+        y_s = None if target_result.y_s is None else np.asarray(target_result.y_s, dtype=float).reshape(n_outputs)
+        d_s = None if target_result.d_cert is None else np.asarray(target_result.d_cert, dtype=float).reshape(n_outputs)
         target_info = target_result.to_dict()
-        target_info.update({"step": step_idx, "target_mode": "gart"})
+        target_info.update(
+            {
+                "step": step_idx,
+                "target_mode": "gart",
+                "solve_stage": target_result.stage,
+                "d_s": None if d_s is None else d_s.copy(),
+                "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
+                "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
+                "governor_probe_available": target_result.contraction_probe_success is not None,
+                "governor_probe_success": target_result.contraction_probe_success,
+                "governor_probe_margin": target_result.contraction_probe_margin,
+                "governor_probe_min_value": target_result.contraction_probe_min_value,
+                "governor_probe_bound": target_result.contraction_probe_bound,
+                "governor_probe_status": target_result.status,
+                "target_rate_inf": target_result.target_rate_y_inf,
+                "command_move_inf": target_result.target_rate_y_inf,
+                "input_headroom_frac": target_config.input_headroom_frac,
+                "residual_total_norm": target_result.target_error_inf,
+            }
+        )
         target_info_storage.append(target_info)
 
         u_dev_apply, IC_opt, step_info = solve_gart_lmpc_step(
@@ -438,6 +468,26 @@ def run_gart_closed_loop_case(
                 "target_mode": "gart",
                 "plant_mode": mode,
                 "disturbance_after_step": False,
+                "target_stage": target_result.stage,
+                "target_residual_total_norm": target_result.target_error_inf,
+                "target_quality_enabled": True,
+                "target_quality_ok": bool(target_result.success),
+                "target_quality_reason": target_result.status,
+                "target_quality_mismatch_inf": target_result.target_error_inf,
+                "target_quality_residual_norm": target_result.target_error_inf,
+                "d_s": None if d_s is None else d_s.copy(),
+                "r_cmd": None if r_cmd is None else r_cmd.copy(),
+                "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
+                "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
+                "target_rate_inf": target_result.target_rate_y_inf,
+                "governor_probe_available": target_result.contraction_probe_success is not None,
+                "governor_probe_success": target_result.contraction_probe_success,
+                "governor_probe_margin": target_result.contraction_probe_margin,
+                "governor_probe_min_value": target_result.contraction_probe_min_value,
+                "governor_probe_bound": target_result.contraction_probe_bound,
+                "governor_probe_status": target_result.status,
+                "command_move_inf": target_result.target_rate_y_inf,
+                "input_headroom_frac": target_config.input_headroom_frac,
                 "y_current_scaled": y_current_scaled.copy(),
                 "xhat_next_openloop": xhat_next_openloop.copy(),
                 "observer_correction": observer_correction.copy(),
@@ -483,6 +533,13 @@ def run_gart_closed_loop_case(
         "lyapunov_mode": lyapunov_mode,
         "plant_mode": mode,
         "disturbance_after_step": False,
+        "use_target_output_for_tracking": False,
+        "nominal_qi": float(setup["nominal_qi"]),
+        "nominal_qs": float(setup["nominal_qs"]),
+        "nominal_ha": float(setup["nominal_ha"]),
+        "final_qi": float(qi[-1]) if len(qi) else float(setup["nominal_qi"]),
+        "final_qs": float(qs[-1]) if len(qs) else float(setup["nominal_qs"]),
+        "final_ha": float(ha[-1]) if len(ha) else float(setup["nominal_ha"]),
         "rho_lyap": RHO_LYAP,
         "lyap_eps": LYAP_EPS,
         "slack_penalty": SLACK_PENALTY,
@@ -510,7 +567,7 @@ def _run_old_governed_reference(ctx: dict[str, Any], *, mode: str, n_tests: int,
         L=ctx["observer_gain"],
         data_min=ctx["system_data"]["data_min"],
         data_max=ctx["system_data"]["data_max"],
-        test_cycle=[False] * int(n_tests),
+        test_cycle=direct_disturbance_test_cycle(int(n_tests)),
         reward_fn=ctx["reward_fn"],
         nominal_qi=setup["nominal_qi"],
         nominal_qs=setup["nominal_qs"],
@@ -637,67 +694,57 @@ def _save_case_payload(case_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
-def _stack_step_vectors(rows: list[dict[str, Any]], key: str, size: int) -> np.ndarray | None:
-    values = []
-    found = False
-    for row in rows:
-        value = row.get(key)
-        if value is None:
-            values.append(np.full(size, np.nan, dtype=float))
-        else:
-            found = True
-            values.append(np.asarray(value, dtype=float).reshape(size))
-    if not values or not found:
-        return None
-    return np.asarray(values, dtype=float)
+def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    config = {
+        "case_name": case_name,
+        "controller_mode": payload.get("method", "gart_lmpc" if payload.get("target_mode") == "gart" else "direct_lyapunov_mpc"),
+        "target_mode": payload.get("target_mode"),
+        "lyapunov_mode": payload.get("lyapunov_mode"),
+        "plant_mode": payload.get("plant_mode"),
+        "disturbance_after_step": payload.get("disturbance_after_step"),
+        "use_target_output_for_tracking": payload.get("use_target_output_for_tracking", False),
+        "predict_h": PREDICT_H,
+        "cont_h": CONT_H,
+        "rho_lyap": RHO_LYAP,
+        "lyap_eps": LYAP_EPS,
+        "slack_penalty": SLACK_PENALTY,
+        "setpoint_y_phys": DIRECT_TWO_SETPOINT_Y_PHYS.tolist(),
+    }
+    if payload.get("target_config") is not None:
+        config["target_config"] = payload.get("target_config")
+    if payload.get("mpc_config") is not None:
+        config["mpc_config"] = payload.get("mpc_config")
+    return build_direct_lyapunov_run_bundle(
+        source=case_name,
+        results=payload,
+        steady_states=ctx["setup"]["steady_states"],
+        config=config,
+        data_min=ctx["system_data"]["data_min"],
+        data_max=ctx["system_data"]["data_max"],
+        extra={
+            "reward_config": ctx["reward_config"],
+            "min_max_dict": ctx["system_data"].get("min_max_dict", {}),
+            "gart_discovered": ctx.get("discovered", {}),
+        },
+    )
 
 
-def _case_target_plot_arrays(payload: dict[str, Any], ctx: dict[str, Any]) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
-    rows = list(payload.get("direct_info_storage", []))
-    n_outputs = int(ctx["lmpc_obj"].C.shape[0])
-    n_inputs = int(ctx["lmpc_obj"].B.shape[1])
-    y_target = _stack_step_vectors(rows, "y_s", n_outputs)
-    y_tracking = _stack_step_vectors(rows, "y_target", n_outputs)
-    u_s_dev = _stack_step_vectors(rows, "u_s", n_inputs)
-    if u_s_dev is None:
-        return y_target, y_tracking, None
-    data_min = ctx["system_data"]["data_min"]
-    data_max = ctx["system_data"]["data_max"]
-    ss_scaled_inputs = apply_min_max(ctx["setup"]["steady_states"]["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
-    u_target_phys = reverse_min_max(u_s_dev + ss_scaled_inputs.reshape(1, -1), data_min[:n_inputs], data_max[:n_inputs])
-    return y_target, y_tracking, u_target_phys
-
-
-def _save_case_tracking_plots(case_dir: Path, payload: dict[str, Any], ctx: dict[str, Any]) -> str | None:
-    y_target, y_tracking, u_target_phys = _case_target_plot_arrays(payload, ctx)
-    plot_dir = case_dir / "tracking_plots"
+def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     try:
-        from Plotting_fns.mpc_plot_fns import plot_mpc_results_cstr
-
-        return plot_mpc_results_cstr(
-            y_sp=payload["y_sp"],
-            steady_states=ctx["setup"]["steady_states"],
-            nFE=int(payload["nFE"]),
-            delta_t=float(payload.get("delta_t", ctx["setup"]["delta_t"])),
-            time_in_sub_episodes=int(payload["time_in_sub_episodes"]),
-            y_mpc=payload["y_system"],
-            u_mpc=payload["u_applied_phys"],
-            data_min=ctx["system_data"]["data_min"],
-            data_max=ctx["system_data"]["data_max"],
-            directory=plot_dir,
-            prefix_name="",
-            y_target=y_target,
-            y_tracking_target=y_tracking,
-            u_target=u_target_phys,
-            u_bounds=(DEFAULT_U_MIN_PHYS, DEFAULT_U_MAX_PHYS),
+        bundle = _build_direct_style_bundle(case_name, payload, ctx)
+        with (case_dir / "direct_style_bundle.pickle").open("wb") as f:
+            pickle.dump(bundle, f)
+        debug_dir = save_direct_lyapunov_debug_artifacts(
+            bundle,
+            directory=case_dir,
+            prefix_name="direct_style",
+            save_plots=True,
             timestamp_subdir=False,
-            paper_style=True,
-            output_labels=("eta", "T"),
-            input_labels=("Qc", "Qm"),
         )
+        return bundle, debug_dir
     except Exception as exc:
-        _write_json(case_dir / "tracking_plot_error.json", {"error": repr(exc)})
-        return None
+        _write_json(case_dir / "direct_style_artifact_error.json", {"error": repr(exc)})
+        return None, None
 
 
 def run_closed_loop(ctx: dict[str, Any], output_dir: Path, *, mode: str, n_tests: int, set_points_len: int) -> dict[str, Any]:
@@ -727,11 +774,15 @@ def run_closed_loop(ctx: dict[str, Any], output_dir: Path, *, mode: str, n_tests
             )
         case_dir = output_dir / case_name
         _save_case_payload(case_dir, payload)
-        tracking_plot_dir = _save_case_tracking_plots(case_dir, payload, ctx)
-        records.append(_controller_metrics(payload, ctx, case_name=case_name))
+        bundle, debug_dir = _save_case_direct_artifacts(case_dir, case_name, payload, ctx)
+        if bundle is None:
+            records.append(_controller_metrics(payload, ctx, case_name=case_name))
+        else:
+            records.append(make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir))
         artifacts[case_name] = {
             "case_dir": str(case_dir.relative_to(REPO_ROOT)),
-            "tracking_plot_dir": None if tracking_plot_dir is None else str(Path(tracking_plot_dir).relative_to(REPO_ROOT)),
+            "direct_style_debug_dir": None if debug_dir is None else str(Path(debug_dir).relative_to(REPO_ROOT)),
+            "tracking_plot_dir": None if debug_dir is None else str((Path(debug_dir) / "plots").relative_to(REPO_ROOT)),
         }
     _write_csv(output_dir / "comparison.csv", records)
     summary = {
@@ -791,11 +842,14 @@ def _make_closed_loop_plots(plot_dir: Path, run_dir: Path, records: list[dict[st
         return
     plot_dir.mkdir(parents=True, exist_ok=True)
     names = [row["case_name"] for row in records]
-    rmse = [row.get("output_rmse_raw_ysp", np.nan) for row in records]
-    target = [np.nan if row.get("mean_target_error_inf") is None else row.get("mean_target_error_inf") for row in records]
+    rmse = [row.get("output_rmse_mean", row.get("output_rmse_raw_ysp", np.nan)) for row in records]
+    target = [
+        row.get("target_reference_error_inf_mean", row.get("mean_target_error_inf", np.nan))
+        for row in records
+    ]
     x = np.arange(len(names))
     plt.figure(figsize=(9, 4))
-    plt.bar(x - 0.18, rmse, width=0.36, label="RMSE to y_sp")
+    plt.bar(x - 0.18, rmse, width=0.36, label="physical output RMSE")
     plt.bar(x + 0.18, target, width=0.36, label="mean |y_s-y_sp|_inf")
     plt.xticks(x, names, rotation=20, ha="right")
     plt.legend()
@@ -808,7 +862,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run GART target-selector and GART-LMPC smoke studies.")
     parser.add_argument("--mode", choices=["nominal", "disturb"], default="nominal")
     parser.add_argument("--n-tests", type=int, default=5)
-    parser.add_argument("--set-points-len", type=int, default=20)
+    parser.add_argument("--set-points-len", type=int, default=DIRECT_DISTURBANCE_SETPOINT_LEN)
     parser.add_argument("--target-only", action="store_true")
     parser.add_argument("--closed-loop", action="store_true")
     parser.add_argument("--timestamp", default=None)
