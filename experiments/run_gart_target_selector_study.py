@@ -637,6 +637,69 @@ def _save_case_payload(case_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _stack_step_vectors(rows: list[dict[str, Any]], key: str, size: int) -> np.ndarray | None:
+    values = []
+    found = False
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            values.append(np.full(size, np.nan, dtype=float))
+        else:
+            found = True
+            values.append(np.asarray(value, dtype=float).reshape(size))
+    if not values or not found:
+        return None
+    return np.asarray(values, dtype=float)
+
+
+def _case_target_plot_arrays(payload: dict[str, Any], ctx: dict[str, Any]) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    rows = list(payload.get("direct_info_storage", []))
+    n_outputs = int(ctx["lmpc_obj"].C.shape[0])
+    n_inputs = int(ctx["lmpc_obj"].B.shape[1])
+    y_target = _stack_step_vectors(rows, "y_s", n_outputs)
+    y_tracking = _stack_step_vectors(rows, "y_target", n_outputs)
+    u_s_dev = _stack_step_vectors(rows, "u_s", n_inputs)
+    if u_s_dev is None:
+        return y_target, y_tracking, None
+    data_min = ctx["system_data"]["data_min"]
+    data_max = ctx["system_data"]["data_max"]
+    ss_scaled_inputs = apply_min_max(ctx["setup"]["steady_states"]["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
+    u_target_phys = reverse_min_max(u_s_dev + ss_scaled_inputs.reshape(1, -1), data_min[:n_inputs], data_max[:n_inputs])
+    return y_target, y_tracking, u_target_phys
+
+
+def _save_case_tracking_plots(case_dir: Path, payload: dict[str, Any], ctx: dict[str, Any]) -> str | None:
+    y_target, y_tracking, u_target_phys = _case_target_plot_arrays(payload, ctx)
+    plot_dir = case_dir / "tracking_plots"
+    try:
+        from Plotting_fns.mpc_plot_fns import plot_mpc_results_cstr
+
+        return plot_mpc_results_cstr(
+            y_sp=payload["y_sp"],
+            steady_states=ctx["setup"]["steady_states"],
+            nFE=int(payload["nFE"]),
+            delta_t=float(payload.get("delta_t", ctx["setup"]["delta_t"])),
+            time_in_sub_episodes=int(payload["time_in_sub_episodes"]),
+            y_mpc=payload["y_system"],
+            u_mpc=payload["u_applied_phys"],
+            data_min=ctx["system_data"]["data_min"],
+            data_max=ctx["system_data"]["data_max"],
+            directory=plot_dir,
+            prefix_name="",
+            y_target=y_target,
+            y_tracking_target=y_tracking,
+            u_target=u_target_phys,
+            u_bounds=(DEFAULT_U_MIN_PHYS, DEFAULT_U_MAX_PHYS),
+            timestamp_subdir=False,
+            paper_style=True,
+            output_labels=("eta", "T"),
+            input_labels=("Qc", "Qm"),
+        )
+    except Exception as exc:
+        _write_json(case_dir / "tracking_plot_error.json", {"error": repr(exc)})
+        return None
+
+
 def run_closed_loop(ctx: dict[str, Any], output_dir: Path, *, mode: str, n_tests: int, set_points_len: int) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = [
@@ -664,8 +727,12 @@ def run_closed_loop(ctx: dict[str, Any], output_dir: Path, *, mode: str, n_tests
             )
         case_dir = output_dir / case_name
         _save_case_payload(case_dir, payload)
+        tracking_plot_dir = _save_case_tracking_plots(case_dir, payload, ctx)
         records.append(_controller_metrics(payload, ctx, case_name=case_name))
-        artifacts[case_name] = str(case_dir.relative_to(REPO_ROOT))
+        artifacts[case_name] = {
+            "case_dir": str(case_dir.relative_to(REPO_ROOT)),
+            "tracking_plot_dir": None if tracking_plot_dir is None else str(Path(tracking_plot_dir).relative_to(REPO_ROOT)),
+        }
     _write_csv(output_dir / "comparison.csv", records)
     summary = {
         "status": "completed",
