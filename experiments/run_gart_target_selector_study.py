@@ -760,9 +760,17 @@ def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[st
         return None, None
 
 
-def run_closed_loop(ctx: dict[str, Any], output_dir: Path, *, mode: str, n_tests: int, set_points_len: int) -> dict[str, Any]:
+def run_closed_loop(
+    ctx: dict[str, Any],
+    output_dir: Path,
+    *,
+    mode: str,
+    n_tests: int,
+    set_points_len: int,
+    case_specs: list[tuple[str, str | None, str | None]] | None = None,
+) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    cases = [
+    cases = case_specs or [
         ("old_governed_reference", None, None),
         ("gart_target_raw_objective", "raw", "hard"),
         ("gart_target_mixed_objective", "mixed", "hard"),
