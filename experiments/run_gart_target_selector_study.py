@@ -53,8 +53,8 @@ from utils.lyapunov_utils import get_y_sp_step
 
 PREDICT_H = 9
 CONT_H = 3
-RHO_LYAP = 0.99
-LYAP_EPS = 1.0e-4
+RHO_LYAP = 0.98
+LYAP_EPS = 1.0e-3
 SLACK_PENALTY = 1.0e6
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -142,10 +142,6 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
     {
         "name": "T6_dx_abs_0p025_symmetric_dyabs1_no_xy_smooth_no_umid",
         "overrides": GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
-    },
-    {
-        "name": "T6b_dx_abs_0p025_adaptive_dyabs1_no_xy_smooth_no_umid",
-        "overrides": GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
     },
     {
         "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
@@ -1299,10 +1295,10 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_dxabs0p025_adaptive0p25_min0p10_dyabs1_no_umid",
+            "case_name": "gart_target_raw_dxabs0p025_symmetric_dyabs1_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
-            "target_overrides": GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
+            "target_overrides": GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
         },
     ]
     records: list[dict[str, Any]] = []

@@ -12,7 +12,6 @@ THREADS = 4
 set_single_thread_env(THREADS)
 
 from experiments.run_gart_target_selector_study import (
-    GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
     GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
     GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
     GART_MIXED_MPC_OVERRIDES,
@@ -52,7 +51,7 @@ MAX_MEMORY_MB = None
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
 TIMESTAMP = None
-TARGET_ONLY_OVERRIDES = GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES
+TARGET_ONLY_OVERRIDES = GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES
 
 # Toggle individual closed-loop cases here.
 CASE_SPECS = [
@@ -65,19 +64,11 @@ CASE_SPECS = [
     },
     {
         "enabled": True,
-        "case_name": "gart_target_raw_dxabs0p025_adaptive0p25_min0p10_dyabs1_no_umid",
-        "objective": "raw",
-        "lyapunov_mode": "hard",
-        "target_overrides": GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
-        "label": "GART raw, absolute dx_s_max 0.025, absolute dy_s_max 1.0, adaptive d_c projection radius 0.25 min scale 0.10, no x/y smoothing, no u_mid, 1% headroom",
-    },
-    {
-        "enabled": True,
         "case_name": "gart_target_raw_dxabs0p025_symmetric_dyabs1_no_umid",
         "objective": "raw",
         "lyapunov_mode": "hard",
         "target_overrides": GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
-        "label": "GART raw, absolute dx_s_max 0.025, absolute dy_s_max 1.0, fixed symmetric d_c rate scale 1.0, no x/y smoothing, no u_mid, 1% headroom",
+        "label": "GART raw, rho 0.98, eps 1e-3, absolute dx_s_max 0.025, absolute dy_s_max 1.0, fixed symmetric d_c rate scale 1.0, no x/y smoothing, no u_mid, 1% headroom",
     },
     {
         "enabled": False,

@@ -33,45 +33,12 @@ $$
 \|d^c_k-d^c_{k-1}\|_\infty\le \|\Delta d_{\max}\|_\infty.
 $$
 
-The adaptive certified-disturbance projection keeps the same proof-friendly
-bounded-rate structure, but shrinks the per-step certified rate when the raw
-observer estimate is far from the previous certified value. Define:
-
-$$
-d^{cand}_k=(1-\alpha_d)d^c_{k-1}+\alpha_d\hat d^{raw}_k,
-$$
-
-$$
-\gamma_i(k)=
-\operatorname{clip}
-\left(
-\frac{r_i}{|\hat d^{raw}_{k,i}-d^c_{k-1,i}|+\epsilon_d},
-\gamma_{\min},
-1
-\right),
-$$
-
-and:
-
-$$
-d^c_k=
-\Pi_{\mathcal D\cap \mathcal B_{\gamma(k)\Delta d_{\max}}(d^c_{k-1})}
-\left(d^{cand}_k\right).
-$$
-
-Here $\mathcal D=[d_{\min},d_{\max}]$ and
-$\mathcal B_{\gamma(k)\Delta d_{\max}}(d^c_{k-1})$ is the component-wise box:
-
-$$
-|d_i-d^c_{k-1,i}|\le \gamma_i(k)\Delta d_{\max,i}.
-$$
-
-This does not freeze the target because tracking is good. Instead, it defines
-the certified disturbance as a projection onto a bounded, slowly varying
-disturbance set. The fixed-rate update is recovered when $\gamma_i(k)=1$.
-The implementation logs the raw gap $\|\hat d^{raw}_k-d^c_{k-1}\|_\infty$,
-the effective rate bound, and the adaptive scale so disturbed and RL-exploration
-runs can show whether target motion is being shaped by the certificate.
+The active runner now uses the fixed symmetric certified-disturbance update.
+The adaptive projection law was kept in the code for reproducibility, but it is
+disabled in the main GART runner because the latest disturbed runs showed that
+it could lag the observer correction and reintroduce late target/input jumps.
+The current proof path therefore uses the simpler bounded-rate certificate with
+`d_rate_scale = 1.0`.
 
 ## Target Selection
 
@@ -92,7 +59,15 @@ $$
 \|y_s(k)-y_s(k-1)\|_\infty \le 1.0.
 $$
 
-This is implemented as the `dx_s_max_abs=0.025` and `dy_s_max_abs=1.0` overrides. The bounds are component-wise in scaled-deviation coordinates and are used in both the adaptive certified-disturbance case and the fixed symmetric certified-disturbance comparison case. The earlier `dy_s_max_abs=0.1` setting remains available as a diagnostic reference but was too restrictive in disturbed closed-loop runs.
+This is implemented as the `dx_s_max_abs=0.025` and `dy_s_max_abs=1.0` overrides. The bounds are component-wise in scaled-deviation coordinates and are used with the fixed symmetric certified-disturbance case. The earlier `dy_s_max_abs=0.1` setting remains available as a diagnostic reference but was too restrictive in disturbed closed-loop runs.
+
+The current main contraction constants are:
+
+$$
+\rho = 0.98,\qquad \epsilon = 10^{-3}.
+$$
+
+This setting is intentionally less aggressive than the recent $\epsilon=10^{-4}$ trials, which became conservative near the setpoint and made small observer/target motions show up as visible closed-loop jumps.
 
 Stage 2 is only a tie-breaker inside a near-optimal shell:
 
