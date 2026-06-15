@@ -55,11 +55,11 @@ subject to the steady-state equation, input headroom, terminal-input tightening,
 For the current raw GART comparison path, the output target-motion bound is set directly rather than inferred from prior result quantiles:
 
 $$
-\|x_s(k)-x_s(k-1)\|_\infty \le 0.025,\qquad
+\|x_s(k)-x_s(k-1)\|_\infty \le 0.05,\qquad
 \|y_s(k)-y_s(k-1)\|_\infty \le 1.0.
 $$
 
-This is implemented as the `dx_s_max_abs=0.025` and `dy_s_max_abs=1.0` overrides. The bounds are component-wise in scaled-deviation coordinates and are used with the fixed symmetric certified-disturbance case. The earlier `dy_s_max_abs=0.1` setting remains available as a diagnostic reference but was too restrictive in disturbed closed-loop runs.
+This is implemented as the `dx_s_max_abs=0.05` and `dy_s_max_abs=1.0` overrides. The bounds are component-wise in scaled-deviation coordinates and are used with the fixed symmetric certified-disturbance case. The earlier `dx_s_max_abs=0.025` setting remains available as a diagnostic reference but was too slow during the high-to-low setpoint transition in disturbed closed-loop runs. The earlier `dy_s_max_abs=0.1` setting also remains available as a diagnostic reference but was too restrictive in disturbed closed-loop runs.
 
 The current main contraction constants are:
 
