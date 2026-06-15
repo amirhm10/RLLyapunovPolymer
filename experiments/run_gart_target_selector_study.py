@@ -69,11 +69,11 @@ GART_TARGET_BASE_OVERRIDES: dict[str, Any] = {
 }
 GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "disable_dx_rate": True}
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
-GART_DX_ABS_0P05_DRATE0P5_DY2_OVERRIDES: dict[str, Any] = {
+GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES: dict[str, Any] = {
     **GART_TARGET_BASE_OVERRIDES,
     "dy_rate_scale": 2.0,
     "dx_s_max_abs": 0.05,
-    "d_rate_scale": 0.5,
+    "d_rate_scale": [1.0, 0.5],
 }
 GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
     "eta_y": 0.1,
@@ -95,8 +95,8 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": GART_RELAXED_DY2_OVERRIDES,
     },
     {
-        "name": "T6_dx_abs_0p05_drate0p5_headroom_0p01_dy2_no_xy_smooth_no_umid",
-        "overrides": GART_DX_ABS_0P05_DRATE0P5_DY2_OVERRIDES,
+        "name": "T6_dx_abs_0p05_drate1_0p5_headroom_0p01_dy2_no_xy_smooth_no_umid",
+        "overrides": GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
     },
     {
         "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
@@ -1187,10 +1187,10 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_dxabs0p05_drate0p5_headroom_0p01_dy2_no_umid",
+            "case_name": "gart_target_raw_dxabs0p05_drate1_0p5_headroom_0p01_dy2_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
-            "target_overrides": GART_DX_ABS_0P05_DRATE0P5_DY2_OVERRIDES,
+            "target_overrides": GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
         },
     ]
     records: list[dict[str, Any]] = []

@@ -302,7 +302,14 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         else:
             dx_s_max = float(cfg.get("dx_rate_scale", 1.0)) * dx_s_max
     input_headroom_frac = cfg.get("input_headroom_frac")
-    d_rate_max = float(cfg.get("d_rate_scale", 1.0)) * np.asarray(values["d_rate_max"], dtype=float).copy()
+    d_rate_base = np.asarray(values["d_rate_max"], dtype=float).copy()
+    d_rate_scale = np.asarray(cfg.get("d_rate_scale", 1.0), dtype=float).reshape(-1)
+    if d_rate_scale.size == 1:
+        d_rate_max = float(d_rate_scale.item()) * d_rate_base
+    elif d_rate_scale.size == d_rate_base.size:
+        d_rate_max = d_rate_scale * d_rate_base
+    else:
+        raise ValueError(f"d_rate_scale must be scalar or length {d_rate_base.size}, got length {d_rate_scale.size}.")
     disturbance = CertifiedDisturbanceConfig(
         alpha_d=float(cfg["alpha_d"]),
         alpha_d_slow=float(cfg["alpha_d_slow"]),
