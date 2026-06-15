@@ -286,7 +286,17 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
     if bool(cfg.get("disable_dy_rate", False)):
         dy_s_max = None
     else:
-        dy_s_max = float(cfg.get("dy_rate_scale", 1.0)) * dy_s_max
+        dy_override = cfg.get("dy_s_max_abs", cfg.get("dy_s_max_override"))
+        if dy_override is not None:
+            dy_vec = np.asarray(dy_override, dtype=float).reshape(-1)
+            if dy_vec.size == 1:
+                dy_s_max = np.full(dy_template.size, float(dy_vec.item()), dtype=float)
+            elif dy_vec.size == dy_template.size:
+                dy_s_max = dy_vec.copy()
+            else:
+                raise ValueError(f"dy_s_max_abs must be scalar or length {dy_template.size}, got length {dy_vec.size}.")
+        else:
+            dy_s_max = float(cfg.get("dy_rate_scale", 1.0)) * dy_s_max
     if bool(cfg.get("disable_du_rate", False)):
         du_s_max = None
     else:

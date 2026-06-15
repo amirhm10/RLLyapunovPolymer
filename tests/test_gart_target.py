@@ -355,6 +355,29 @@ def test_recursive_result_scanning_disabled_by_default():
     assert values["quantiles"]["dy_abs_q95"] is None
 
 
+def test_make_gart_target_config_accepts_absolute_dy_rate_override():
+    from utils.gart_defaults import make_gart_target_config
+
+    values = {
+        "d_rate_max": np.array([0.5, 0.25]),
+        "d_min": np.array([-1.0, -1.0]),
+        "d_max": np.array([1.0, 1.0]),
+        "dy_s_max": np.array([0.01, 0.02]),
+        "du_s_max": np.array([0.1, 0.2]),
+        "dx_s_max": np.ones(3),
+        "Wy_diag": np.ones(2),
+        "Q_raw_diag": np.ones(2),
+        "Q_target_diag": np.ones(2),
+        "R_us_diag": np.ones(2),
+        "Rdu_diag": np.ones(2),
+    }
+    cfg = make_gart_target_config(values, dy_s_max_abs=0.1, dy_rate_scale=10.0)
+    assert np.allclose(cfg.dy_s_max, np.array([0.1, 0.1]))
+
+    cfg = make_gart_target_config(values, dy_s_max_abs=[0.1, 0.2])
+    assert np.allclose(cfg.dy_s_max, np.array([0.1, 0.2]))
+
+
 def test_observer_replay_target_only_does_not_overwrite_observer(tmp_path):
     runner = pytest.importorskip("experiments.run_gart_target_selector_study")
     lmpc_obj = SimpleNamespace(
