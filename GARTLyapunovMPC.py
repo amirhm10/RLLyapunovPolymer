@@ -13,7 +13,6 @@ set_single_thread_env(1)
 from experiments.run_gart_target_selector_study import (
     GART_MIXED_MPC_OVERRIDES,
     GART_RELAXED_DY2_OVERRIDES,
-    GART_RELAXED_DY4_OVERRIDES,
     GART_RELAXED_TARGET_OVERRIDES,
     _build_context,
     _jsonable,
@@ -68,14 +67,6 @@ CASE_SPECS = [
         "label": "GART raw, no dx_s rate, no x/y smoothing, no u_mid, 1% headroom, dy scale 2",
     },
     {
-        "enabled": True,
-        "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4_no_umid",
-        "objective": "raw",
-        "lyapunov_mode": "hard",
-        "target_overrides": GART_RELAXED_DY4_OVERRIDES,
-        "label": "GART raw, no dx_s rate, no x/y smoothing, no u_mid, 1% headroom, dy scale 4",
-    },
-    {
         "enabled": False,
         "case_name": "gart_target_mixed_no_dx_headroom_0p01_dy2_no_umid",
         "objective": "mixed",
@@ -83,15 +74,6 @@ CASE_SPECS = [
         "target_overrides": GART_RELAXED_DY2_OVERRIDES,
         "mpc_overrides": GART_MIXED_MPC_OVERRIDES,
         "label": "GART mixed active, no dx_s rate, no x/y smoothing, no u_mid, 1% headroom, dy scale 2",
-    },
-    {
-        "enabled": False,
-        "case_name": "gart_target_mixed_no_dx_headroom_0p01_dy4_no_umid",
-        "objective": "mixed",
-        "lyapunov_mode": "hard",
-        "target_overrides": GART_RELAXED_DY4_OVERRIDES,
-        "mpc_overrides": GART_MIXED_MPC_OVERRIDES,
-        "label": "Manual sensitivity: GART mixed active, no u_mid, dy scale 4",
     },
     {
         "enabled": False,

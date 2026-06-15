@@ -69,7 +69,6 @@ GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
     "input_headroom_frac": 0.01,
 }
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
-GART_RELAXED_DY4_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 4.0}
 GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
     "eta_y": 0.1,
     "eta_u": 0.1,
@@ -86,16 +85,8 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 2.0},
     },
     {
-        "name": "T4_no_dx_rate_headroom_0p01_dy4",
-        "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 4.0},
-    },
-    {
         "name": "T5_no_dx_rate_headroom_0p01_dy2_no_xy_smooth_no_umid",
         "overrides": GART_RELAXED_DY2_OVERRIDES,
-    },
-    {
-        "name": "T6_no_dx_rate_headroom_0p01_dy4_no_xy_smooth_no_umid",
-        "overrides": GART_RELAXED_DY4_OVERRIDES,
     },
     {
         "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
@@ -1152,12 +1143,6 @@ def run_closed_loop(
             "lyapunov_mode": "hard",
             "target_overrides": GART_RELAXED_DY2_OVERRIDES,
         },
-        {
-            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy4_no_umid",
-            "objective": "raw",
-            "lyapunov_mode": "hard",
-            "target_overrides": GART_RELAXED_DY4_OVERRIDES,
-        },
     ]
     records: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {}
@@ -1362,7 +1347,7 @@ def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
         target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
         max_target = max(100, estimated * max(target_multiplier, 1))
     if max_closed is None:
-        max_closed = max(20, 2 * estimated if args.closed_loop else 20)
+        max_closed = max(20, estimated if args.closed_loop else 20)
     if max_solver is None:
         max_solver = max(500, 2 * max_target + 2 * max_closed)
     return ResourceGuard(
