@@ -72,8 +72,8 @@ class GARTTargetConfig:
     W_y_smooth_diag: np.ndarray | None = None
     W_u_mid_diag: np.ndarray | None = None
 
-    rho: float = 0.99
-    eps: float = 1.0e-4
+    rho: float = 0.98
+    eps: float = 1.0e-3
     contraction_margin_tol: float = 1.0e-8
     require_contraction_probe: bool = True
     contraction_probe_log_only: bool = False

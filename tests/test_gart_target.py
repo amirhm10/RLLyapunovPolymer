@@ -55,6 +55,19 @@ def _config(**overrides):
     return cfg
 
 
+def test_gart_target_config_defaults_match_final_runner_values():
+    disturbance = CertifiedDisturbanceConfig(
+        alpha_d=1.0,
+        alpha_d_slow=0.1,
+        d_rate_max=np.array([0.5], dtype=float),
+        d_min=np.array([-1.0], dtype=float),
+        d_max=np.array([1.0], dtype=float),
+    )
+    cfg = GARTTargetConfig(disturbance=disturbance)
+    assert cfg.rho == pytest.approx(0.98)
+    assert cfg.eps == pytest.approx(1.0e-3)
+
+
 def test_exact_reachable_target():
     A_aug, B_aug, C_aug = _augmented_model()
     y_sp = np.array([0.8])
@@ -441,7 +454,7 @@ def test_recursive_result_scanning_disabled_by_default():
     assert values["quantiles"]["dy_abs_q95"] is None
 
 
-def test_make_gart_target_config_accepts_absolute_dy_rate_override():
+def test_make_gart_target_config_accepts_absolute_target_rate_overrides():
     from utils.gart_defaults import make_gart_target_config
 
     values = {
@@ -462,3 +475,9 @@ def test_make_gart_target_config_accepts_absolute_dy_rate_override():
 
     cfg = make_gart_target_config(values, dy_s_max_abs=[0.1, 0.2])
     assert np.allclose(cfg.dy_s_max, np.array([0.1, 0.2]))
+
+    cfg = make_gart_target_config(values, du_s_max_abs=0.3, du_rate_scale=10.0)
+    assert np.allclose(cfg.du_s_max, np.array([0.3, 0.3]))
+
+    cfg = make_gart_target_config(values, du_s_max_abs=[0.998, 0.740])
+    assert np.allclose(cfg.du_s_max, np.array([0.998, 0.740]))

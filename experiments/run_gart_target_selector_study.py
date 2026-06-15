@@ -64,6 +64,7 @@ FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = {
     "disable_y_smoothing": True,
     "input_headroom_frac": 0.01,
     "dx_s_max_abs": 0.05,
+    "du_s_max_abs": [0.998, 0.740],
     "dy_s_max_abs": 1.0,
     "d_rate_scale": 1.0,
     "adaptive_rate_enabled": False,
