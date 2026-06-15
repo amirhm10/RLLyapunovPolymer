@@ -87,6 +87,12 @@ GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES: dict[str, Any] = {
     "dx_s_max_abs": 0.05,
     "d_rate_scale": 1.0,
 }
+GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES: dict[str, Any] = {
+    **GART_TARGET_BASE_OVERRIDES,
+    "dy_s_max_abs": 1.0,
+    "dx_s_max_abs": 0.025,
+    "d_rate_scale": 1.0,
+}
 GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES: dict[str, Any] = {
     **GART_TARGET_BASE_OVERRIDES,
     "dy_rate_scale": 2.0,
@@ -104,6 +110,12 @@ GART_DX_ABS_0P05_ADAPTIVE_DYABS0P1_OVERRIDES: dict[str, Any] = {
 }
 GART_DX_ABS_0P05_ADAPTIVE_DYABS1_OVERRIDES: dict[str, Any] = {
     **GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES,
+    "adaptive_rate_enabled": True,
+    "adaptive_rate_trust_radius": 0.25,
+    "adaptive_rate_min_scale": 0.10,
+}
+GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES: dict[str, Any] = {
+    **GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
     "adaptive_rate_enabled": True,
     "adaptive_rate_trust_radius": 0.25,
     "adaptive_rate_min_scale": 0.10,
@@ -128,12 +140,12 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": GART_RELAXED_DY2_OVERRIDES,
     },
     {
-        "name": "T6_dx_abs_0p05_symmetric_dyabs1_no_xy_smooth_no_umid",
-        "overrides": GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES,
+        "name": "T6_dx_abs_0p025_symmetric_dyabs1_no_xy_smooth_no_umid",
+        "overrides": GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
     },
     {
-        "name": "T6b_dx_abs_0p05_adaptive_dyabs1_no_xy_smooth_no_umid",
-        "overrides": GART_DX_ABS_0P05_ADAPTIVE_DYABS1_OVERRIDES,
+        "name": "T6b_dx_abs_0p025_adaptive_dyabs1_no_xy_smooth_no_umid",
+        "overrides": GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
     },
     {
         "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
@@ -1287,10 +1299,10 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_dxabs0p05_adaptive0p25_min0p10_dyabs1_no_umid",
+            "case_name": "gart_target_raw_dxabs0p025_adaptive0p25_min0p10_dyabs1_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
-            "target_overrides": GART_DX_ABS_0P05_ADAPTIVE_DYABS1_OVERRIDES,
+            "target_overrides": GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES,
         },
     ]
     records: list[dict[str, Any]] = []
