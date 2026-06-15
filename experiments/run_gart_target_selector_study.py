@@ -54,21 +54,24 @@ from utils.lyapunov_utils import get_y_sp_step
 PREDICT_H = 9
 CONT_H = 3
 RHO_LYAP = 0.99
-LYAP_EPS = 1.0e-4
+LYAP_EPS = 1.0e-3
 SLACK_PENALTY = 1.0e6
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 
-GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {
-    "disable_dx_rate": True,
+GART_TARGET_BASE_OVERRIDES: dict[str, Any] = {
     "disable_u_mid_tiebreak": True,
     "disable_x_smoothing": True,
     "disable_y_smoothing": True,
     "input_headroom_frac": 0.01,
 }
+GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "disable_dx_rate": True}
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
+GART_DX5_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 5.0}
+GART_DX10_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 10.0}
+GART_DX20_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 20.0}
 GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
     "eta_y": 0.1,
     "eta_u": 0.1,
@@ -89,7 +92,19 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": GART_RELAXED_DY2_OVERRIDES,
     },
     {
-        "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
+        "name": "T6_dx5_headroom_0p01_dy2_no_xy_smooth_no_umid",
+        "overrides": GART_DX5_DY2_OVERRIDES,
+    },
+    {
+        "name": "T7_dx10_headroom_0p01_dy2_no_xy_smooth_no_umid",
+        "overrides": GART_DX10_DY2_OVERRIDES,
+    },
+    {
+        "name": "T8_dx20_headroom_0p01_dy2_no_xy_smooth_no_umid",
+        "overrides": GART_DX20_DY2_OVERRIDES,
+    },
+    {
+        "name": "T9_no_dx_rate_headroom_0p01_dy2_no_du",
         "overrides": {
             "disable_dx_rate": True,
             "input_headroom_frac": 0.01,
@@ -98,7 +113,7 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "T8_no_umid_probe_log_only",
+        "name": "T10_no_umid_probe_log_only",
         "overrides": {
             **GART_RELAXED_DY2_OVERRIDES,
             "disable_du_rate": True,
@@ -331,6 +346,8 @@ def _target_classification(error_inf: float | None, target_config: Any) -> dict[
 def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_name: str) -> dict[str, Any]:
     diag = result.diagnostics if isinstance(result.diagnostics, dict) else {}
     classification = _target_classification(result.target_error_inf, target_config)
+    dx_s_max = None if getattr(target_config, "dx_s_max", None) is None else np.asarray(target_config.dx_s_max, dtype=float).reshape(-1)
+    dc_rate_inf = diag.get("disturbance", {}).get("d_cert_delta_inf")
     return {
         "step": step_idx,
         "target_only_mode": mode_name,
@@ -345,7 +362,11 @@ def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_nam
         "target_rate_y_inf": result.target_rate_y_inf,
         "target_rate_u_inf": result.target_rate_u_inf,
         "target_rate_x_inf": result.target_rate_x_inf,
-        "d_cert_delta_inf": diag.get("disturbance", {}).get("d_cert_delta_inf"),
+        "dx_s_inf": result.target_rate_x_inf,
+        "dc_rate_inf": dc_rate_inf,
+        "d_cert_delta_inf": dc_rate_inf,
+        "dx_s_max_active": dx_s_max is not None,
+        "dx_s_max_inf": None if dx_s_max is None else float(np.max(np.abs(dx_s_max))),
         "input_headroom_min": result.input_headroom_min,
         "contraction_probe_success": result.contraction_probe_success,
         "contraction_probe_margin_good": result.contraction_probe_margin_good,
@@ -699,6 +720,8 @@ def run_gart_closed_loop_case(
         y_s = None if target_result.y_s is None else np.asarray(target_result.y_s, dtype=float).reshape(n_outputs)
         d_s = None if target_result.d_cert is None else np.asarray(target_result.d_cert, dtype=float).reshape(n_outputs)
         target_diag = target_result.diagnostics if isinstance(target_result.diagnostics, dict) else {}
+        dx_s_max = None if target_config.dx_s_max is None else np.asarray(target_config.dx_s_max, dtype=float).reshape(-1)
+        dc_rate_inf = target_diag.get("disturbance", {}).get("d_cert_delta_inf")
         target_info = target_result.to_dict()
         target_info.update(
             {
@@ -720,6 +743,12 @@ def run_gart_closed_loop_case(
                 "target_usable_for_lmpc": target_result.usable_for_lmpc,
                 "target_rejection_reason": target_result.rejection_reason,
                 "target_rate_inf": target_result.target_rate_y_inf,
+                "target_rate_x_inf": target_result.target_rate_x_inf,
+                "dx_s_inf": target_result.target_rate_x_inf,
+                "dc_rate_inf": dc_rate_inf,
+                "d_cert_delta_inf": dc_rate_inf,
+                "dx_s_max_active": dx_s_max is not None,
+                "dx_s_max_inf": None if dx_s_max is None else float(np.max(np.abs(dx_s_max))),
                 "command_move_inf": target_result.target_rate_y_inf,
                 "input_headroom_frac": target_config.input_headroom_frac,
                 "stage2_u_smooth_source": target_diag.get("stage2_u_smooth_source"),
@@ -798,6 +827,12 @@ def run_gart_closed_loop_case(
                 "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
                 "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
                 "target_rate_inf": target_result.target_rate_y_inf,
+                "target_rate_x_inf": target_result.target_rate_x_inf,
+                "dx_s_inf": target_result.target_rate_x_inf,
+                "dc_rate_inf": dc_rate_inf,
+                "d_cert_delta_inf": dc_rate_inf,
+                "dx_s_max_active": dx_s_max is not None,
+                "dx_s_max_inf": None if dx_s_max is None else float(np.max(np.abs(dx_s_max))),
                 "stage2_u_smooth_source": target_diag.get("stage2_u_smooth_source"),
                 "governor_probe_available": target_result.contraction_probe_success is not None,
                 "governor_probe_success": target_result.contraction_probe_success,
@@ -949,6 +984,12 @@ def _summarize_step_records(records: list[dict[str, Any]], *, case_name: str) ->
         "solver_success_rate": mean_bool("success"),
         "mean_target_error_inf": nanmean("target_error_inf"),
         "p95_target_error_inf": nanp95("target_error_inf"),
+        "mean_dx_s_inf": nanmean("dx_s_inf"),
+        "p95_dx_s_inf": nanp95("dx_s_inf"),
+        "mean_dc_rate_inf": nanmean("dc_rate_inf"),
+        "p95_dc_rate_inf": nanp95("dc_rate_inf"),
+        "dx_s_max_active_rate": mean_bool("dx_s_max_active"),
+        "mean_dx_s_max_inf": nanmean("dx_s_max_inf"),
         "mean_contraction_probe_margin_good": nanmean("contraction_probe_margin_good"),
         "mean_contraction_probe_margin": nanmean("contraction_probe_margin"),
         "contraction_probe_success_rate": mean_bool("contraction_probe_success"),
@@ -989,6 +1030,9 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
     contraction_probe = []
     slack = []
     solver_success = []
+    dx_s_inf = []
+    dc_rate_inf = []
+    dx_s_max_active = []
     for row in payload.get("direct_info_storage", []):
         y_s = row.get("y_s")
         if y_s is not None:
@@ -1007,6 +1051,11 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         contraction_probe.append(1.0 if bool(row.get("contraction_probe_success", row.get("governor_probe_success", False))) else 0.0)
         slack.append(float(row.get("slack_lyap", 0.0) or 0.0))
         solver_success.append(1.0 if bool(row.get("success", False)) else 0.0)
+        if row.get("dx_s_inf") is not None:
+            dx_s_inf.append(float(row.get("dx_s_inf")))
+        if row.get("dc_rate_inf") is not None:
+            dc_rate_inf.append(float(row.get("dc_rate_inf")))
+        dx_s_max_active.append(1.0 if bool(row.get("dx_s_max_active", False)) else 0.0)
     du = np.asarray(payload.get("delta_u_storage", []), dtype=float)
     return {
         "case_name": case_name,
@@ -1031,6 +1080,11 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         "governor_active_rate": float(np.mean(governor)) if governor else None,
         "hold_previous_rate": float(np.mean(holds)) if holds else None,
         "unreachable_rate": None if not target_err else float(np.mean(np.asarray(target_err) > 0.5)),
+        "mean_dx_s_inf": None if not dx_s_inf else float(np.mean(dx_s_inf)),
+        "max_dx_s_inf": None if not dx_s_inf else float(np.max(dx_s_inf)),
+        "mean_dc_rate_inf": None if not dc_rate_inf else float(np.mean(dc_rate_inf)),
+        "max_dc_rate_inf": None if not dc_rate_inf else float(np.max(dc_rate_inf)),
+        "dx_s_max_active_rate": float(np.mean(dx_s_max_active)) if dx_s_max_active else None,
     }
 
 
@@ -1138,10 +1192,22 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_no_dx_headroom_0p01_dy2_no_umid",
+            "case_name": "gart_target_raw_dx5_headroom_0p01_dy2_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
-            "target_overrides": GART_RELAXED_DY2_OVERRIDES,
+            "target_overrides": GART_DX5_DY2_OVERRIDES,
+        },
+        {
+            "case_name": "gart_target_raw_dx10_headroom_0p01_dy2_no_umid",
+            "objective": "raw",
+            "lyapunov_mode": "hard",
+            "target_overrides": GART_DX10_DY2_OVERRIDES,
+        },
+        {
+            "case_name": "gart_target_raw_dx20_headroom_0p01_dy2_no_umid",
+            "objective": "raw",
+            "lyapunov_mode": "hard",
+            "target_overrides": GART_DX20_DY2_OVERRIDES,
         },
     ]
     records: list[dict[str, Any]] = []
@@ -1347,7 +1413,7 @@ def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
         target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
         max_target = max(100, estimated * max(target_multiplier, 1))
     if max_closed is None:
-        max_closed = max(20, estimated if args.closed_loop else 20)
+        max_closed = max(20, 3 * estimated if args.closed_loop else 20)
     if max_solver is None:
         max_solver = max(500, 2 * max_target + 2 * max_closed)
     return ResourceGuard(
