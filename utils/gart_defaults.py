@@ -289,7 +289,17 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
     if bool(cfg.get("disable_dx_rate", False)):
         dx_s_max = None
     else:
-        dx_s_max = float(cfg.get("dx_rate_scale", 1.0)) * dx_s_max
+        dx_override = cfg.get("dx_s_max_abs", cfg.get("dx_s_max_override"))
+        if dx_override is not None:
+            dx_vec = np.asarray(dx_override, dtype=float).reshape(-1)
+            if dx_vec.size == 1:
+                dx_s_max = np.full(dx_template.size, float(dx_vec.item()), dtype=float)
+            elif dx_vec.size == dx_template.size:
+                dx_s_max = dx_vec.copy()
+            else:
+                raise ValueError(f"dx_s_max_abs must be scalar or length {dx_template.size}, got length {dx_vec.size}.")
+        else:
+            dx_s_max = float(cfg.get("dx_rate_scale", 1.0)) * dx_s_max
     input_headroom_frac = cfg.get("input_headroom_frac")
     disturbance = CertifiedDisturbanceConfig(
         alpha_d=float(cfg["alpha_d"]),
