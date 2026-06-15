@@ -671,7 +671,7 @@ In practice, this one-dimensional search is performed by evaluating a descending
 with eight bisection refinements.
 
 
-If no positive governed move can be certified, the previous accepted target is held:
+If no positive governed move can be certified, GART evaluates the zero-move governor candidate:
 
 
 \[
@@ -680,7 +680,14 @@ If no positive governed move can be certified, the previous accepted target is h
 r_k=r_{k-1}.
 \]
 
-This hold action is not treated as a successful move toward the new setpoint. It means that the safest certified target at the current time is the previous one. As the plant state moves closer to the held target, a positive value of $\alpha$ may become admissible at a subsequent time step.
+This action holds the command reference, but it does not reuse a stale target package. The target selector still solves the lexicographic target problem using the current certified disturbance $d^c_k$. Therefore, if the zero-move candidate is accepted, the returned target satisfies
+
+
+\[
+y_{s,k}=Cx_{s,k}+d^c_k.
+\]
+
+If even the zero-move candidate cannot be re-certified, then no target is declared usable for LMPC at that sampling instant. In that fallback case, the LMPC layer holds the previously applied input rather than optimizing around an inconsistent target. As the plant state moves closer to the held command reference, or as the certified disturbance evolves, a positive value of $\alpha$ may become admissible at a subsequent time step.
 
 
 The governor also provides a useful decomposition of target displacement relative to the raw setpoint:

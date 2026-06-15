@@ -136,6 +136,92 @@ def test_target_rate_bound_activates_governor():
     assert result.target_rate_y_inf <= 0.2 + 1.0e-6
 
 
+def test_alpha_zero_governor_recertifies_current_disturbance_target():
+    A_aug, B_aug, C_aug = _augmented_model()
+    prev = GARTTargetState(
+        d_cert=np.array([0.0]),
+        x_s=np.array([0.0]),
+        u_s=np.array([0.0]),
+        y_s=np.array([0.0]),
+        r_cmd=np.array([0.0]),
+        valid=True,
+    )
+    cfg = _config(
+        dy_s_max=np.array([0.05]),
+        du_s_max=np.array([1.0]),
+        dx_s_max=np.array([1.0]),
+        governor_grid=(1.0, 0.0),
+        governor_bisect_iters=0,
+    )
+    result, state = select_gart_target(
+        A_aug,
+        B_aug,
+        C_aug,
+        np.array([-0.2, 0.2]),
+        np.array([1.0]),
+        np.array([-1.0]),
+        np.array([1.0]),
+        state=prev,
+        config=cfg,
+        P_x=np.array([[1.0]]),
+        K_x=np.array([[0.0]]),
+    )
+    assert result.accepted is True
+    assert result.usable_for_lmpc is True
+    assert result.governor_alpha == pytest.approx(0.0)
+    assert result.hold_previous is True
+    assert result.status == "accepted_held_command_reference"
+    assert result.d_cert[0] == pytest.approx(0.2)
+    assert result.x_s[0] == pytest.approx(-0.2, abs=1.0e-6)
+    assert result.u_s[0] == pytest.approx(-0.1, abs=1.0e-6)
+    assert result.y_s[0] == pytest.approx(0.0, abs=1.0e-6)
+    assert result.y_s[0] == pytest.approx(C_aug[0, 0] * result.x_s[0] + result.d_cert[0], abs=1.0e-6)
+    assert state.valid is True
+    assert state.x_s[0] == pytest.approx(result.x_s[0])
+    assert state.d_cert[0] == pytest.approx(result.d_cert[0])
+
+
+def test_stale_hold_previous_fallback_is_not_usable_when_recertification_fails():
+    A_aug, B_aug, C_aug = _augmented_model()
+    prev = GARTTargetState(
+        d_cert=np.array([0.0]),
+        x_s=np.array([0.0]),
+        u_s=np.array([0.0]),
+        y_s=np.array([0.0]),
+        r_cmd=np.array([0.0]),
+        valid=True,
+    )
+    cfg = _config(
+        dy_s_max=np.array([0.05]),
+        du_s_max=np.array([1.0]),
+        dx_s_max=np.array([0.05]),
+        governor_grid=(1.0, 0.0),
+        governor_bisect_iters=0,
+    )
+    result, state = select_gart_target(
+        A_aug,
+        B_aug,
+        C_aug,
+        np.array([0.0, 0.2]),
+        np.array([1.0]),
+        np.array([-1.0]),
+        np.array([1.0]),
+        state=prev,
+        config=cfg,
+        P_x=np.array([[1.0]]),
+        K_x=np.array([[0.0]]),
+    )
+    assert result.solve_success is False
+    assert result.accepted is False
+    assert result.usable_for_lmpc is False
+    assert result.success is False
+    assert result.status == "hold_previous_not_recertified"
+    assert result.rejection_reason == "held_previous_target_not_recertified"
+    assert result.diagnostics["held_previous_target_not_recertified"] is True
+    assert result.diagnostics["stale_target_equation_residual"][0] == pytest.approx(-0.2)
+    assert state.valid is True
+
+
 def test_certified_disturbance_rate_limit():
     cfg = CertifiedDisturbanceConfig(
         alpha_d=1.0,

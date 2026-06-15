@@ -1197,6 +1197,11 @@ def _hold_previous_result(
     u_max: np.ndarray,
     disturbance_info: dict[str, Any],
 ) -> GARTTargetResult:
+    stale_residual = None
+    if state.x_s is not None and state.y_s is not None:
+        x_old = np.asarray(state.x_s, dtype=float).reshape(model.n_x)
+        y_old = np.asarray(state.y_s, dtype=float).reshape(model.n_y)
+        stale_residual = y_old - np.asarray(model.C @ x_old + model.Cd @ d_cert, dtype=float).reshape(model.n_y)
     candidate = GARTStageResult(
         success=bool(state.valid),
         stage="hold_previous",
@@ -1209,7 +1214,7 @@ def _hold_previous_result(
         tiebreak_cost=None,
         diagnostics={"held_previous_target": True},
     )
-    return _result_from_candidate(
+    result = _result_from_candidate(
         candidate=candidate,
         model=model,
         xhat=xhat,
@@ -1227,8 +1232,24 @@ def _hold_previous_result(
         governor_active=True,
         hold_previous=True,
         status="hold_previous",
-        extra_diagnostics={"disturbance": disturbance_info},
+        extra_diagnostics={
+            "disturbance": disturbance_info,
+            "held_previous_target_not_recertified": True,
+            "stale_target_equation_residual": stale_residual,
+        },
     )
+    result.success = False
+    result.solve_success = False
+    result.accepted = False
+    result.usable_for_lmpc = False
+    result.rejection_reason = "held_previous_target_not_recertified"
+    result.status = "hold_previous_not_recertified"
+    result.diagnostics["solve_success"] = False
+    result.diagnostics["accepted"] = False
+    result.diagnostics["usable_for_lmpc"] = False
+    result.diagnostics["rejection_reason"] = result.rejection_reason
+    result.diagnostics["held_previous_target_not_recertified"] = True
+    return result
 
 
 def _state_from_result(result: GARTTargetResult, prior: GARTTargetState | None) -> GARTTargetState:
@@ -1337,6 +1358,7 @@ def select_gart_target(
     high_alpha: float | None = None
     for alpha in sorted({float(a) for a in config.governor_grid if 0.0 <= float(a) <= 1.0}, reverse=True):
         reference = r_prev + alpha * (y_sp - r_prev)
+        is_hold = bool(np.isclose(alpha, 0.0, atol=1.0e-12))
         result = _solve_candidate(
             model=model,
             xhat=xhat,
@@ -1353,8 +1375,8 @@ def select_gart_target(
             u_smooth_ref=u_smooth_arr,
             governor_alpha=alpha,
             governor_active=True,
-            hold_previous=False,
-            status="accepted_governed_reference",
+            hold_previous=is_hold,
+            status="accepted_held_command_reference" if is_hold else "accepted_governed_reference",
             extra_diagnostics={"disturbance": disturbance_info, "raw_result": raw_result},
         )
         if _candidate_accepted(result, config) and _reference_motion_ok(reference, prev_target, config):
@@ -1395,7 +1417,7 @@ def select_gart_target(
             else:
                 hi = mid
 
-    if best is not None and best.governor_alpha is not None and best.governor_alpha > 0.0:
+    if best is not None:
         return best, _state_from_result(best, state)
 
     held = _hold_previous_result(
