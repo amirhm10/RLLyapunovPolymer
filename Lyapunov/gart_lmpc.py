@@ -34,14 +34,14 @@ class GARTMPCConfig:
     Q_target_diag: np.ndarray
     R_us_diag: np.ndarray
     Rdu_diag: np.ndarray
-    eta_y: float = 0.1
-    eta_u: float = 0.1
+    eta_y: float = 0.0
+    eta_u: float = 0.0
     slack_penalty: float = 1.0e6
     terminal_set_on: bool = True
     first_step_contraction_on: bool = True
-    lyapunov_mode: str = "soft"
-    rho: float = 0.99
-    eps: float = 1.0e-4
+    lyapunov_mode: str = "hard"
+    rho: float = 0.98
+    eps: float = 1.0e-3
     alpha_terminal_min: float = 1.0e-8
     target_term_gate_enabled: bool = True
     target_term_gate_delta_y: float = 0.5

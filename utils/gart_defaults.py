@@ -370,7 +370,7 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
     )
 
 
-def make_gart_mpc_config(values: dict[str, Any], *, objective: str = "mixed", lyapunov_mode: str = "soft", **overrides: Any) -> GARTMPCConfig:
+def make_gart_mpc_config(values: dict[str, Any], *, objective: str = "raw", lyapunov_mode: str = "hard", **overrides: Any) -> GARTMPCConfig:
     cfg = dict(GART_INITIAL_DEFAULTS)
     cfg.update(overrides)
     objective = str(objective).strip().lower()

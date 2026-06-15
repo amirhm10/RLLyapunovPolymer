@@ -1,18 +1,53 @@
-# GART-LMPC v0 Design Notes
+# Final GART-LMPC Design Notes
 
-GART-LMPC is a parallel Lyapunov MPC path for the Polymer CSTR study. It does not replace the existing bounded or governed-reference target selectors. The new target object is designed to make the proof bookkeeping explicit:
+GART-LMPC is the final Lyapunov MPC path selected for the Polymer CSTR study. The exposed runner now uses one method only:
 
-$$
-y_s \text{ is selected as the closest reachable, contraction-admissible output to } y_{sp}.
-$$
+- case name: `gartlmpc`
+- result folder: `results/GARTLMPC/<timestamp>/gartlmpc`
+- plant mode: configured in `GARTLyapunovMPC.py`
+- MPC objective: raw setpoint tracking
+- Lyapunov mode: hard first-step contraction
+- slack use: disabled in the final method
 
-The implementation uses scaled-deviation coordinates and the current output-disturbance augmented model:
+All variables in the controller are in scaled-deviation coordinates unless stated otherwise.
+
+## Final Parameters
+
+The root runner and final experiment helper use:
+
+```python
+CASE_NAME = "gartlmpc"
+objective = "raw"
+lyapunov_mode = "hard"
+rho = 0.98
+eps = 1.0e-3
+dx_s_max_abs = 0.05
+dy_s_max_abs = 1.0
+input_headroom_frac = 0.01
+d_rate_scale = 1.0
+adaptive_rate_enabled = False
+disable_u_mid_tiebreak = True
+disable_x_smoothing = True
+disable_y_smoothing = True
+```
+
+The final choice keeps the target sequence bounded enough for the moving-target proof bookkeeping, but avoids the conservative jumps seen with `eps = 1e-4` and tighter `dy_s` bounds.
+
+## Model And Certified Disturbance
+
+GART uses the output-disturbance augmented model:
 
 $$
 x_{k+1}=Ax_k+Bu_k,\qquad d_{k+1}=d_k,\qquad y_k=Cx_k+d_k.
 $$
 
-The augmented observer state is $\hat z_k=[\hat x_k^\top,\hat d_k^\top]^\top$. GART does not feed the raw disturbance estimate directly into the proof target. Instead it uses a certified disturbance estimate:
+The observer state is:
+
+$$
+\hat z_k=[\hat x_k^\top,\hat d_k^\top]^\top.
+$$
+
+The target selector does not use the raw observer disturbance directly. It uses a certified disturbance sequence:
 
 $$
 d^c_k=
@@ -22,83 +57,70 @@ d^c_{k-1}
 +
 \operatorname{clip}_{\Delta d_{\max}}
 \left(
-\alpha_d(\hat d^{raw}_k-d^c_{k-1})
+\alpha_d(\hat d_k-d^c_{k-1})
 \right)
 \right].
 $$
 
-This guarantees:
+For the final method this is the fixed symmetric bounded-rate certificate:
 
 $$
 \|d^c_k-d^c_{k-1}\|_\infty\le \|\Delta d_{\max}\|_\infty.
 $$
 
-The active runner now uses the fixed symmetric certified-disturbance update.
-The adaptive projection law was kept in the code for reproducibility, but it is
-disabled in the main GART runner because the latest disturbed runs showed that
-it could lag the observer correction and reintroduce late target/input jumps.
-The current proof path therefore uses the simpler bounded-rate certificate with
-`d_rate_scale = 1.0`.
+Adaptive disturbance-rate projection remains in the core implementation for reproducibility, but it is not exposed by the final runner because the disturbance experiments showed mixed behavior and persistent late jumps.
 
 ## Target Selection
 
-For a command reference $r_k$, GART solves a lexicographic equilibrium target problem. Stage 1 minimizes only the output mismatch:
+For the current setpoint $y_{sp,k}$, GART solves a lexicographic equilibrium target problem. Stage 1 chooses the closest reachable output:
 
 $$
 J_1^\star =
 \min_{x_s,u_s}
-\|W_y(Cx_s+d^c_k-r_k)\|_2^2
+\|W_y(Cx_s+d^c_k-y_{sp,k})\|_2^2
 $$
 
-subject to the steady-state equation, input headroom, terminal-input tightening, optional output bounds, and hard target-motion bounds.
-
-For the current raw GART comparison path, the output target-motion bound is set directly rather than inferred from prior result quantiles:
+subject to the steady-state equation, input bounds with headroom, terminal-input tightening, and the final target-motion bounds:
 
 $$
-\|x_s(k)-x_s(k-1)\|_\infty \le 0.05,\qquad
+\|x_s(k)-x_s(k-1)\|_\infty \le 0.05,
+\qquad
 \|y_s(k)-y_s(k-1)\|_\infty \le 1.0.
 $$
 
-This is implemented as the `dx_s_max_abs=0.05` and `dy_s_max_abs=1.0` overrides. The bounds are component-wise in scaled-deviation coordinates and are used with the fixed symmetric certified-disturbance case. The earlier `dx_s_max_abs=0.025` setting remains available as a diagnostic reference but was too slow during the high-to-low setpoint transition in disturbed closed-loop runs. The earlier `dy_s_max_abs=0.1` setting also remains available as a diagnostic reference but was too restrictive in disturbed closed-loop runs.
+The bounds are component-wise in scaled-deviation coordinates.
 
-The current main contraction constants are:
-
-$$
-\rho = 0.98,\qquad \epsilon = 10^{-3}.
-$$
-
-This setting is intentionally less aggressive than the recent $\epsilon=10^{-4}$ trials, which became conservative near the setpoint and made small observer/target motions show up as visible closed-loop jumps.
-
-Stage 2 is only a tie-breaker inside a near-optimal shell:
+Stage 2 is only a tie-breaker inside the primary-cost shell:
 
 $$
-\|W_y(Cx_s+d^c_k-r_k)\|_2^2
+\|W_y(Cx_s+d^c_k-y_{sp,k})\|_2^2
 \le
 J_1^\star+\tau_{abs}+\tau_{rel}\max(1,J_1^\star).
 $$
 
-The tie-breaker smooths $x_s,u_s,y_s$ against the previous accepted target and weakly favors input midpoint headroom. This avoids recreating the older weighted least-squares selector where setpoint mismatch and smoothing competed in the primary objective.
+In the final runner, the old smoothing-to-previous-target terms and input-midpoint tie-breaker are disabled. The remaining input smoothness reference is the actually applied previous input, so the target selector is consistent with online operation and later RL pretraining trajectories.
 
 ## Dynamic Governor
 
-The raw reference $r_k=y_{sp,k}$ is tried first. The candidate target is accepted only if:
+GART first tries the raw reference:
 
-- the lexicographic target solve succeeds;
-- terminal input tightening remains feasible;
-- target-motion limits hold;
-- the contraction probe passes when enabled.
+$$
+r_k=y_{sp,k}.
+$$
 
-If the raw reference fails, GART searches:
+The target is accepted only when the target QP solves and the target is usable for LMPC. If the raw reference is rejected, the governor searches:
 
 $$
 r(\alpha)=r_{prev}+\alpha(y_{sp,k}-r_{prev}),\qquad \alpha\in[0,1],
 $$
 
-using a coarse grid followed by bisection. If no positive $\alpha$ is accepted, the previous target is held.
+using grid candidates followed by bisection. If no positive candidate is accepted, the previous accepted target is held.
+
+The final result logs `solve_success`, `accepted`, `usable_for_lmpc`, and `rejection_reason` separately. In the final controller, only accepted and usable targets can enter LMPC.
 
 ## MPC Objective
 
-The GART-LMPC step does not switch between tracking $y_{sp}$ and tracking $y_s$. It uses a mixed objective:
+The final GART-LMPC performance objective tracks the raw setpoint, not the target output:
 
 $$
 J_k=
@@ -106,37 +128,41 @@ J_k=
 \left[
 \|y_{i+1|k}-y_{sp,k}\|_{Q_{raw}}^2
 +
-\eta_y\|y_{i+1|k}-y_{s,k}\|_{Q_s}^2
-+
-\eta_u\|u_{i|k}-u_{s,k}\|_{R_s}^2
-+
 \|\Delta u_{i|k}\|_{R_\Delta}^2
-\right]
-+
-\lambda_s s_k.
+\right].
 $$
 
-The Lyapunov constraint remains centered on $x_s$:
+The target-centered terms are disabled in the final runner:
+
+$$
+\eta_y = 0,\qquad \eta_u = 0.
+$$
+
+The target is used for certification, not as the performance reference:
 
 $$
 V(x_{1|k}-x_{s,k})
 \le
-\rho V(x_k-x_{s,k})+\epsilon+s_k.
+\rho V(x_k-x_{s,k})+\epsilon.
 $$
 
-The first implementation supports hard and soft contraction modes. The smoke case uses nominal plant mode with five short episodes to verify the wiring before longer disturbed studies.
+The final contraction constants are:
+
+$$
+\rho=0.98,\qquad \epsilon=10^{-3}.
+$$
 
 ## Practical-Stability Bookkeeping
 
-If the controller enforces:
+If:
 
 $$
 V(x_{k+1}-x_{s,k})
 \le
-\rho V(x_k-x_{s,k})+\epsilon+s_k,
+\rho V(x_k-x_{s,k})+\epsilon,
 $$
 
-and the target moves by:
+and:
 
 $$
 \Delta x_{s,k}=x_{s,k+1}-x_{s,k},
@@ -160,85 +186,42 @@ V(a-b)
 \left(1+\frac{1}{\eta}\right)\lambda_{\max}(P)\|b\|^2.
 $$
 
-Therefore:
+Thus:
 
 $$
 V(x_{k+1}-x_{s,k+1})
 \le
 (1+\eta)\rho V(x_k-x_{s,k})
 +
-(1+\eta)(\epsilon+s_k)
+(1+\eta)\epsilon
 +
 c_P\|\Delta x_{s,k}\|^2.
 $$
 
-Choose $\eta$ such that:
-
-$$
-\bar\rho=(1+\eta)\rho<1.
-$$
-
-If $s_k\le \bar s$ and $\|\Delta x_{s,k}\|\le \bar\Delta_x$, then:
-
-$$
-V_{k+1}
-\le
-\bar\rho V_k+\bar w,
-\qquad
-\bar w=(1+\eta)(\epsilon+\bar s)+c_P\bar\Delta_x^2.
-$$
-
-Thus:
-
-$$
-\limsup_{k\to\infty}V_k
-\le
-\frac{\bar w}{1-\bar\rho}.
-$$
+With $\bar\rho=(1+\eta)\rho<1$ and bounded $\|\Delta x_{s,k}\|$, the closed-loop error is practically stable around the moving target sequence.
 
 External tracking decomposes as:
 
 $$
 y_k-y_{sp,k}
 =
-(y_k-y_{s,k})+(y_{s,k}-y_{sp,k}),
+(y_k-y_{s,k})+(y_{s,k}-y_{sp,k}).
 $$
 
-so:
+This is why the final artifacts still log both plant tracking error and target mismatch.
 
-$$
-\|y_k-y_{sp,k}\|
-\le
-L_h\|x_k-x_{s,k}\|
-+
-\|y_{s,k}-y_{sp,k}\|
-+
-\text{model/estimator error}.
-$$
+## Removed Runner Variants
 
-This is why the implementation logs both $y-y_s$ and $y_s-y_{sp}$ instead of hiding unreachable references behind clean target-centered tracking.
+The following exploratory paths are no longer exposed by `GARTLyapunovMPC.py` or `experiments/run_gart_target_selector_study.py`:
 
-## Correctness Patch Addendum
+- old governed-reference baseline
+- target-only synthetic diagnostics
+- observer-replay target-only diagnostics
+- target ablation matrix
+- mixed objective cases
+- soft/slack contraction cases
+- adaptive disturbance certificate cases
+- asymmetric disturbance-rate cases
+- no-`dx_s` cases
 
-The 2026-06-14 correctness patch changes the default GART interpretation:
-
-- `success` now means the target is accepted and usable for LMPC.
-- `solve_success` separately records whether the target QP solved.
-- `accepted` and `usable_for_lmpc` gate whether the MPC may use the target.
-- `rejection_reason` records why a solved target was refused.
-
-The working controller candidate is:
-
-$$
-\text{GART target for Lyapunov centering}
-+
-\text{raw } y_{sp}\text{ performance objective}.
-$$
-
-The mixed target-centered terms remain implemented but are no longer default. They are guarded by target mismatch, governor alpha, and hold-previous status. This reflects the disturbance-run evidence: contraction can hold around $x_s$ while raw tracking fails if $y_s$ is far from $y_{sp}$.
-
-The sign convention is now explicit:
-
-- `contraction_probe_margin_good = V_{bound}-V_{min}` for the target probe, so positive is good.
-- `mpc_contraction_violation` keeps the MPC report convention, where positive means violation.
-- `mpc_contraction_margin_good = -mpc_contraction_violation`, so positive is good.
+The reusable core implementations remain available in `Lyapunov/gart_target.py` and `Lyapunov/gart_lmpc.py` for old artifact compatibility and future controlled experiments.

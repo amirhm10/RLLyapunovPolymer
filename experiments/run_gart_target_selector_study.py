@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import os
 import pickle
 import sys
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +19,17 @@ from Lyapunov.direct_lyapunov_mpc import (
     build_direct_lyapunov_run_bundle,
     design_direct_lyapunov_mpc_solver,
     make_direct_lyapunov_comparison_record,
-    run_direct_output_disturbance_lyapunov_mpc,
     save_direct_lyapunov_debug_artifacts,
 )
 from Lyapunov.gart_lmpc import solve_gart_lmpc_step
 from Lyapunov.gart_target import GARTTargetState, jsonable, select_gart_target
-from Simulation.mpc import MpcSolver, compute_observer_gain
+from Simulation.mpc import compute_observer_gain
 from Simulation.run_mpc_lyapunov import _reset_system_on_entry, _set_system_input_phys, _system_io_phys
 from Simulation.system_functions import PolymerCSTR
 from TD3Agent.reward_functions import make_reward_fn_relative_QR
 from utils.direct_lyapunov_study import (
-    DIRECT_DISTURBANCE_SETPOINT_LEN,
     DIRECT_TWO_SETPOINT_Y_PHYS,
     direct_disturbance_test_cycle,
-    governed_reference_case_spec,
 )
 from utils.gart_defaults import (
     discover_gart_case_values,
@@ -42,9 +37,8 @@ from utils.gart_defaults import (
     make_gart_mpc_config,
     make_gart_target_config,
 )
-from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
+from utils.gart_runtime import ResourceGuard
 from utils.helpers import generate_setpoints_training_rl_gradually
-from utils.path_helpers import repo_path
 from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.td3_helpers import load_and_prepare_system_data
@@ -61,106 +55,19 @@ SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 
-GART_TARGET_BASE_OVERRIDES: dict[str, Any] = {
+FINAL_GART_CASE_NAME = "gartlmpc"
+FINAL_GART_MPC_OBJECTIVE = "raw"
+FINAL_GART_LYAPUNOV_MODE = "hard"
+FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = {
     "disable_u_mid_tiebreak": True,
     "disable_x_smoothing": True,
     "disable_y_smoothing": True,
     "input_headroom_frac": 0.01,
-}
-GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "disable_dx_rate": True}
-GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
-GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES: dict[str, Any] = {
-    **GART_TARGET_BASE_OVERRIDES,
-    "dy_rate_scale": 2.0,
     "dx_s_max_abs": 0.05,
-    "d_rate_scale": [1.0, 0.5],
-}
-GART_DX_ABS_0P05_SYMMETRIC_DYABS0P1_OVERRIDES: dict[str, Any] = {
-    **GART_TARGET_BASE_OVERRIDES,
-    "dy_s_max_abs": 0.1,
-    "dx_s_max_abs": 0.05,
-    "d_rate_scale": 1.0,
-}
-GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES: dict[str, Any] = {
-    **GART_TARGET_BASE_OVERRIDES,
     "dy_s_max_abs": 1.0,
-    "dx_s_max_abs": 0.05,
     "d_rate_scale": 1.0,
+    "adaptive_rate_enabled": False,
 }
-GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES: dict[str, Any] = {
-    **GART_TARGET_BASE_OVERRIDES,
-    "dy_s_max_abs": 1.0,
-    "dx_s_max_abs": 0.025,
-    "d_rate_scale": 1.0,
-}
-GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES: dict[str, Any] = {
-    **GART_TARGET_BASE_OVERRIDES,
-    "dy_rate_scale": 2.0,
-    "dx_s_max_abs": 0.05,
-    "d_rate_scale": 1.0,
-    "adaptive_rate_enabled": True,
-    "adaptive_rate_trust_radius": 0.25,
-    "adaptive_rate_min_scale": 0.10,
-}
-GART_DX_ABS_0P05_ADAPTIVE_DYABS0P1_OVERRIDES: dict[str, Any] = {
-    **GART_DX_ABS_0P05_SYMMETRIC_DYABS0P1_OVERRIDES,
-    "adaptive_rate_enabled": True,
-    "adaptive_rate_trust_radius": 0.25,
-    "adaptive_rate_min_scale": 0.10,
-}
-GART_DX_ABS_0P05_ADAPTIVE_DYABS1_OVERRIDES: dict[str, Any] = {
-    **GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES,
-    "adaptive_rate_enabled": True,
-    "adaptive_rate_trust_radius": 0.25,
-    "adaptive_rate_min_scale": 0.10,
-}
-GART_DX_ABS_0P025_ADAPTIVE_DYABS1_OVERRIDES: dict[str, Any] = {
-    **GART_DX_ABS_0P025_SYMMETRIC_DYABS1_OVERRIDES,
-    "adaptive_rate_enabled": True,
-    "adaptive_rate_trust_radius": 0.25,
-    "adaptive_rate_min_scale": 0.10,
-}
-GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
-    "eta_y": 0.1,
-    "eta_u": 0.1,
-    "target_term_gate_enabled": False,
-}
-
-
-TARGET_ABLATION_CASES: list[dict[str, Any]] = [
-    {"name": "T0_current", "overrides": {}},
-    {"name": "T1_no_dx_rate", "overrides": {"disable_dx_rate": True}},
-    {"name": "T2_no_dx_rate_headroom_0p01", "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01}},
-    {
-        "name": "T3_no_dx_rate_headroom_0p01_dy2",
-        "overrides": {"disable_dx_rate": True, "input_headroom_frac": 0.01, "dy_rate_scale": 2.0},
-    },
-    {
-        "name": "T5_no_dx_rate_headroom_0p01_dy2_no_xy_smooth_no_umid",
-        "overrides": GART_RELAXED_DY2_OVERRIDES,
-    },
-    {
-        "name": "T6_dx_abs_0p05_symmetric_dyabs1_no_xy_smooth_no_umid",
-        "overrides": GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES,
-    },
-    {
-        "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
-        "overrides": {
-            "disable_dx_rate": True,
-            "input_headroom_frac": 0.01,
-            "dy_rate_scale": 2.0,
-            "disable_du_rate": True,
-        },
-    },
-    {
-        "name": "T8_no_umid_probe_log_only",
-        "overrides": {
-            **GART_RELAXED_DY2_OVERRIDES,
-            "disable_du_rate": True,
-            "contraction_probe_log_only": True,
-        },
-    },
-]
 
 
 def _jsonable(value: Any) -> Any:
@@ -295,8 +202,6 @@ def _build_context(
         terminal_set_on=True,
         terminal_alpha_scale=1.0,
     )
-    of_mpc_obj = MpcSolver(A_aug, B_aug, C_aug, Q_out=QY_DIAG, R_in=RDU_DIAG, NP=PREDICT_H, NC=CONT_H)
-
     reward_config, reward_fn = make_reward_fn_relative_QR(
         data_min=data_min,
         data_max=data_max,
@@ -328,7 +233,6 @@ def _build_context(
         "setup": setup,
         "system_data": system_data,
         "lmpc_obj": lmpc_obj,
-        "of_mpc_obj": of_mpc_obj,
         "observer_gain": observer_gain,
         "y_sp_scenario": y_sp_scenario,
         "u_dev_min": u_dev_min,
@@ -385,314 +289,11 @@ def _target_classification(error_inf: float | None, target_config: Any) -> dict[
 
 def _disturbance_diag_scalars(diag: dict[str, Any]) -> dict[str, Any]:
     disturbance = diag.get("disturbance", {}) if isinstance(diag, dict) else {}
-    scale_min = disturbance.get("adaptive_rate_scale_min")
     return {
         "d_raw_gap_inf": disturbance.get("d_raw_gap_inf"),
         "d_rate_max_base_inf": disturbance.get("d_rate_max_base_inf"),
         "d_rate_max_effective_inf": disturbance.get("d_rate_max_effective_inf"),
-        "adaptive_rate_enabled": bool(disturbance.get("adaptive_rate_enabled", False)),
-        "adaptive_rate_active": bool(
-            disturbance.get("adaptive_rate_enabled", False)
-            and scale_min is not None
-            and float(scale_min) < 1.0 - 1.0e-12
-        ),
-        "adaptive_rate_scale_min": scale_min,
-        "adaptive_rate_scale_mean": disturbance.get("adaptive_rate_scale_mean"),
-        "adaptive_rate_scale_max": disturbance.get("adaptive_rate_scale_max"),
     }
-
-
-def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_name: str) -> dict[str, Any]:
-    diag = result.diagnostics if isinstance(result.diagnostics, dict) else {}
-    classification = _target_classification(result.target_error_inf, target_config)
-    dx_s_max = None if getattr(target_config, "dx_s_max", None) is None else np.asarray(target_config.dx_s_max, dtype=float).reshape(-1)
-    dc_rate_inf = diag.get("disturbance", {}).get("d_cert_delta_inf")
-    return {
-        "step": step_idx,
-        "target_only_mode": mode_name,
-        "target_success": result.success,
-        "target_solve_success": result.solve_success,
-        "target_accepted": result.accepted,
-        "target_usable_for_lmpc": result.usable_for_lmpc,
-        "target_rejection_reason": result.rejection_reason,
-        "target_status": result.status,
-        "target_stage": result.stage,
-        "target_error_inf": result.target_error_inf,
-        "target_rate_y_inf": result.target_rate_y_inf,
-        "target_rate_u_inf": result.target_rate_u_inf,
-        "target_rate_x_inf": result.target_rate_x_inf,
-        "dx_s_inf": result.target_rate_x_inf,
-        "dc_rate_inf": dc_rate_inf,
-        "d_cert_delta_inf": dc_rate_inf,
-        "dx_s_max_active": dx_s_max is not None,
-        "dx_s_max_inf": None if dx_s_max is None else float(np.max(np.abs(dx_s_max))),
-        "input_headroom_min": result.input_headroom_min,
-        "contraction_probe_success": result.contraction_probe_success,
-        "contraction_probe_margin_good": result.contraction_probe_margin_good,
-        "contraction_probe_margin": result.contraction_probe_margin,
-        "stage1_probe_margin_good": diag.get("stage1_probe_margin_good"),
-        "stage2_probe_margin_good": diag.get("stage2_probe_margin_good"),
-        "stage2_minus_stage1_probe_margin_good": diag.get("stage2_minus_stage1_probe_margin_good"),
-        "stage1_primary_cost": diag.get("stage1_primary_cost"),
-        "stage2_primary_cost": diag.get("stage2_primary_cost"),
-        "stage2_tiebreak_cost": diag.get("stage2_tiebreak_cost"),
-        "stage2_u_smooth_source": diag.get("stage2_u_smooth_source"),
-        "governor_alpha": result.governor_alpha,
-        "governor_active": result.governor_active,
-        "hold_previous": result.hold_previous,
-        **_disturbance_diag_scalars(diag),
-        **classification,
-    }
-
-
-def _save_target_only_outputs(
-    output_dir: Path,
-    *,
-    records: list[dict[str, Any]],
-    y_sp: np.ndarray,
-    y_s_store: list[Any],
-    r_cmd_store: list[Any],
-    d_cert_store: list[Any],
-    margin_store: list[Any],
-    target_config: Any,
-    discovered: dict[str, Any],
-    extra_arrays: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(output_dir / "target_only_steps.csv", records)
-    arrays = {
-        "y_sp": np.asarray(y_sp, dtype=float),
-        "y_s": np.asarray(y_s_store, dtype=float),
-        "r_cmd": np.asarray(r_cmd_store, dtype=float),
-        "d_cert": np.asarray(d_cert_store, dtype=float),
-        "contraction_probe_margin": np.asarray(margin_store, dtype=float),
-        "contraction_probe_margin_good": np.asarray(margin_store, dtype=float),
-    }
-    if extra_arrays:
-        arrays.update(extra_arrays)
-    np.savez_compressed(output_dir / "target_only_arrays.npz", **arrays)
-    summary = _summarize_step_records(records, case_name=records[0].get("target_only_mode", "target_only") if records else "target_only")
-    _write_json(output_dir / "target_only_summary.json", summary)
-    _write_json(output_dir / "target_only_config.json", {"target_config": asdict(target_config), "discovered": discovered})
-    _make_target_plots(
-        output_dir / "plots",
-        np.asarray(y_sp, dtype=float),
-        np.asarray(y_s_store, dtype=float),
-        np.asarray(d_cert_store, dtype=float),
-        np.asarray(margin_store, dtype=float),
-        records,
-    )
-    return summary
-
-
-def run_synthetic_target_only(
-    ctx: dict[str, Any],
-    output_dir: Path,
-    *,
-    n_tests: int,
-    set_points_len: int,
-    target_overrides: dict[str, Any] | None = None,
-    guard: ResourceGuard | None = None,
-) -> dict[str, Any]:
-    """Selector self-consistency mode: overwrites xhat with accepted x_s."""
-    y_sp, nFE, *_ = _setpoint_schedule(ctx, n_tests=n_tests, set_points_len=set_points_len)
-    system_data = ctx["system_data"]
-    lmpc_obj = ctx["lmpc_obj"]
-    target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
-    target_state: GARTTargetState | None = None
-    xhat_aug = np.zeros(lmpc_obj.A.shape[0], dtype=float)
-    records: list[dict[str, Any]] = []
-    y_s_store = []
-    r_cmd_store = []
-    d_cert_store = []
-    margin_store = []
-
-    for step_idx in range(int(nFE)):
-        if guard is not None:
-            guard.tick_target()
-        y_sp_k = get_y_sp_step(y_sp, step_idx, lmpc_obj.C.shape[0])
-        result, target_state = select_gart_target(
-            lmpc_obj.A,
-            lmpc_obj.B,
-            lmpc_obj.C,
-            xhat_aug,
-            y_sp_k,
-            ctx["u_dev_min"],
-            ctx["u_dev_max"],
-            state=target_state,
-            config=target_config,
-            P_x=lmpc_obj.P_x,
-            K_x=lmpc_obj.K_x,
-            innovation=None,
-        )
-        if result.accepted and result.x_s is not None:
-            xhat_aug[: result.x_s.size] = result.x_s
-            if result.d_cert is not None:
-                xhat_aug[result.x_s.size :] = result.d_cert
-        records.append(_target_step_row(step_idx, result, target_config, mode_name="synthetic_target_only"))
-        y_s_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.y_s is None else result.y_s)
-        r_cmd_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.r_cmd is None else result.r_cmd)
-        d_cert_store.append(np.full(lmpc_obj.C.shape[0], np.nan) if result.d_cert is None else result.d_cert)
-        margin_store.append(np.nan if result.contraction_probe_margin_good is None else result.contraction_probe_margin_good)
-
-    return _save_target_only_outputs(
-        output_dir,
-        records=records,
-        y_sp=np.asarray(y_sp, dtype=float),
-        y_s_store=y_s_store,
-        r_cmd_store=r_cmd_store,
-        d_cert_store=d_cert_store,
-        margin_store=margin_store,
-        target_config=target_config,
-        discovered=ctx["discovered"],
-    )
-
-
-def run_target_only(ctx: dict[str, Any], output_dir: Path, *, n_tests: int, set_points_len: int) -> dict[str, Any]:
-    return run_synthetic_target_only(ctx, output_dir, n_tests=n_tests, set_points_len=set_points_len)
-
-
-def _payload_from_npz(path: str | Path) -> dict[str, Any]:
-    with np.load(path, allow_pickle=True) as data:
-        return {key: np.asarray(data[key]) for key in data.files}
-
-
-def _observer_replay_payload(
-    ctx: dict[str, Any],
-    *,
-    replay_source: str,
-    replay_path: str | None,
-    mode: str,
-    n_tests: int,
-    set_points_len: int,
-    replay_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    source = str(replay_source).strip().lower()
-    if replay_payload is not None:
-        return replay_payload
-    if source == "explicit_npz":
-        if not replay_path:
-            raise ValueError("replay_path is required when replay_source='explicit_npz'.")
-        return _payload_from_npz(replay_path)
-    if source == "old_governed_reference":
-        return _run_old_governed_reference(ctx, mode=mode, n_tests=n_tests, set_points_len=set_points_len)
-    if source in {"gart_raw_objective", "gart_target_raw_objective"}:
-        return run_gart_closed_loop_case(
-            ctx,
-            case_name="gart_target_raw_no_dx_headroom_0p01_dy2_no_umid_replay_source",
-            mpc_objective="raw",
-            lyapunov_mode="hard",
-            mode=mode,
-            n_tests=n_tests,
-            set_points_len=set_points_len,
-            target_overrides=GART_RELAXED_DY2_OVERRIDES,
-        )
-    raise ValueError("replay_source must be old_governed_reference, gart_raw_objective, or explicit_npz.")
-
-
-def run_observer_replay_target_only(
-    ctx: dict[str, Any],
-    output_dir: Path,
-    *,
-    replay_source: str,
-    n_tests: int,
-    set_points_len: int,
-    replay_path: str | None = None,
-    mode: str = "nominal",
-    replay_payload: dict[str, Any] | None = None,
-    target_overrides: dict[str, Any] | None = None,
-    guard: ResourceGuard | None = None,
-) -> dict[str, Any]:
-    payload = _observer_replay_payload(
-        ctx,
-        replay_source=replay_source,
-        replay_path=replay_path,
-        mode=mode,
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-        replay_payload=replay_payload,
-    )
-    lmpc_obj = ctx["lmpc_obj"]
-    n_outputs = int(lmpc_obj.C.shape[0])
-    xhatdhat = np.asarray(payload["xhatdhat"], dtype=float)
-    if xhatdhat.shape[0] != int(lmpc_obj.A.shape[0]) and xhatdhat.shape[1] == int(lmpc_obj.A.shape[0]):
-        xhatdhat = xhatdhat.T
-    y_sp = np.asarray(payload.get("y_sp"), dtype=float)
-    if y_sp.ndim != 2:
-        raise ValueError("Replay payload must contain 2D y_sp.")
-    n_steps = min(int(xhatdhat.shape[1] - 1), int(y_sp.shape[0]))
-    target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
-    target_state: GARTTargetState | None = None
-    records: list[dict[str, Any]] = []
-    y_s_store = []
-    r_cmd_store = []
-    d_cert_store = []
-    margin_store = []
-    xhat_used = []
-    data_min = ctx["system_data"]["data_min"]
-    data_max = ctx["system_data"]["data_max"]
-    n_inputs = int(lmpc_obj.B.shape[1])
-    ss_scaled_inputs = apply_min_max(ctx["setup"]["steady_states"]["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
-    y_ss_scaled = apply_min_max(ctx["setup"]["steady_states"]["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
-    y_system = payload.get("y_system")
-    u_applied_phys = payload.get("u_applied_phys")
-
-    for step_idx in range(n_steps):
-        if guard is not None:
-            guard.tick_target()
-        xhat_aug = xhatdhat[:, step_idx].copy()
-        xhat_used.append(xhat_aug.copy())
-        y_sp_k = get_y_sp_step(y_sp, step_idx, n_outputs)
-        innovation = None
-        if y_system is not None:
-            y_arr = np.asarray(y_system, dtype=float)
-            if y_arr.ndim == 2 and step_idx < y_arr.shape[0]:
-                y_prev_scaled = apply_min_max(y_arr[step_idx, :], data_min[n_inputs:], data_max[n_inputs:]) - y_ss_scaled
-                innovation = y_prev_scaled - np.asarray(lmpc_obj.C @ xhat_aug, dtype=float).reshape(-1)
-        if u_applied_phys is not None and step_idx > 0:
-            u_arr = np.asarray(u_applied_phys, dtype=float)
-            if u_arr.ndim == 2 and step_idx - 1 < u_arr.shape[0]:
-                u_smooth_ref = apply_min_max(u_arr[step_idx - 1, :], data_min[:n_inputs], data_max[:n_inputs]) - ss_scaled_inputs
-            else:
-                u_smooth_ref = np.zeros(n_inputs, dtype=float)
-        else:
-            u_smooth_ref = np.zeros(n_inputs, dtype=float)
-        result, target_state = select_gart_target(
-            lmpc_obj.A,
-            lmpc_obj.B,
-            lmpc_obj.C,
-            xhat_aug,
-            y_sp_k,
-            ctx["u_dev_min"],
-            ctx["u_dev_max"],
-            state=target_state,
-            config=target_config,
-            P_x=lmpc_obj.P_x,
-            K_x=lmpc_obj.K_x,
-            innovation=innovation,
-            u_smooth_ref=u_smooth_ref,
-        )
-        records.append(_target_step_row(step_idx, result, target_config, mode_name="observer_replay_target_only"))
-        y_s_store.append(np.full(n_outputs, np.nan) if result.y_s is None else result.y_s)
-        r_cmd_store.append(np.full(n_outputs, np.nan) if result.r_cmd is None else result.r_cmd)
-        d_cert_store.append(np.full(n_outputs, np.nan) if result.d_cert is None else result.d_cert)
-        margin_store.append(np.nan if result.contraction_probe_margin_good is None else result.contraction_probe_margin_good)
-
-    return _save_target_only_outputs(
-        output_dir,
-        records=records,
-        y_sp=y_sp[:n_steps, :],
-        y_s_store=y_s_store,
-        r_cmd_store=r_cmd_store,
-        d_cert_store=d_cert_store,
-        margin_store=margin_store,
-        target_config=target_config,
-        discovered=ctx["discovered"],
-        extra_arrays={
-            "replay_xhatdhat_used": np.asarray(xhat_used, dtype=float),
-            "replay_xhatdhat_original": xhatdhat[:, :n_steps].T.copy(),
-        },
-    )
 
 
 def run_gart_closed_loop_case(
@@ -984,110 +585,6 @@ def run_gart_closed_loop_case(
     }
 
 
-def _run_old_governed_reference(ctx: dict[str, Any], *, mode: str, n_tests: int, set_points_len: int) -> dict[str, Any]:
-    cfg = governed_reference_case_spec(QY_DIAG, case_name="old_governed_reference", lyapunov_mode="hard")
-    setup = ctx["setup"]
-    return run_direct_output_disturbance_lyapunov_mpc(
-        system=_make_system(setup),
-        LMPC_obj=ctx["lmpc_obj"],
-        y_sp_scenario=ctx["y_sp_scenario"],
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-        steady_states=setup["steady_states"],
-        IC_opt=ctx["ic_opt"].copy(),
-        bnds=ctx["bnds"],
-        L=ctx["observer_gain"],
-        data_min=ctx["system_data"]["data_min"],
-        data_max=ctx["system_data"]["data_max"],
-        test_cycle=direct_disturbance_test_cycle(int(n_tests)),
-        reward_fn=ctx["reward_fn"],
-        nominal_qi=setup["nominal_qi"],
-        nominal_qs=setup["nominal_qs"],
-        nominal_ha=setup["nominal_ha"],
-        qi_change=setup["qi_change"],
-        qs_change=setup["qs_change"],
-        ha_change=setup["ha_change"],
-        target_mode=cfg["target_mode"],
-        lyapunov_mode=cfg["lyapunov_mode"],
-        target_config=cfg["target_config"],
-        mode=mode,
-        disturbance_after_step=False,
-        use_target_output_for_tracking=False,
-        skip_terminal_if_alpha_small=True,
-        alpha_terminal_min=1.0e-8,
-        use_target_on_solver_fail=False,
-        rho_lyap=RHO_LYAP,
-        lyap_eps=LYAP_EPS,
-        slack_penalty=SLACK_PENALTY,
-        first_step_contraction_on=True,
-        force_final_test=True,
-    )
-
-
-def _summarize_step_records(records: list[dict[str, Any]], *, case_name: str) -> dict[str, Any]:
-    if not records:
-        return {"case_name": case_name, "n_steps": 0}
-    def mean_bool(key: str) -> float:
-        vals = [1.0 if bool(row.get(key, False)) else 0.0 for row in records]
-        return float(np.mean(vals)) if vals else float("nan")
-    def nanmean(key: str) -> float | None:
-        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
-        return None if np.all(~np.isfinite(vals)) else float(np.nanmean(vals))
-    def nanp95(key: str) -> float | None:
-        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
-        vals = vals[np.isfinite(vals)]
-        return None if vals.size == 0 else float(np.quantile(vals, 0.95))
-    def nanmin(key: str) -> float | None:
-        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
-        vals = vals[np.isfinite(vals)]
-        return None if vals.size == 0 else float(np.min(vals))
-    def nanmax(key: str) -> float | None:
-        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
-        vals = vals[np.isfinite(vals)]
-        return None if vals.size == 0 else float(np.max(vals))
-    return {
-        "case_name": case_name,
-        "n_steps": len(records),
-        "target_success_rate": mean_bool("target_success"),
-        "target_solve_success_rate": mean_bool("target_solve_success"),
-        "target_accepted_rate": mean_bool("target_accepted"),
-        "target_usable_rate": mean_bool("target_usable_for_lmpc"),
-        "solver_success_rate": mean_bool("success"),
-        "mean_target_error_inf": nanmean("target_error_inf"),
-        "p95_target_error_inf": nanp95("target_error_inf"),
-        "mean_dx_s_inf": nanmean("dx_s_inf"),
-        "p95_dx_s_inf": nanp95("dx_s_inf"),
-        "mean_dc_rate_inf": nanmean("dc_rate_inf"),
-        "p95_dc_rate_inf": nanp95("dc_rate_inf"),
-        "mean_d_raw_gap_inf": nanmean("d_raw_gap_inf"),
-        "p95_d_raw_gap_inf": nanp95("d_raw_gap_inf"),
-        "max_d_raw_gap_inf": nanmax("d_raw_gap_inf"),
-        "mean_d_rate_max_effective_inf": nanmean("d_rate_max_effective_inf"),
-        "min_adaptive_rate_scale_min": nanmin("adaptive_rate_scale_min"),
-        "mean_adaptive_rate_scale_mean": nanmean("adaptive_rate_scale_mean"),
-        "max_adaptive_rate_scale_max": nanmax("adaptive_rate_scale_max"),
-        "adaptive_rate_active_rate": mean_bool("adaptive_rate_active"),
-        "dx_s_max_active_rate": mean_bool("dx_s_max_active"),
-        "mean_dx_s_max_inf": nanmean("dx_s_max_inf"),
-        "mean_contraction_probe_margin_good": nanmean("contraction_probe_margin_good"),
-        "mean_contraction_probe_margin": nanmean("contraction_probe_margin"),
-        "contraction_probe_success_rate": mean_bool("contraction_probe_success"),
-        "governor_active_rate": mean_bool("governor_active"),
-        "hold_previous_rate": mean_bool("hold_previous"),
-        "target_exact_rate": mean_bool("target_exact"),
-        "target_good_rate": mean_bool("target_good"),
-        "target_acceptable_rate": mean_bool("target_acceptable"),
-        "unreachable_rate": mean_bool("target_unreachable"),
-        "mean_governor_alpha": nanmean("governor_alpha"),
-        "p05_input_headroom": None
-        if np.all(~np.isfinite(np.array([np.nan if row.get("input_headroom_min") is None else float(row.get("input_headroom_min")) for row in records], dtype=float)))
-        else float(np.nanquantile(np.array([np.nan if row.get("input_headroom_min") is None else float(row.get("input_headroom_min")) for row in records], dtype=float), 0.05)),
-        "mean_terminal_alpha": nanmean("alpha_terminal"),
-        "mean_slack_lyap": nanmean("slack_lyap"),
-        "p95_slack_lyap": nanp95("slack_lyap"),
-    }
-
-
 def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_name: str) -> dict[str, Any]:
     data_min = ctx["system_data"]["data_min"]
     data_max = ctx["system_data"]["data_max"]
@@ -1113,10 +610,6 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
     dc_rate_inf = []
     d_raw_gap_inf = []
     d_rate_max_effective_inf = []
-    adaptive_rate_scale_min = []
-    adaptive_rate_scale_mean = []
-    adaptive_rate_scale_max = []
-    adaptive_rate_active = []
     dx_s_max_active = []
     for row in payload.get("direct_info_storage", []):
         y_s = row.get("y_s")
@@ -1144,13 +637,6 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
             d_raw_gap_inf.append(float(row.get("d_raw_gap_inf")))
         if row.get("d_rate_max_effective_inf") is not None:
             d_rate_max_effective_inf.append(float(row.get("d_rate_max_effective_inf")))
-        if row.get("adaptive_rate_scale_min") is not None:
-            adaptive_rate_scale_min.append(float(row.get("adaptive_rate_scale_min")))
-        if row.get("adaptive_rate_scale_mean") is not None:
-            adaptive_rate_scale_mean.append(float(row.get("adaptive_rate_scale_mean")))
-        if row.get("adaptive_rate_scale_max") is not None:
-            adaptive_rate_scale_max.append(float(row.get("adaptive_rate_scale_max")))
-        adaptive_rate_active.append(1.0 if bool(row.get("adaptive_rate_active", False)) else 0.0)
         dx_s_max_active.append(1.0 if bool(row.get("dx_s_max_active", False)) else 0.0)
     du = np.asarray(payload.get("delta_u_storage", []), dtype=float)
     return {
@@ -1183,10 +669,6 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         "mean_d_raw_gap_inf": None if not d_raw_gap_inf else float(np.mean(d_raw_gap_inf)),
         "max_d_raw_gap_inf": None if not d_raw_gap_inf else float(np.max(d_raw_gap_inf)),
         "mean_d_rate_max_effective_inf": None if not d_rate_max_effective_inf else float(np.mean(d_rate_max_effective_inf)),
-        "min_adaptive_rate_scale_min": None if not adaptive_rate_scale_min else float(np.min(adaptive_rate_scale_min)),
-        "mean_adaptive_rate_scale_mean": None if not adaptive_rate_scale_mean else float(np.mean(adaptive_rate_scale_mean)),
-        "max_adaptive_rate_scale_max": None if not adaptive_rate_scale_max else float(np.max(adaptive_rate_scale_max)),
-        "adaptive_rate_active_rate": float(np.mean(adaptive_rate_active)) if adaptive_rate_active else None,
         "dx_s_max_active_rate": float(np.mean(dx_s_max_active)) if dx_s_max_active else None,
     }
 
@@ -1260,28 +742,6 @@ def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[st
         return None, None
 
 
-def _normalize_case_spec(case: Any) -> dict[str, Any]:
-    if isinstance(case, dict):
-        return {
-            "case_name": str(case["case_name"]),
-            "objective": case.get("objective"),
-            "lyapunov_mode": case.get("lyapunov_mode"),
-            "target_overrides": case.get("target_overrides"),
-            "mpc_overrides": case.get("mpc_overrides"),
-        }
-    if isinstance(case, (tuple, list)):
-        if len(case) < 3:
-            raise ValueError("Closed-loop tuple case specs must contain case_name, objective, and lyapunov_mode.")
-        return {
-            "case_name": str(case[0]),
-            "objective": case[1],
-            "lyapunov_mode": case[2],
-            "target_overrides": case[3] if len(case) > 3 else None,
-            "mpc_overrides": case[4] if len(case) > 4 else None,
-        }
-    raise TypeError(f"Unsupported closed-loop case spec type: {type(case)!r}")
-
-
 def run_closed_loop(
     ctx: dict[str, Any],
     output_dir: Path,
@@ -1289,66 +749,41 @@ def run_closed_loop(
     mode: str,
     n_tests: int,
     set_points_len: int,
-    case_specs: list[Any] | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    cases = case_specs or [
-        {
-            "case_name": "gart_target_raw_dxabs0p05_symmetric_dyabs1_no_umid",
-            "objective": "raw",
-            "lyapunov_mode": "hard",
-            "target_overrides": GART_DX_ABS_0P05_SYMMETRIC_DYABS1_OVERRIDES,
-        },
-    ]
-    records: list[dict[str, Any]] = []
-    artifacts: dict[str, Any] = {}
-    for raw_case in cases:
-        case = _normalize_case_spec(raw_case)
-        case_name = str(case["case_name"])
-        objective = case.get("objective")
-        lyap_mode = case.get("lyapunov_mode")
-        print(f"[GART] running {case_name} ({mode}, n_tests={n_tests}, set_points_len={set_points_len})")
-        if case_name == "old_governed_reference":
-            payload = _run_old_governed_reference(ctx, mode=mode, n_tests=n_tests, set_points_len=set_points_len)
-            payload["case_name"] = case_name
-        else:
-            payload = run_gart_closed_loop_case(
-                ctx,
-                case_name=case_name,
-                mpc_objective=str(objective),
-                lyapunov_mode=str(lyap_mode),
-                mode=mode,
-                n_tests=n_tests,
-                set_points_len=set_points_len,
-                target_overrides=case.get("target_overrides"),
-                mpc_overrides=case.get("mpc_overrides"),
-                guard=guard,
-            )
-        case_dir = output_dir / case_name
-        _save_case_payload(case_dir, payload)
-        bundle, debug_dir = _save_case_direct_artifacts(case_dir, case_name, payload, ctx)
-        gart_metrics = _controller_metrics(payload, ctx, case_name=case_name)
-        if bundle is None:
-            records.append(gart_metrics)
-        else:
-            record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
-            for key in (
-                "mean_d_raw_gap_inf",
-                "max_d_raw_gap_inf",
-                "mean_d_rate_max_effective_inf",
-                "min_adaptive_rate_scale_min",
-                "mean_adaptive_rate_scale_mean",
-                "max_adaptive_rate_scale_max",
-                "adaptive_rate_active_rate",
-            ):
-                record[key] = gart_metrics.get(key)
-            records.append(record)
-        artifacts[case_name] = {
+    case_name = FINAL_GART_CASE_NAME
+    print(f"[GART] running {case_name} ({mode}, n_tests={n_tests}, set_points_len={set_points_len})")
+    payload = run_gart_closed_loop_case(
+        ctx,
+        case_name=case_name,
+        mpc_objective=FINAL_GART_MPC_OBJECTIVE,
+        lyapunov_mode=FINAL_GART_LYAPUNOV_MODE,
+        mode=mode,
+        n_tests=n_tests,
+        set_points_len=set_points_len,
+        target_overrides=FINAL_GART_TARGET_OVERRIDES,
+        mpc_overrides=None,
+        guard=guard,
+    )
+    case_dir = output_dir / case_name
+    _save_case_payload(case_dir, payload)
+    bundle, debug_dir = _save_case_direct_artifacts(case_dir, case_name, payload, ctx)
+    gart_metrics = _controller_metrics(payload, ctx, case_name=case_name)
+    if bundle is None:
+        record = gart_metrics
+    else:
+        record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
+        for key, value in gart_metrics.items():
+            record.setdefault(key, value)
+    records: list[dict[str, Any]] = [record]
+    artifacts: dict[str, Any] = {
+        case_name: {
             "case_dir": str(case_dir.relative_to(REPO_ROOT)),
             "direct_style_debug_dir": None if debug_dir is None else str(Path(debug_dir).relative_to(REPO_ROOT)),
             "tracking_plot_dir": None if debug_dir is None else str((Path(debug_dir) / "plots").relative_to(REPO_ROOT)),
         }
+    }
     _write_csv(output_dir / "comparison.csv", records)
     summary = {
         "status": "completed",
@@ -1356,104 +791,16 @@ def run_closed_loop(
         "n_tests": int(n_tests),
         "set_points_len": int(set_points_len),
         "disturbance_after_step": False,
+        "case_name": case_name,
+        "objective": FINAL_GART_MPC_OBJECTIVE,
+        "lyapunov_mode": FINAL_GART_LYAPUNOV_MODE,
+        "target_overrides": FINAL_GART_TARGET_OVERRIDES,
         "records": records,
         "artifacts": artifacts,
     }
     _write_json(output_dir / "summary.json", summary)
     _make_closed_loop_plots(output_dir / "plots", output_dir, records)
     return summary
-
-
-def run_target_ablation_study(
-    ctx: dict[str, Any],
-    output_dir: Path,
-    *,
-    mode: str,
-    n_tests: int,
-    set_points_len: int,
-    replay_source: str = "gart_raw_objective",
-    replay_path: str | None = None,
-    guard: ResourceGuard | None = None,
-) -> dict[str, Any]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    records: list[dict[str, Any]] = []
-    artifacts: dict[str, Any] = {}
-    replay_payload = _observer_replay_payload(
-        ctx,
-        replay_source=replay_source,
-        replay_path=replay_path,
-        mode=mode,
-        n_tests=n_tests,
-        set_points_len=set_points_len,
-    )
-    for case in TARGET_ABLATION_CASES:
-        name = str(case["name"])
-        case_dir = output_dir / name
-        summary = run_observer_replay_target_only(
-            ctx,
-            case_dir,
-            replay_source=replay_source,
-            replay_path=replay_path,
-            mode=mode,
-            n_tests=n_tests,
-            set_points_len=set_points_len,
-            replay_payload=replay_payload,
-            target_overrides=dict(case.get("overrides", {})),
-            guard=guard,
-        )
-        row = dict(summary)
-        row["case_name"] = name
-        row["overrides"] = json.dumps(_jsonable(case.get("overrides", {})))
-        records.append(row)
-        artifacts[name] = {"case_dir": str(case_dir.relative_to(REPO_ROOT))}
-    _write_csv(output_dir / "target_ablation_comparison.csv", records)
-    summary = {
-        "status": "completed",
-        "mode": mode,
-        "n_tests": int(n_tests),
-        "set_points_len": int(set_points_len),
-        "replay_source": replay_source,
-        "records": records,
-        "artifacts": artifacts,
-    }
-    _write_json(output_dir / "summary.json", summary)
-    return summary
-
-
-def _make_target_plots(plot_dir: Path, y_sp: np.ndarray, y_s: np.ndarray, d_cert: np.ndarray, margins: np.ndarray, records: list[dict[str, Any]]) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        return
-    plot_dir.mkdir(parents=True, exist_ok=True)
-    steps = np.arange(y_s.shape[0])
-    plt.figure(figsize=(8, 4))
-    for idx in range(y_sp.shape[1]):
-        plt.plot(steps, y_sp[: y_s.shape[0], idx], "--", label=f"y_sp[{idx}]")
-        plt.plot(steps, y_s[:, idx], label=f"y_s[{idx}]")
-    plt.legend()
-    plt.xlabel("step")
-    plt.ylabel("scaled deviation")
-    plt.tight_layout()
-    plt.savefig(plot_dir / "target_vs_setpoint.png", dpi=180)
-    plt.close()
-
-    plt.figure(figsize=(8, 3))
-    plt.plot(steps, margins)
-    plt.axhline(0.0, color="k", linewidth=0.8)
-    plt.xlabel("step")
-    plt.ylabel("probe margin")
-    plt.tight_layout()
-    plt.savefig(plot_dir / "contraction_probe_margin.png", dpi=180)
-    plt.close()
-
-    plt.figure(figsize=(8, 3))
-    plt.plot(steps, [row.get("governor_alpha", np.nan) for row in records])
-    plt.xlabel("step")
-    plt.ylabel("governor alpha")
-    plt.tight_layout()
-    plt.savefig(plot_dir / "governor_alpha.png", dpi=180)
-    plt.close()
 
 
 def _make_closed_loop_plots(plot_dir: Path, run_dir: Path, records: list[dict[str, Any]]) -> None:
@@ -1477,148 +824,3 @@ def _make_closed_loop_plots(plot_dir: Path, run_dir: Path, records: list[dict[st
     plt.tight_layout()
     plt.savefig(plot_dir / "comparison_tracking_target_error.png", dpi=180)
     plt.close()
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run GART target-selector and GART-LMPC smoke studies.")
-    parser.add_argument("--mode", choices=["nominal", "disturb"], default="nominal")
-    parser.add_argument("--n-tests", type=int, default=1)
-    parser.add_argument("--set-points-len", type=int, default=20)
-    parser.add_argument("--target-only", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--closed-loop", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--target-only-mode", choices=["synthetic", "observer-replay"], default="synthetic")
-    parser.add_argument("--replay-source", choices=["old_governed_reference", "gart_raw_objective", "explicit_npz"], default="gart_raw_objective")
-    parser.add_argument("--replay-path", default=None)
-    parser.add_argument("--target-ablation", action="store_true")
-    parser.add_argument("--smoke", action="store_true")
-    parser.add_argument("--full", action="store_true")
-    parser.add_argument("--confirm-full", action="store_true")
-    parser.add_argument("--max-target-evals", type=int, default=None)
-    parser.add_argument("--max-closed-loop-steps", type=int, default=None)
-    parser.add_argument("--max-solver-calls", type=int, default=None)
-    parser.add_argument("--max-wall-clock-seconds", type=float, default=300.0)
-    parser.add_argument("--max-memory-mb", type=float, default=4096.0)
-    parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--timestamp", default=None)
-    return parser.parse_args()
-
-
-def _estimated_steps(n_tests: int, set_points_len: int) -> int:
-    return max(int(n_tests), 1) * max(int(set_points_len), 1) * 2
-
-
-def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
-    estimated = _estimated_steps(args.n_tests, args.set_points_len)
-    max_target = args.max_target_evals
-    max_closed = args.max_closed_loop_steps
-    max_solver = args.max_solver_calls
-    if max_target is None:
-        target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
-        max_target = max(100, estimated * max(target_multiplier, 1))
-    if max_closed is None:
-        max_closed = max(20, estimated if args.closed_loop else 20)
-    if max_solver is None:
-        max_solver = max(500, 2 * max_target + 2 * max_closed)
-    return ResourceGuard(
-        GARTStudyLimits(
-            max_target_evals=max_target,
-            max_closed_loop_steps=max_closed,
-            max_solver_calls=max_solver,
-            max_wall_clock_seconds=float(args.max_wall_clock_seconds),
-            max_memory_mb=None if args.max_memory_mb is None or args.max_memory_mb <= 0 else float(args.max_memory_mb),
-        )
-    )
-
-
-def _apply_runtime_safety(args: argparse.Namespace) -> None:
-    if args.smoke:
-        args.mode = "nominal"
-        args.n_tests = 1
-        args.set_points_len = 20
-        args.target_only = True
-        args.closed_loop = False
-    if args.full and not args.confirm_full:
-        raise RuntimeError("Full GART runs require both --full and --confirm-full.")
-    if not args.full:
-        full_like = args.mode == "disturb" or int(args.n_tests) > 1 or int(args.set_points_len) > 20
-        if full_like and not args.confirm_full:
-            raise RuntimeError(
-                "Non-smoke GART runs require --full --confirm-full. "
-                "Use --smoke or keep nominal n_tests=1 set_points_len=20 for default checks."
-            )
-    if not args.target_only and not args.closed_loop and not args.target_ablation:
-        args.target_only = True
-
-
-def main() -> dict[str, Any]:
-    args = parse_args()
-    set_single_thread_env(args.threads)
-    _apply_runtime_safety(args)
-    guard = _resource_guard_from_args(args)
-    timestamp = args.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-    ctx = _build_context()
-    root = Path(repo_path())
-    summaries: dict[str, Any] = {
-        "timestamp": timestamp,
-        "mode": args.mode,
-        "n_tests": int(args.n_tests),
-        "set_points_len": int(args.set_points_len),
-        "disturbance_after_step": False,
-        "target_only_mode": args.target_only_mode,
-        "target_only_overrides": GART_RELAXED_DY2_OVERRIDES,
-        "resource_limits": asdict(guard.limits),
-    }
-    if args.target_only:
-        target_dir = root / "results" / "GARTTargetSelectorStudy" / timestamp
-        if args.target_only_mode == "observer-replay":
-            summaries["target_only"] = run_observer_replay_target_only(
-                ctx,
-                target_dir,
-                replay_source=args.replay_source,
-                replay_path=args.replay_path,
-                mode=args.mode,
-                n_tests=args.n_tests,
-                set_points_len=args.set_points_len,
-                target_overrides=GART_RELAXED_DY2_OVERRIDES,
-                guard=guard,
-            )
-        else:
-            summaries["target_only"] = run_synthetic_target_only(
-                ctx,
-                target_dir,
-                n_tests=args.n_tests,
-                set_points_len=args.set_points_len,
-                target_overrides=GART_RELAXED_DY2_OVERRIDES,
-                guard=guard,
-            )
-        summaries["target_only_dir"] = str(target_dir.relative_to(root))
-    if args.target_ablation:
-        ablation_dir = root / "results" / "GARTTargetAblation" / timestamp
-        summaries["target_ablation"] = run_target_ablation_study(
-            ctx,
-            ablation_dir,
-            mode=args.mode,
-            n_tests=args.n_tests,
-            set_points_len=args.set_points_len,
-            replay_source=args.replay_source,
-            replay_path=args.replay_path,
-            guard=guard,
-        )
-        summaries["target_ablation_dir"] = str(ablation_dir.relative_to(root))
-    if args.closed_loop:
-        lmpc_dir = root / "results" / "GARTLMPC" / timestamp
-        summaries["closed_loop"] = run_closed_loop(
-            ctx,
-            lmpc_dir,
-            mode=args.mode,
-            n_tests=args.n_tests,
-            set_points_len=args.set_points_len,
-            guard=guard,
-        )
-        summaries["closed_loop_dir"] = str(lmpc_dir.relative_to(root))
-    print(json.dumps(_jsonable(summaries), indent=2))
-    return summaries
-
-
-if __name__ == "__main__":
-    main()
