@@ -26,7 +26,7 @@ from utils.path_helpers import repo_path
 # DirectLyapunovMPC.py. Change these values here for day-to-day experiments.
 
 MODE = "disturb"  # "disturb" or "nominal"
-N_TESTS = 50
+N_TESTS = 5
 SET_POINTS_LEN = 400
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
