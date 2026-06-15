@@ -21,6 +21,7 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "contraction_margin_tol": 1.0e-8,
     "alpha_d": 0.2,
     "alpha_d_slow": 0.02,
+    "d_rate_scale": 1.0,
     "freeze_on_bad_innovation": False,
     "eta_y": 0.0,
     "eta_u": 0.0,
@@ -301,10 +302,11 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         else:
             dx_s_max = float(cfg.get("dx_rate_scale", 1.0)) * dx_s_max
     input_headroom_frac = cfg.get("input_headroom_frac")
+    d_rate_max = float(cfg.get("d_rate_scale", 1.0)) * np.asarray(values["d_rate_max"], dtype=float).copy()
     disturbance = CertifiedDisturbanceConfig(
         alpha_d=float(cfg["alpha_d"]),
         alpha_d_slow=float(cfg["alpha_d_slow"]),
-        d_rate_max=np.asarray(values["d_rate_max"], dtype=float).copy(),
+        d_rate_max=d_rate_max,
         d_min=np.asarray(values["d_min"], dtype=float).copy(),
         d_max=np.asarray(values["d_max"], dtype=float).copy(),
         innovation_gate=cfg.get("innovation_gate"),
