@@ -75,6 +75,15 @@ GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES: dict[str, Any] = {
     "dx_s_max_abs": 0.05,
     "d_rate_scale": [1.0, 0.5],
 }
+GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES: dict[str, Any] = {
+    **GART_TARGET_BASE_OVERRIDES,
+    "dy_rate_scale": 2.0,
+    "dx_s_max_abs": 0.05,
+    "d_rate_scale": 1.0,
+    "adaptive_rate_enabled": True,
+    "adaptive_rate_trust_radius": 0.25,
+    "adaptive_rate_min_scale": 0.10,
+}
 GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
     "eta_y": 0.1,
     "eta_u": 0.1,
@@ -97,6 +106,10 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
     {
         "name": "T6_dx_abs_0p05_drate1_0p5_headroom_0p01_dy2_no_xy_smooth_no_umid",
         "overrides": GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
+    },
+    {
+        "name": "T6b_dx_abs_0p05_adaptive_headroom_0p01_dy2_no_xy_smooth_no_umid",
+        "overrides": GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES,
     },
     {
         "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
@@ -338,6 +351,25 @@ def _target_classification(error_inf: float | None, target_config: Any) -> dict[
     }
 
 
+def _disturbance_diag_scalars(diag: dict[str, Any]) -> dict[str, Any]:
+    disturbance = diag.get("disturbance", {}) if isinstance(diag, dict) else {}
+    scale_min = disturbance.get("adaptive_rate_scale_min")
+    return {
+        "d_raw_gap_inf": disturbance.get("d_raw_gap_inf"),
+        "d_rate_max_base_inf": disturbance.get("d_rate_max_base_inf"),
+        "d_rate_max_effective_inf": disturbance.get("d_rate_max_effective_inf"),
+        "adaptive_rate_enabled": bool(disturbance.get("adaptive_rate_enabled", False)),
+        "adaptive_rate_active": bool(
+            disturbance.get("adaptive_rate_enabled", False)
+            and scale_min is not None
+            and float(scale_min) < 1.0 - 1.0e-12
+        ),
+        "adaptive_rate_scale_min": scale_min,
+        "adaptive_rate_scale_mean": disturbance.get("adaptive_rate_scale_mean"),
+        "adaptive_rate_scale_max": disturbance.get("adaptive_rate_scale_max"),
+    }
+
+
 def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_name: str) -> dict[str, Any]:
     diag = result.diagnostics if isinstance(result.diagnostics, dict) else {}
     classification = _target_classification(result.target_error_inf, target_config)
@@ -376,6 +408,7 @@ def _target_step_row(step_idx: int, result: Any, target_config: Any, *, mode_nam
         "governor_alpha": result.governor_alpha,
         "governor_active": result.governor_active,
         "hold_previous": result.hold_previous,
+        **_disturbance_diag_scalars(diag),
         **classification,
     }
 
@@ -717,6 +750,7 @@ def run_gart_closed_loop_case(
         target_diag = target_result.diagnostics if isinstance(target_result.diagnostics, dict) else {}
         dx_s_max = None if target_config.dx_s_max is None else np.asarray(target_config.dx_s_max, dtype=float).reshape(-1)
         dc_rate_inf = target_diag.get("disturbance", {}).get("d_cert_delta_inf")
+        disturbance_scalars = _disturbance_diag_scalars(target_diag)
         target_info = target_result.to_dict()
         target_info.update(
             {
@@ -748,6 +782,7 @@ def run_gart_closed_loop_case(
                 "input_headroom_frac": target_config.input_headroom_frac,
                 "stage2_u_smooth_source": target_diag.get("stage2_u_smooth_source"),
                 "residual_total_norm": target_result.target_error_inf,
+                **disturbance_scalars,
                 **_target_classification(target_result.target_error_inf, target_config),
             }
         )
@@ -840,6 +875,7 @@ def run_gart_closed_loop_case(
                 "command_move_inf": target_result.target_rate_y_inf,
                 "input_headroom_frac": target_config.input_headroom_frac,
                 "y_current_scaled": y_current_scaled.copy(),
+                **disturbance_scalars,
                 "xhat_next_openloop": xhat_next_openloop.copy(),
                 "observer_correction": observer_correction.copy(),
                 "xhat_next": xhatdhat[:, step_idx + 1].copy(),
@@ -969,6 +1005,14 @@ def _summarize_step_records(records: list[dict[str, Any]], *, case_name: str) ->
         vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
         vals = vals[np.isfinite(vals)]
         return None if vals.size == 0 else float(np.quantile(vals, 0.95))
+    def nanmin(key: str) -> float | None:
+        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        return None if vals.size == 0 else float(np.min(vals))
+    def nanmax(key: str) -> float | None:
+        vals = np.array([np.nan if row.get(key) is None else float(row.get(key)) for row in records], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        return None if vals.size == 0 else float(np.max(vals))
     return {
         "case_name": case_name,
         "n_steps": len(records),
@@ -983,6 +1027,14 @@ def _summarize_step_records(records: list[dict[str, Any]], *, case_name: str) ->
         "p95_dx_s_inf": nanp95("dx_s_inf"),
         "mean_dc_rate_inf": nanmean("dc_rate_inf"),
         "p95_dc_rate_inf": nanp95("dc_rate_inf"),
+        "mean_d_raw_gap_inf": nanmean("d_raw_gap_inf"),
+        "p95_d_raw_gap_inf": nanp95("d_raw_gap_inf"),
+        "max_d_raw_gap_inf": nanmax("d_raw_gap_inf"),
+        "mean_d_rate_max_effective_inf": nanmean("d_rate_max_effective_inf"),
+        "min_adaptive_rate_scale_min": nanmin("adaptive_rate_scale_min"),
+        "mean_adaptive_rate_scale_mean": nanmean("adaptive_rate_scale_mean"),
+        "max_adaptive_rate_scale_max": nanmax("adaptive_rate_scale_max"),
+        "adaptive_rate_active_rate": mean_bool("adaptive_rate_active"),
         "dx_s_max_active_rate": mean_bool("dx_s_max_active"),
         "mean_dx_s_max_inf": nanmean("dx_s_max_inf"),
         "mean_contraction_probe_margin_good": nanmean("contraction_probe_margin_good"),
@@ -1027,6 +1079,12 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
     solver_success = []
     dx_s_inf = []
     dc_rate_inf = []
+    d_raw_gap_inf = []
+    d_rate_max_effective_inf = []
+    adaptive_rate_scale_min = []
+    adaptive_rate_scale_mean = []
+    adaptive_rate_scale_max = []
+    adaptive_rate_active = []
     dx_s_max_active = []
     for row in payload.get("direct_info_storage", []):
         y_s = row.get("y_s")
@@ -1050,6 +1108,17 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
             dx_s_inf.append(float(row.get("dx_s_inf")))
         if row.get("dc_rate_inf") is not None:
             dc_rate_inf.append(float(row.get("dc_rate_inf")))
+        if row.get("d_raw_gap_inf") is not None:
+            d_raw_gap_inf.append(float(row.get("d_raw_gap_inf")))
+        if row.get("d_rate_max_effective_inf") is not None:
+            d_rate_max_effective_inf.append(float(row.get("d_rate_max_effective_inf")))
+        if row.get("adaptive_rate_scale_min") is not None:
+            adaptive_rate_scale_min.append(float(row.get("adaptive_rate_scale_min")))
+        if row.get("adaptive_rate_scale_mean") is not None:
+            adaptive_rate_scale_mean.append(float(row.get("adaptive_rate_scale_mean")))
+        if row.get("adaptive_rate_scale_max") is not None:
+            adaptive_rate_scale_max.append(float(row.get("adaptive_rate_scale_max")))
+        adaptive_rate_active.append(1.0 if bool(row.get("adaptive_rate_active", False)) else 0.0)
         dx_s_max_active.append(1.0 if bool(row.get("dx_s_max_active", False)) else 0.0)
     du = np.asarray(payload.get("delta_u_storage", []), dtype=float)
     return {
@@ -1079,6 +1148,13 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         "max_dx_s_inf": None if not dx_s_inf else float(np.max(dx_s_inf)),
         "mean_dc_rate_inf": None if not dc_rate_inf else float(np.mean(dc_rate_inf)),
         "max_dc_rate_inf": None if not dc_rate_inf else float(np.max(dc_rate_inf)),
+        "mean_d_raw_gap_inf": None if not d_raw_gap_inf else float(np.mean(d_raw_gap_inf)),
+        "max_d_raw_gap_inf": None if not d_raw_gap_inf else float(np.max(d_raw_gap_inf)),
+        "mean_d_rate_max_effective_inf": None if not d_rate_max_effective_inf else float(np.mean(d_rate_max_effective_inf)),
+        "min_adaptive_rate_scale_min": None if not adaptive_rate_scale_min else float(np.min(adaptive_rate_scale_min)),
+        "mean_adaptive_rate_scale_mean": None if not adaptive_rate_scale_mean else float(np.mean(adaptive_rate_scale_mean)),
+        "max_adaptive_rate_scale_max": None if not adaptive_rate_scale_max else float(np.max(adaptive_rate_scale_max)),
+        "adaptive_rate_active_rate": float(np.mean(adaptive_rate_active)) if adaptive_rate_active else None,
         "dx_s_max_active_rate": float(np.mean(dx_s_max_active)) if dx_s_max_active else None,
     }
 
@@ -1187,10 +1263,10 @@ def run_closed_loop(
     output_dir.mkdir(parents=True, exist_ok=True)
     cases = case_specs or [
         {
-            "case_name": "gart_target_raw_dxabs0p05_drate1_0p5_headroom_0p01_dy2_no_umid",
+            "case_name": "gart_target_raw_dxabs0p05_adaptive0p25_min0p10_headroom_0p01_dy2_no_umid",
             "objective": "raw",
             "lyapunov_mode": "hard",
-            "target_overrides": GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
+            "target_overrides": GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES,
         },
     ]
     records: list[dict[str, Any]] = []
@@ -1220,10 +1296,22 @@ def run_closed_loop(
         case_dir = output_dir / case_name
         _save_case_payload(case_dir, payload)
         bundle, debug_dir = _save_case_direct_artifacts(case_dir, case_name, payload, ctx)
+        gart_metrics = _controller_metrics(payload, ctx, case_name=case_name)
         if bundle is None:
-            records.append(_controller_metrics(payload, ctx, case_name=case_name))
+            records.append(gart_metrics)
         else:
-            records.append(make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir))
+            record = make_direct_lyapunov_comparison_record(case_name, bundle, debug_dir)
+            for key in (
+                "mean_d_raw_gap_inf",
+                "max_d_raw_gap_inf",
+                "mean_d_rate_max_effective_inf",
+                "min_adaptive_rate_scale_min",
+                "mean_adaptive_rate_scale_mean",
+                "max_adaptive_rate_scale_max",
+                "adaptive_rate_active_rate",
+            ):
+                record[key] = gart_metrics.get(key)
+            records.append(record)
         artifacts[case_name] = {
             "case_dir": str(case_dir.relative_to(REPO_ROOT)),
             "direct_style_debug_dir": None if debug_dir is None else str(Path(debug_dir).relative_to(REPO_ROOT)),

@@ -8,9 +8,11 @@ from pprint import pprint
 
 from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
 
-set_single_thread_env(1)
+THREADS = 4
+set_single_thread_env(THREADS)
 
 from experiments.run_gart_target_selector_study import (
+    GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES,
     GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
     GART_MIXED_MPC_OVERRIDES,
     GART_RELAXED_DY2_OVERRIDES,
@@ -29,7 +31,7 @@ from utils.path_helpers import repo_path
 # DirectLyapunovMPC.py. Change these values here for day-to-day experiments.
 
 MODE = "disturb"  # "disturb" or "nominal"
-N_TESTS = 5
+N_TESTS = 50
 SET_POINTS_LEN = 400
 
 # Closed-loop disturbance test defaults. Mixed variants are retained below as
@@ -38,17 +40,18 @@ RUN_TARGET_ONLY = False
 RUN_CLOSED_LOOP = True
 FULL_RUN = True
 CONFIRM_FULL = True
-THREADS = 1
-MAX_TARGET_EVALS = 10000
-MAX_CLOSED_LOOP_STEPS = 10000
-MAX_SOLVER_CALLS = 10000
-MAX_WALL_CLOCK_SECONDS = 14400.0
-MAX_MEMORY_MB = 4096.0
+# Defined before heavy imports so numerical libraries see the setting early.
+# Use None to disable these runtime caps for long closed-loop studies.
+MAX_TARGET_EVALS = None
+MAX_CLOSED_LOOP_STEPS = None
+MAX_SOLVER_CALLS = None
+MAX_WALL_CLOCK_SECONDS = None
+MAX_MEMORY_MB = None
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
 TIMESTAMP = None
-TARGET_ONLY_OVERRIDES = GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES
+TARGET_ONLY_OVERRIDES = GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES
 
 # Toggle individual closed-loop cases here.
 CASE_SPECS = [
@@ -61,11 +64,19 @@ CASE_SPECS = [
     },
     {
         "enabled": True,
+        "case_name": "gart_target_raw_dxabs0p05_adaptive0p25_min0p10_headroom_0p01_dy2_no_umid",
+        "objective": "raw",
+        "lyapunov_mode": "hard",
+        "target_overrides": GART_DX_ABS_0P05_ADAPTIVE_DY2_OVERRIDES,
+        "label": "GART raw, absolute dx_s_max 0.05, adaptive d_c projection radius 0.25 min scale 0.10, no x/y smoothing, no u_mid, 1% headroom, dy scale 2",
+    },
+    {
+        "enabled": False,
         "case_name": "gart_target_raw_dxabs0p05_drate1_0p5_headroom_0p01_dy2_no_umid",
         "objective": "raw",
         "lyapunov_mode": "hard",
         "target_overrides": GART_DX_ABS_0P05_DRATE1_0P5_DY2_OVERRIDES,
-        "label": "GART raw, absolute dx_s_max 0.05, d_rate scale [1.0, 0.5], no x/y smoothing, no u_mid, 1% headroom, dy scale 2",
+        "label": "Manual comparison: GART raw, absolute dx_s_max 0.05, fixed d_rate scale [1.0, 0.5], no x/y smoothing, no u_mid, 1% headroom, dy scale 2",
     },
     {
         "enabled": False,
@@ -151,6 +162,20 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _optional_positive_int(value: object) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    return None if parsed <= 0 else parsed
+
+
+def _optional_positive_float(value: object) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    return None if parsed <= 0.0 else parsed
+
+
 def _config_from_script() -> argparse.Namespace:
     return argparse.Namespace(
         mode=MODE,
@@ -184,11 +209,11 @@ def run_configured_study() -> dict:
     set_single_thread_env(args.threads)
     guard = ResourceGuard(
         GARTStudyLimits(
-            max_target_evals=int(args.max_target_evals),
-            max_closed_loop_steps=int(args.max_closed_loop_steps),
-            max_solver_calls=int(args.max_solver_calls),
-            max_wall_clock_seconds=float(args.max_wall_clock_seconds),
-            max_memory_mb=None if args.max_memory_mb is None or float(args.max_memory_mb) <= 0.0 else float(args.max_memory_mb),
+            max_target_evals=_optional_positive_int(args.max_target_evals),
+            max_closed_loop_steps=_optional_positive_int(args.max_closed_loop_steps),
+            max_solver_calls=_optional_positive_int(args.max_solver_calls),
+            max_wall_clock_seconds=_optional_positive_float(args.max_wall_clock_seconds),
+            max_memory_mb=_optional_positive_float(args.max_memory_mb),
         )
     )
     timestamp = args.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")

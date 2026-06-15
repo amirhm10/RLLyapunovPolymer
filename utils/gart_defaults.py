@@ -23,6 +23,10 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "alpha_d_slow": 0.02,
     "d_rate_scale": 1.0,
     "freeze_on_bad_innovation": False,
+    "adaptive_rate_enabled": False,
+    "adaptive_rate_trust_radius": None,
+    "adaptive_rate_min_scale": 0.10,
+    "adaptive_rate_eps": 1.0e-8,
     "eta_y": 0.0,
     "eta_u": 0.0,
     "target_term_gate_enabled": True,
@@ -319,6 +323,10 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         innovation_gate=cfg.get("innovation_gate"),
         innovation_norm=str(cfg.get("innovation_norm", "inf")),
         freeze_on_bad_innovation=bool(cfg.get("freeze_on_bad_innovation", False)),
+        adaptive_rate_enabled=bool(cfg.get("adaptive_rate_enabled", False)),
+        adaptive_rate_trust_radius=cfg.get("adaptive_rate_trust_radius"),
+        adaptive_rate_min_scale=float(cfg.get("adaptive_rate_min_scale", 0.10)),
+        adaptive_rate_eps=float(cfg.get("adaptive_rate_eps", 1.0e-8)),
     )
     return GARTTargetConfig(
         disturbance=disturbance,

@@ -33,6 +33,46 @@ $$
 \|d^c_k-d^c_{k-1}\|_\infty\le \|\Delta d_{\max}\|_\infty.
 $$
 
+The adaptive certified-disturbance projection keeps the same proof-friendly
+bounded-rate structure, but shrinks the per-step certified rate when the raw
+observer estimate is far from the previous certified value. Define:
+
+$$
+d^{cand}_k=(1-\alpha_d)d^c_{k-1}+\alpha_d\hat d^{raw}_k,
+$$
+
+$$
+\gamma_i(k)=
+\operatorname{clip}
+\left(
+\frac{r_i}{|\hat d^{raw}_{k,i}-d^c_{k-1,i}|+\epsilon_d},
+\gamma_{\min},
+1
+\right),
+$$
+
+and:
+
+$$
+d^c_k=
+\Pi_{\mathcal D\cap \mathcal B_{\gamma(k)\Delta d_{\max}}(d^c_{k-1})}
+\left(d^{cand}_k\right).
+$$
+
+Here $\mathcal D=[d_{\min},d_{\max}]$ and
+$\mathcal B_{\gamma(k)\Delta d_{\max}}(d^c_{k-1})$ is the component-wise box:
+
+$$
+|d_i-d^c_{k-1,i}|\le \gamma_i(k)\Delta d_{\max,i}.
+$$
+
+This does not freeze the target because tracking is good. Instead, it defines
+the certified disturbance as a projection onto a bounded, slowly varying
+disturbance set. The fixed-rate update is recovered when $\gamma_i(k)=1$.
+The implementation logs the raw gap $\|\hat d^{raw}_k-d^c_{k-1}\|_\infty$,
+the effective rate bound, and the adaptive scale so disturbed and RL-exploration
+runs can show whether target motion is being shaped by the certificate.
+
 ## Target Selection
 
 For a command reference $r_k$, GART solves a lexicographic equilibrium target problem. Stage 1 minimizes only the output mismatch:

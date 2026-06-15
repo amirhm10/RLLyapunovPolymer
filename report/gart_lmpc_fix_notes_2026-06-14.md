@@ -91,3 +91,37 @@ The reports and saved step records can now include:
 ## Scientific Conclusion
 
 The previous results do not show that GART failed. They show that target-centered mixed objectives are unsafe when the selected target is far from the requested setpoint. GART raw objective remains the working candidate.
+
+## Adaptive Disturbance Projection Addendum
+
+The later disturbed runs showed a different issue: while the plant output could
+be close to the setpoint, the raw observer disturbance estimate could move
+sharply. The fixed certified-disturbance rate then allowed $d^c$ to move at its
+cap for several steps, which moved $y_s=Cx_s+d^c$ and made tracking appear
+jumpy even after the setpoint had settled.
+
+The implemented correction is not a settled-output freeze. The certified
+disturbance remains a projected, bounded-rate signal:
+
+$$
+d^c_k=
+\Pi_{\mathcal D\cap \mathcal B_{\gamma(k)\Delta d_{\max}}(d^c_{k-1})}
+\left((1-\alpha_d)d^c_{k-1}+\alpha_d\hat d^{raw}_k\right),
+$$
+
+with:
+
+$$
+\gamma_i(k)=
+\operatorname{clip}
+\left(
+\frac{r_i}{|\hat d^{raw}_{k,i}-d^c_{k-1,i}|+\epsilon_d},
+\gamma_{\min},
+1
+\right).
+$$
+
+The active raw GART runner uses $r_i=0.25$ and $\gamma_{\min}=0.10$ for the
+first adaptive projection study. This keeps the proof path tied to an explicit
+certified disturbance update law and prepares the target selector for later RL
+exploration stress tests.

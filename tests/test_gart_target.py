@@ -12,6 +12,7 @@ from Lyapunov.gart_target import (
     GARTTargetConfig,
     GARTTargetState,
     HAS_CVXPY,
+    jsonable,
     select_gart_target,
     update_certified_disturbance,
 )
@@ -150,6 +151,74 @@ def test_certified_disturbance_rate_limit():
     )
     assert np.max(np.abs(d_cert - np.array([0.0, 0.0]))) <= 0.1 + 1.0e-12
     assert np.all(np.abs(info["d_cert_delta"]) <= cfg.d_rate_max + 1.0e-12)
+    assert info["adaptive_rate_enabled"] is False
+    assert np.allclose(info["d_rate_max_effective"], cfg.d_rate_max)
+
+
+def test_adaptive_certified_disturbance_shrinks_large_raw_gap():
+    cfg = CertifiedDisturbanceConfig(
+        alpha_d=1.0,
+        alpha_d_slow=0.1,
+        d_rate_max=np.array([0.2, 0.2]),
+        d_min=np.array([-10.0, -10.0]),
+        d_max=np.array([10.0, 10.0]),
+        adaptive_rate_enabled=True,
+        adaptive_rate_trust_radius=0.25,
+        adaptive_rate_min_scale=0.1,
+    )
+    d_cert, info = update_certified_disturbance(
+        np.array([0.0, 0.0]),
+        np.array([5.0, -0.1]),
+        config=cfg,
+    )
+    assert info["adaptive_rate_scale"][0] == pytest.approx(0.1)
+    assert info["adaptive_rate_scale"][1] == pytest.approx(1.0)
+    assert info["d_rate_max_effective"][0] == pytest.approx(0.02)
+    assert d_cert[0] == pytest.approx(0.02)
+    assert d_cert[1] == pytest.approx(-0.1)
+    assert info["d_raw_gap_inf"] == pytest.approx(5.0)
+
+
+def test_adaptive_certified_disturbance_keeps_full_rate_for_small_gap():
+    cfg = CertifiedDisturbanceConfig(
+        alpha_d=1.0,
+        alpha_d_slow=0.1,
+        d_rate_max=np.array([0.2]),
+        d_min=np.array([-10.0]),
+        d_max=np.array([10.0]),
+        adaptive_rate_enabled=True,
+        adaptive_rate_trust_radius=0.25,
+        adaptive_rate_min_scale=0.1,
+    )
+    d_cert, info = update_certified_disturbance(
+        np.array([0.0]),
+        np.array([0.1]),
+        config=cfg,
+    )
+    assert info["adaptive_rate_scale"][0] == pytest.approx(1.0)
+    assert info["d_rate_max_effective"][0] == pytest.approx(0.2)
+    assert d_cert[0] == pytest.approx(0.1)
+
+
+def test_adaptive_certified_disturbance_respects_bounds_and_serializes():
+    cfg = CertifiedDisturbanceConfig(
+        alpha_d=1.0,
+        alpha_d_slow=0.1,
+        d_rate_max=np.array([10.0]),
+        d_min=np.array([-0.1]),
+        d_max=np.array([0.1]),
+        adaptive_rate_enabled=True,
+        adaptive_rate_trust_radius=1.0,
+        adaptive_rate_min_scale=0.1,
+    )
+    d_cert, info = update_certified_disturbance(
+        np.array([0.09]),
+        np.array([5.0]),
+        config=cfg,
+    )
+    assert d_cert[0] <= 0.1 + 1.0e-12
+    assert info["adaptive_rate_enabled"] is True
+    json.dumps(jsonable(info))
 
 
 def test_contraction_probe_failure_is_reported():

@@ -32,6 +32,10 @@ class CertifiedDisturbanceConfig:
     innovation_gate: float | None = None
     innovation_norm: str = "inf"
     freeze_on_bad_innovation: bool = False
+    adaptive_rate_enabled: bool = False
+    adaptive_rate_trust_radius: Any = None
+    adaptive_rate_min_scale: float = 0.10
+    adaptive_rate_eps: float = 1.0e-8
 
 
 @dataclass
@@ -348,6 +352,7 @@ def update_certified_disturbance(
         d_prev = d_raw_clipped.copy()
     else:
         d_prev = np.clip(_as_vector(d_cert_prev, "d_cert_prev", d_raw.size), d_min, d_max)
+    d_raw_gap = d_raw - d_prev
 
     norm_value = _innovation_norm(innovation, config.innovation_norm)
     gate_active = bool(
@@ -359,12 +364,31 @@ def update_certified_disturbance(
     if gate_active and config.freeze_on_bad_innovation:
         alpha = 0.0
 
+    adaptive_rate_enabled = bool(config.adaptive_rate_enabled)
+    adaptive_rate_scale = np.ones_like(d_rate_max, dtype=float)
+    if adaptive_rate_enabled:
+        min_scale = float(config.adaptive_rate_min_scale)
+        eps = float(config.adaptive_rate_eps)
+        if not 0.0 <= min_scale <= 1.0:
+            raise ValueError("adaptive_rate_min_scale must be in [0, 1].")
+        if eps < 0.0:
+            raise ValueError("adaptive_rate_eps must be nonnegative.")
+        if config.adaptive_rate_trust_radius is None:
+            trust_radius = d_rate_max.copy()
+        else:
+            trust_radius = _diag_vector(config.adaptive_rate_trust_radius, d_raw.size, default=0.0)
+        if np.any(trust_radius < 0.0):
+            raise ValueError("adaptive_rate_trust_radius must be nonnegative.")
+        adaptive_rate_scale = np.clip(trust_radius / (np.abs(d_raw_gap) + eps), min_scale, 1.0)
+    d_rate_max_effective = d_rate_max * adaptive_rate_scale
     delta_raw = alpha * (d_raw_clipped - d_prev)
-    delta = np.clip(delta_raw, -d_rate_max, d_rate_max)
+    delta = np.clip(delta_raw, -d_rate_max_effective, d_rate_max_effective)
     d_cert = np.clip(d_prev + delta, d_min, d_max)
     actual_delta = d_cert - d_prev
     return d_cert, {
         "d_raw": d_raw.copy(),
+        "d_raw_gap": d_raw_gap.copy(),
+        "d_raw_gap_inf": _inf_norm(d_raw_gap),
         "d_cert_prev": None if d_cert_prev is None else np.asarray(d_cert_prev, dtype=float).reshape(-1).copy(),
         "d_cert": d_cert.copy(),
         "d_cert_delta": actual_delta.copy(),
@@ -373,6 +397,15 @@ def update_certified_disturbance(
         "innovation_gate_active": gate_active,
         "alpha_d_used": alpha,
         "d_raw_clipped": d_raw_clipped.copy(),
+        "adaptive_rate_enabled": adaptive_rate_enabled,
+        "adaptive_rate_scale": adaptive_rate_scale.copy(),
+        "adaptive_rate_scale_min": None if adaptive_rate_scale.size == 0 else float(np.min(adaptive_rate_scale)),
+        "adaptive_rate_scale_mean": None if adaptive_rate_scale.size == 0 else float(np.mean(adaptive_rate_scale)),
+        "adaptive_rate_scale_max": None if adaptive_rate_scale.size == 0 else float(np.max(adaptive_rate_scale)),
+        "d_rate_max_base": d_rate_max.copy(),
+        "d_rate_max_base_inf": _inf_norm(d_rate_max),
+        "d_rate_max_effective": d_rate_max_effective.copy(),
+        "d_rate_max_effective_inf": _inf_norm(d_rate_max_effective),
     }
 
 
