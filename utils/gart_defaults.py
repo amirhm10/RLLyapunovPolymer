@@ -15,7 +15,7 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "input_headroom_frac": 0.03,
     "alpha_terminal_min": 1.0e-8,
     "rho": 0.99,
-    "eps": 1.0e-3,
+    "eps": 1.0e-4,
     "primary_tol_abs": 1.0e-8,
     "primary_tol_rel": 1.0e-6,
     "contraction_margin_tol": 1.0e-8,

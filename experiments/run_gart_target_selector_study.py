@@ -54,7 +54,7 @@ from utils.lyapunov_utils import get_y_sp_step
 PREDICT_H = 9
 CONT_H = 3
 RHO_LYAP = 0.99
-LYAP_EPS = 1.0e-3
+LYAP_EPS = 1.0e-4
 SLACK_PENALTY = 1.0e6
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -70,8 +70,6 @@ GART_TARGET_BASE_OVERRIDES: dict[str, Any] = {
 GART_RELAXED_TARGET_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "disable_dx_rate": True}
 GART_RELAXED_DY2_OVERRIDES: dict[str, Any] = {**GART_RELAXED_TARGET_OVERRIDES, "dy_rate_scale": 2.0}
 GART_DX5_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 5.0}
-GART_DX10_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 10.0}
-GART_DX20_DY2_OVERRIDES: dict[str, Any] = {**GART_TARGET_BASE_OVERRIDES, "dy_rate_scale": 2.0, "dx_rate_scale": 20.0}
 GART_MIXED_MPC_OVERRIDES: dict[str, Any] = {
     "eta_y": 0.1,
     "eta_u": 0.1,
@@ -96,15 +94,7 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         "overrides": GART_DX5_DY2_OVERRIDES,
     },
     {
-        "name": "T7_dx10_headroom_0p01_dy2_no_xy_smooth_no_umid",
-        "overrides": GART_DX10_DY2_OVERRIDES,
-    },
-    {
-        "name": "T8_dx20_headroom_0p01_dy2_no_xy_smooth_no_umid",
-        "overrides": GART_DX20_DY2_OVERRIDES,
-    },
-    {
-        "name": "T9_no_dx_rate_headroom_0p01_dy2_no_du",
+        "name": "T7_no_dx_rate_headroom_0p01_dy2_no_du",
         "overrides": {
             "disable_dx_rate": True,
             "input_headroom_frac": 0.01,
@@ -113,7 +103,7 @@ TARGET_ABLATION_CASES: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "T10_no_umid_probe_log_only",
+        "name": "T8_no_umid_probe_log_only",
         "overrides": {
             **GART_RELAXED_DY2_OVERRIDES,
             "disable_du_rate": True,
@@ -1197,18 +1187,6 @@ def run_closed_loop(
             "lyapunov_mode": "hard",
             "target_overrides": GART_DX5_DY2_OVERRIDES,
         },
-        {
-            "case_name": "gart_target_raw_dx10_headroom_0p01_dy2_no_umid",
-            "objective": "raw",
-            "lyapunov_mode": "hard",
-            "target_overrides": GART_DX10_DY2_OVERRIDES,
-        },
-        {
-            "case_name": "gart_target_raw_dx20_headroom_0p01_dy2_no_umid",
-            "objective": "raw",
-            "lyapunov_mode": "hard",
-            "target_overrides": GART_DX20_DY2_OVERRIDES,
-        },
     ]
     records: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {}
@@ -1413,7 +1391,7 @@ def _resource_guard_from_args(args: argparse.Namespace) -> ResourceGuard:
         target_multiplier = (1 if args.target_only else 0) + (len(TARGET_ABLATION_CASES) if args.target_ablation else 0)
         max_target = max(100, estimated * max(target_multiplier, 1))
     if max_closed is None:
-        max_closed = max(20, 3 * estimated if args.closed_loop else 20)
+        max_closed = max(20, estimated if args.closed_loop else 20)
     if max_solver is None:
         max_solver = max(500, 2 * max_target + 2 * max_closed)
     return ResourceGuard(

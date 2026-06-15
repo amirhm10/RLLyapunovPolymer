@@ -41,7 +41,7 @@ class GARTMPCConfig:
     first_step_contraction_on: bool = True
     lyapunov_mode: str = "soft"
     rho: float = 0.99
-    eps: float = 1.0e-3
+    eps: float = 1.0e-4
     alpha_terminal_min: float = 1.0e-8
     target_term_gate_enabled: bool = True
     target_term_gate_delta_y: float = 0.5
