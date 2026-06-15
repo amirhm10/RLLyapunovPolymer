@@ -32,17 +32,17 @@ MODE = "disturb"  # "disturb" or "nominal"
 N_TESTS = 5
 SET_POINTS_LEN = 400
 
-# Closed-loop disturbance test defaults. The main mixed hard case is enabled
-# below; older mixed and soft variants remain disabled for manual sensitivity.
+# Closed-loop disturbance test defaults. Mixed variants are retained below as
+# disabled manual sensitivity cases.
 RUN_TARGET_ONLY = False
 RUN_CLOSED_LOOP = True
 FULL_RUN = True
 CONFIRM_FULL = True
 THREADS = 1
-MAX_TARGET_EVALS = 15000
-MAX_CLOSED_LOOP_STEPS = 15000
-MAX_SOLVER_CALLS = 15000
-MAX_WALL_CLOCK_SECONDS = 21600.0
+MAX_TARGET_EVALS = 10000
+MAX_CLOSED_LOOP_STEPS = 10000
+MAX_SOLVER_CALLS = 10000
+MAX_WALL_CLOCK_SECONDS = 14400.0
 MAX_MEMORY_MB = 4096.0
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
@@ -76,7 +76,7 @@ CASE_SPECS = [
         "label": "GART raw, no dx_s rate, no x/y smoothing, no u_mid, 1% headroom, dy scale 4",
     },
     {
-        "enabled": True,
+        "enabled": False,
         "case_name": "gart_target_mixed_no_dx_headroom_0p01_dy2_no_umid",
         "objective": "mixed",
         "lyapunov_mode": "hard",
