@@ -810,6 +810,8 @@ V(x_{N_p|k}-x_{s,k})\le \alpha_s,
 
 where $\alpha_s$ is the input-admissible terminal level computed for the accepted target. This terminal constraint is passed to the optimizer when $\alpha_s$ is finite and larger than the numerical floor $\alpha_{\min}$.
 
+The terminal constraint supports the finite-horizon MPC design and can improve closed-loop regularity, but it is not the minimal ingredient in the moving-target Lyapunov proof below. The proof uses the hard one-step contraction of the executed input. Therefore, for RL exploration, the terminal constraint may be omitted from the safety projection as long as the executed input still satisfies the same hard one-step GART contraction inequality.
+
 
 The resulting final GART-LMPC problem is
 
@@ -851,8 +853,121 @@ V(x_{N_p|k}-x_{s,k})\le \alpha_s
 
 This formulation separates tracking and certification. The raw setpoint appears in the objective, while the accepted GART target appears in the Lyapunov contraction and terminal constraints. Consequently, the proof path is target-centered, but the measured performance remains raw-setpoint tracking.
 
+\section*{12.1 Assumptions For The Stability Statement}
+
+The following assumptions define the conditions under which the moving-target practical-stability statement is claimed.
+
+\textbf{Assumption 1: Valid Lyapunov matrix.}
+The matrix $P_x$ used in the target probe and in the GART-LMPC first-step constraint satisfies $P_x\succ 0$. The Lyapunov function is
+
+\[
+V(e)=e^\top P_x e .
+\]
+
+\textbf{Assumption 2: Accepted target sequence.}
+At each certified sampling instant $k$, the target selector returns an accepted target
+
+\[
+(x_{s,k},u_{s,k},y_{s,k})
+\]
+
+satisfying the equilibrium and certified-disturbance target equations
+
+\[
+x_{s,k}=Ax_{s,k}+Bu_{s,k},
+\qquad
+y_{s,k}=Cx_{s,k}+d^c_k .
+\]
+
+The target-motion constraint is enforced:
+
+\[
+\|x_{s,k+1}-x_{s,k}\|_\infty\le d_{x_s}.
+\]
+
+\textbf{Assumption 3: Certified executed input.}
+The input applied to the plant or observer model at time $k$, denoted $u_k^{\mathrm{exec}}$, satisfies the input constraints and the hard one-step target-centered Lyapunov contraction inequality
+
+\[
+V(x_{k+1}-x_{s,k})
+\le
+\rho V(x_k-x_{s,k})+\epsilon,
+\]
+
+where
+
+\[
+x_{k+1}=Ax_k+Bu_k^{\mathrm{exec}} .
+\]
+
+For the pure GART-LMPC controller, $u_k^{\mathrm{exec}}$ is the first input returned by a feasible and successfully solved GART-LMPC problem. For the RL-safety variant, $u_k^{\mathrm{exec}}$ is the projected safe action that satisfies the same hard one-step contraction inequality.
+
+\textbf{Assumption 4: Successful certified step.}
+The practical-stability recursion is claimed only on sampling instants for which an accepted target exists and the executed input satisfies Assumption 3. If no target is usable or if the finite-horizon GART-LMPC optimization fails and the implementation holds the previous input, that fallback step is not counted as a certified Lyapunov-contraction step unless the held input itself satisfies the same contraction inequality.
+
+\textbf{Assumption 5: Bounded model/estimator residual for external tracking.}
+For the raw-setpoint tracking interpretation, the residual term $\varepsilon_{\mathrm{est},k}$, which collects estimator mismatch, plant-model mismatch, and certified/raw disturbance mismatch, is assumed bounded.
+
 
 \section*{13. Moving-Target Practical Stability Bound}
+
+\textbf{Theorem 1: Practical target-centered stability of GART-LMPC.}
+Suppose Assumptions 1--4 hold. Let
+
+\[
+e_k=x_k-x_{s,k}
+\]
+
+and let the accepted target sequence satisfy
+
+\[
+\|x_{s,k+1}-x_{s,k}\|_\infty\le d_{x_s}.
+\]
+
+Choose any $\mu>0$ such that
+
+\[
+\bar\rho=(1+\mu)\rho<1 .
+\]
+
+Then the target-centered Lyapunov value satisfies the practical recursion
+
+\[
+V(e_{k+1})
+\le
+\bar\rho V(e_k)+w,
+\]
+
+where
+
+\[
+w
+=
+(1+\mu)\epsilon
++
+\left(1+\frac{1}{\mu}\right)
+\lambda_{\max}(P_x)n_xd_{x_s}^2 .
+\]
+
+Consequently,
+
+\[
+V(e_k)
+\le
+\bar\rho^k V(e_0)
++
+\frac{1-\bar\rho^k}{1-\bar\rho}w,
+\]
+
+and therefore
+
+\[
+\limsup_{k\to\infty}V(e_k)
+\le
+\frac{w}{1-\bar\rho}.
+\]
+
+\textbf{Proof.}
 
 In this section, $x_k$ denotes the state component used by the controller in the Lyapunov calculation. In the implemented output-feedback controller, this is the observer estimate $\hat x_k$.
 
@@ -873,7 +988,7 @@ where $e_k=x_k-x_s$. In GART-LMPC, however, the certified target is allowed to m
 e_k = x_k-x_{s,k}.
 \]
 
-After the first input is applied, the controller contracts toward the target used at time $k$:
+On any certified sampling instant satisfying Assumptions 2--4, the executed input contracts toward the target used at time $k$:
 
 
 \[
@@ -1020,10 +1135,44 @@ Therefore,
 \frac{w}{1-\bar\rho}.
 \]
 
+The bound above is a certificate of practical boundedness, not a tight performance prediction. For the reported value $\rho=0.98$, the proof parameter must satisfy
+
+\[
+0<\mu<\frac{1}{\rho}-1
+=
+\frac{1}{0.98}-1
+\approx 0.0204 .
+\]
+
+Thus the multiplier $1+1/\mu$ in $w$ can be large. This conservatism comes from the worst-case bound on the moving target displacement and does not imply that the observed closed-loop tracking error will be large. The empirical closed-loop tracking metrics should therefore be used as the tighter performance assessment, while the analytic tube is used as a qualitative stability certificate.
+
 The final method does not claim exact asymptotic convergence to a moving target. Instead, it gives a certified tube around the moving reachable target. The tube size is determined by the practical contraction tolerance $\epsilon$, the contraction rate $\rho$, and the target-motion bound $d_{x_s}$.
 
 
 \section*{14. Raw Setpoint Tracking Bound}
+
+\textbf{Corollary 1: Raw-setpoint tracking interpretation.}
+Suppose the conditions of Theorem 1 hold and Assumption 5 holds. Then the raw setpoint tracking error admits the decomposition
+
+\[
+y_k-y_{sp,k}
+=
+(y_k-y_{s,k})+(y_{s,k}-y_{sp,k}),
+\]
+
+and can be bounded as
+
+\[
+\|y_k-y_{sp,k}\|
+\le
+\|C\|\,\|e_k\|
++
+\|y_{s,k}-y_{sp,k}\|
++
+\varepsilon_{\mathrm{est},k}.
+\]
+
+Consequently, the raw tracking error is bounded by the target-centered stability tube, the target-to-setpoint displacement, and the residual estimator/model mismatch.
 
 The Lyapunov argument is target-centered, while the performance goal is raw setpoint tracking. The output error decomposition from Section 9 gives
 
@@ -1064,7 +1213,7 @@ This bound clarifies the interpretation of GART-LMPC results. Good raw setpoint 
 
 \section*{15. Interpretation Of The Stability Claim}
 
-The preceding bounds do not imply exact asymptotic convergence to the raw setpoint. Such a statement would generally be too strong for this setting because the raw setpoint may be unreachable under the steady-input constraints, the certified disturbance can vary over time, and the target sequence is intentionally governed when certification requires it.
+Theorem 1 and Corollary 1 do not imply exact asymptotic convergence to the raw setpoint. Such a statement would generally be too strong for this setting because the raw setpoint may be unreachable under the steady-input constraints, the certified disturbance can vary over time, and the target sequence is intentionally governed when certification requires it.
 
 
 The stability claim is instead a practical target-centered statement:
@@ -1096,7 +1245,7 @@ the corresponding state-error tube satisfies
 }.
 \]
 
-Combining this with the raw setpoint tracking decomposition gives the external tracking interpretation
+Combining Theorem 1 with Corollary 1 gives the external tracking interpretation
 
 
 \[
@@ -1179,7 +1328,28 @@ V(x_{k+1}(u)-x_{s,k})
 \end{aligned}
 \]
 
-where $x_{k+1}(u)$ is the one-step state prediction under input $u$. If the actor proposal already satisfies the input constraints and the Lyapunov contraction constraint, then
+where $x_{k+1}(u)$ is the one-step state prediction under input $u$.
+
+\textbf{Proposition 1: RL exploration under the GART safety projection.}
+Suppose the target selector returns an accepted target at time $k$. Let the RL actor propose $u_k^{\mathrm{RL}}$, but let the plant receive the projected safe input $u_k^{\mathrm{safe}}$. If the projection problem is feasible and returns an input satisfying
+
+\[
+u_k^{\mathrm{safe}}\in\mathcal U
+\]
+
+and
+
+\[
+V(x_{k+1}(u_k^{\mathrm{safe}})-x_{s,k})
+\le
+\rho V(x_k-x_{s,k})+\epsilon,
+\]
+
+then the same one-step contraction condition used in Theorem 1 holds for the executed input. Therefore, the moving-target practical-stability recursion is preserved during RL exploration, provided the target-motion bound also holds.
+
+The terminal constraint is not required for this one-step RL safety certificate. It may still be used in the finite-horizon GART-LMPC expert controller, but the minimal condition for RL exploration is that the executed input satisfies the hard one-step GART contraction constraint.
+
+If the actor proposal already satisfies the input constraints and the Lyapunov contraction constraint, then
 
 
 \[
@@ -1306,6 +1476,7 @@ Symbol / parameter & Meaning & Current value / setting & Notes \\
 $x_k$ & Identified state-space model state at time $k$ & Model-dependent & Scaled-deviation coordinate \\
 $\hat x_k$ & Observer state estimate used by GART & Computed online & State component of augmented observer state \\
 $u_k$ & Manipulated input at time $k$ & 2 inputs & Scaled-deviation coordinate \\
+$u_k^{\mathrm{exec}}$ & Input executed by the plant or observer model & GART-LMPC first move or projected safe RL input & Must satisfy the hard one-step contraction condition on certified steps \\
 $u_{k-1}^{\mathrm{app}}$ & Previously applied manipulated input & Measured from closed-loop rollout & Scaled-deviation coordinate; Stage 2 input-smoothing reference \\
 $y_k$ & Controlled output at time $k$ & 2 outputs & Scaled-deviation coordinate \\
 $A$ & Identified discrete-time state matrix & From step-test model identification & Used in target and LMPC predictions \\
