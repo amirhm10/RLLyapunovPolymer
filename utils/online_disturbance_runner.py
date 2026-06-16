@@ -78,6 +78,7 @@ from utils.direct_lmpc_selector_defaults import (
 from utils.gart_defaults import (
     GART_FINAL_TARGET_OVERRIDES,
     discover_gart_case_values,
+    make_gart_mpc_config,
     make_gart_target_config,
 )
 from utils.path_helpers import repo_path, resolve_repo_path
@@ -98,6 +99,8 @@ LYAP_TOL = DIRECT_LMPC_LYAP_TOL
 SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
 TARGET_MODE = DIRECT_LMPC_TARGET_MODE
 TARGET_SELECTOR_VARIANT = DIRECT_LMPC_TARGET_SELECTOR_VARIANT
+GART_LMPC_OBJECTIVE = "raw"
+GART_LMPC_LYAPUNOV_MODE = "hard"
 
 QY_MPC_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -152,6 +155,7 @@ class OnlineTD3Preset:
     pretrain_source: str | None
     teacher_source: str
     direct_target_mode: str = TARGET_MODE
+    fallback_controller: str = "direct_lyapunov_mpc"
 
 
 @dataclass(frozen=True)
@@ -210,20 +214,22 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
     "cold_start_safety_gate": OnlineTD3Preset(
         key="cold_start_safety_gate",
         study_name="OnlineTD3_ColdStart_SafetyGate",
-        label="Cold-start online TD3 with Direct LMPC safety gate",
+        label="Cold-start online TD3 with GART-LMPC safety gate",
         safety_gate=True,
         pretrain_source=None,
-        teacher_source="direct_lyapunov_mpc",
+        teacher_source="gart_lmpc",
         direct_target_mode="gart",
+        fallback_controller="gart_lmpc",
     ),
     "cold_start_no_safety_gate": OnlineTD3Preset(
         key="cold_start_no_safety_gate",
         study_name="OnlineTD3_ColdStart_NoSafetyGate",
-        label="Cold-start online TD3 without safety intervention",
+        label="Cold-start online TD3 without safety intervention and GART-LMPC BC",
         safety_gate=False,
         pretrain_source=None,
-        teacher_source="offset_free_mpc",
+        teacher_source="gart_lmpc",
         direct_target_mode="gart",
+        fallback_controller="none",
     ),
 }
 
@@ -403,7 +409,7 @@ def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
 
 
 def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str, Any]:
-    if teacher_source not in {"direct_lyapunov_mpc", "offset_free_mpc"}:
+    if teacher_source not in {"direct_lyapunov_mpc", "offset_free_mpc", "gart_lmpc"}:
         raise ValueError(f"Unsupported teacher source: {teacher_source!r}")
     exploration_std = (
         PRETRAINED_EXPLORATION_STD_START
@@ -513,6 +519,31 @@ def _target_config_for_mode(
         discovered = discover_gart_case_values(system_data, setup, results_roots=None)
         return make_gart_target_config(discovered, **GART_FINAL_TARGET_OVERRIDES), discovered
     return _bounded_mixed_target_config(), None
+
+
+def _gart_mpc_config_for_context(
+    context: DisturbanceContext,
+    *,
+    rho_lyap: float,
+    lyap_eps: float,
+) -> Any | None:
+    if context.gart_discovered is None:
+        return None
+    overrides = dict(GART_FINAL_TARGET_OVERRIDES)
+    overrides.update(
+        {
+            "rho": float(rho_lyap),
+            "eps": float(lyap_eps),
+            "slack_penalty": float(SLACK_PENALTY),
+            "first_step_contraction_on": True,
+        }
+    )
+    return make_gart_mpc_config(
+        context.gart_discovered,
+        objective=GART_LMPC_OBJECTIVE,
+        lyapunov_mode=GART_LMPC_LYAPUNOV_MODE,
+        **overrides,
+    )
 
 
 def _pretrained_selector_note(pretrain_source: str | None, target_mode: str) -> str:
@@ -789,6 +820,17 @@ def run_online_td3_disturbance_preset(
     )
     case_lyap_eps = _lyap_eps_for_preset(preset)
     projection_backend = "direct_accept_or_fallback" if preset.safety_gate else "mpc_only_diagnostic"
+    effective_fallback_controller = preset.fallback_controller if preset.safety_gate else "none"
+    uses_gart_lmpc_controller = bool(
+        preset.teacher_source == "gart_lmpc" or effective_fallback_controller == "gart_lmpc"
+    )
+    gart_mpc_config = (
+        _gart_mpc_config_for_context(context, rho_lyap=RHO_LYAP, lyap_eps=case_lyap_eps)
+        if uses_gart_lmpc_controller
+        else None
+    )
+    if uses_gart_lmpc_controller and gart_mpc_config is None:
+        raise RuntimeError("GART-LMPC cold-start control requires a GART disturbance context.")
     case_mpc_obj = context.lmpc_obj
     teacher_mpc_obj = None
     if preset.teacher_source == "offset_free_mpc":
@@ -806,11 +848,18 @@ def run_online_td3_disturbance_preset(
         "safety_gate_active": bool(preset.safety_gate),
         "pretrain_source": preset.pretrain_source,
         "teacher_source": preset.teacher_source,
+        "fallback_controller": effective_fallback_controller,
         "target_mode": preset.direct_target_mode,
         "target_selector_variant": "gart" if preset.direct_target_mode == "gart" else TARGET_SELECTOR_VARIANT,
         "target_config": _jsonable(context.target_config),
         "target_config_source": "gart_final_overrides" if preset.direct_target_mode == "gart" else "direct_lmpc_selector_defaults",
         "gart_target_overrides": dict(GART_FINAL_TARGET_OVERRIDES) if preset.direct_target_mode == "gart" else None,
+        "gart_lmpc_config": _jsonable(gart_mpc_config),
+        "gart_lmpc_config_source": (
+            "gart_final_overrides_raw_hard_online_rho_eps" if gart_mpc_config is not None else None
+        ),
+        "gart_lmpc_objective": GART_LMPC_OBJECTIVE if gart_mpc_config is not None else None,
+        "gart_lmpc_lyapunov_mode": GART_LMPC_LYAPUNOV_MODE if gart_mpc_config is not None else None,
         "pretrained_checkpoint_selector_note": _pretrained_selector_note(preset.pretrain_source, preset.direct_target_mode),
         "plant_mode": PLANT_MODE,
         "n_tests": episodes,
@@ -828,7 +877,7 @@ def run_online_td3_disturbance_preset(
         "reward_config": dict(reward_config),
         "reward_fallback_penalty_enabled": bool(preset.safety_gate),
         "reward_fallback_penalty_activation_rule": (
-            "fallback_active when Direct LMPC safety gate changes the TD3 candidate action"
+            f"fallback_active when {effective_fallback_controller} safety gate changes the TD3 candidate action"
             if preset.safety_gate
             else "disabled; no-safety-gate runs log diagnostics only and never apply fallback penalties"
         ),
@@ -838,7 +887,7 @@ def run_online_td3_disturbance_preset(
         "lyap_eps": case_lyap_eps,
         "lyap_eps_default": LYAP_EPS,
         "lyap_eps_pretrained_online_override": None,
-        "lyap_eps_override_reason": "runner-only stricter bounded-mixed Direct LMPC epsilon",
+        "lyap_eps_override_reason": "online target-diagnostic and fallback-controller Lyapunov epsilon",
         "lyap_tol": LYAP_TOL,
         "slack_penalty": SLACK_PENALTY,
         "training_phase_config": dict(training_phase_config),
@@ -887,6 +936,8 @@ def run_online_td3_disturbance_preset(
         first_step_contraction_on=True,
         direct_target_mode=preset.direct_target_mode,
         direct_target_config=context.target_config,
+        gart_mpc_config=gart_mpc_config,
+        fallback_controller=effective_fallback_controller,
         direct_tracking_use_target_output=USE_TARGET_OUTPUT_FOR_TRACKING,
         diagnostic_lmpc_obj=context.lmpc_obj,
         teacher_mpc_obj=teacher_mpc_obj,
@@ -915,6 +966,7 @@ def run_online_td3_disturbance_preset(
             "critic_losses": agent.critic_losses,
             "timing": timing,
             "gart_discovered": context.gart_discovered,
+            "gart_lmpc_config": _jsonable(gart_mpc_config),
         },
     )
     debug_dir = save_safety_filter_debug_artifacts(

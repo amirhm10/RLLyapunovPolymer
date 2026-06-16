@@ -5,6 +5,7 @@ from Lyapunov.direct_lyapunov_mpc import (
     prepare_direct_output_disturbance_step,
     solve_direct_tracking_from_target,
 )
+from Lyapunov.gart_lmpc import solve_gart_lmpc_step
 from Lyapunov.legacy_rl_projection import (
     design_riccati_P_aug_physical,
     factor_psd_left as legacy_factor_psd_left,
@@ -524,6 +525,54 @@ def _normalize_mpc_fallback_setup(MPC_obj, u_min, u_max, IC_opt, bnds, cons):
     return IC_opt.copy(), bnds, cons
 
 
+_TEACHER_CONTROLLER_SOURCES = {"direct_lyapunov_mpc", "offset_free_mpc", "gart_lmpc"}
+
+
+def _normalize_teacher_controller_source(source):
+    normalized = str(source).strip().lower()
+    aliases = {
+        "direct": "direct_lyapunov_mpc",
+        "direct_mpc": "direct_lyapunov_mpc",
+        "direct_lmpc": "direct_lyapunov_mpc",
+        "lmpc": "direct_lyapunov_mpc",
+        "mpc": "offset_free_mpc",
+        "normal_mpc": "offset_free_mpc",
+        "offset_free": "offset_free_mpc",
+        "offset_free_mpc_only": "offset_free_mpc",
+        "gart": "gart_lmpc",
+        "gart_mpc": "gart_lmpc",
+        "gart_lmpc": "gart_lmpc",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _controller_source_label(source):
+    source = _normalize_teacher_controller_source(source)
+    if source in _TEACHER_CONTROLLER_SOURCES:
+        return source
+    return str(source).strip().lower()
+
+
+def _normalize_fallback_controller(controller):
+    normalized = str(controller if controller is not None else "direct_lyapunov_mpc").strip().lower()
+    aliases = {
+        "none": "none",
+        "disabled": "none",
+        "direct": "direct_lyapunov_mpc",
+        "direct_mpc": "direct_lyapunov_mpc",
+        "direct_lmpc": "direct_lyapunov_mpc",
+        "lmpc": "direct_lyapunov_mpc",
+        "direct_lyapunov_mpc": "direct_lyapunov_mpc",
+        "gart": "gart_lmpc",
+        "gart_mpc": "gart_lmpc",
+        "gart_lmpc": "gart_lmpc",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"direct_lyapunov_mpc", "gart_lmpc", "none"}:
+        raise ValueError("fallback_controller must be 'direct_lyapunov_mpc', 'gart_lmpc', or 'none'.")
+    return normalized
+
+
 def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes, n_steps, projection_backend):
     if training_phase_config is None:
         return None
@@ -553,20 +602,20 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         source = str(cfg.get(name, default)).strip().lower()
         if source in {"executed", "executed_actions"}:
             source = "executed_action"
-        if source in {"mpc", "normal_mpc", "offset_free_mpc_only"}:
-            source = "offset_free_mpc"
+        source = _normalize_teacher_controller_source(source)
         if source in {"policy_lmpc_demo", "policy_with_teacher_demo", "policy_with_direct_lmpc_teacher_demo"}:
             source = "policy_with_lmpc_teacher_demo"
         if source not in {
             "direct_lyapunov_mpc",
             "offset_free_mpc",
+            "gart_lmpc",
             "policy",
             "executed_action",
             "policy_with_lmpc_teacher_demo",
         }:
             raise ValueError(
                 f"training_phase_config['{name}'] must be 'direct_lyapunov_mpc', "
-                "'offset_free_mpc', 'policy', 'executed_action', or "
+                "'offset_free_mpc', 'gart_lmpc', 'policy', 'executed_action', or "
                 "'policy_with_lmpc_teacher_demo'."
             )
         return source
@@ -578,15 +627,16 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     )
 
     warmup_behavior_source = str(cfg.get("warmup_behavior_source", "policy")).strip().lower()
-    if warmup_behavior_source in {"mpc", "normal_mpc", "offset_free_mpc_only"}:
-        warmup_behavior_source = "offset_free_mpc"
-    if warmup_behavior_source not in {"policy", "direct_lyapunov_mpc", "offset_free_mpc"}:
+    if warmup_behavior_source != "policy":
+        warmup_behavior_source = _normalize_teacher_controller_source(warmup_behavior_source)
+    if warmup_behavior_source not in {"policy", "direct_lyapunov_mpc", "offset_free_mpc", "gart_lmpc"}:
         raise ValueError(
-            "training_phase_config['warmup_behavior_source'] must be 'policy', 'direct_lyapunov_mpc', or 'offset_free_mpc'."
+            "training_phase_config['warmup_behavior_source'] must be 'policy', "
+            "'direct_lyapunov_mpc', 'offset_free_mpc', or 'gart_lmpc'."
         )
 
     if projection_backend not in {"direct_accept_or_fallback", "mpc_only_diagnostic"} and (
-        warmup_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"} or bc_steps > 0
+        warmup_behavior_source in _TEACHER_CONTROLLER_SOURCES or bc_steps > 0
     ):
         raise ValueError(
             "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback' or 'mpc_only'."
@@ -608,7 +658,7 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
     )
     full_rl_behavior_noise = _normalize_behavior_noise("full_rl_behavior_noise", "gaussian")
 
-    if warmup_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"} and warmup_behavior_noise == "parameter":
+    if warmup_behavior_source in _TEACHER_CONTROLLER_SOURCES and warmup_behavior_noise == "parameter":
         raise ValueError(
             "training_phase_config['warmup_behavior_noise'] cannot be 'parameter' when "
             "warmup_behavior_source is a teacher controller."
@@ -767,6 +817,106 @@ def _one_step_raw_tracking_cost(A, B, C, xhat_aug, u_dev, y_sp, u_prev_dev, Q_di
     return float(np.sum(Q_diag[:n_y] * np.square(y_err)) + np.sum(R_diag[:n_u] * np.square(du)))
 
 
+def _merge_gart_lmpc_step_info(base_step_info, gart_step_info, target_info):
+    merged = dict(base_step_info or {})
+    merged.update(dict(gart_step_info or {}))
+    target_info = {} if target_info is None else dict(target_info)
+    for key in (
+        "d_s",
+        "d_cert",
+        "d_raw",
+        "r_cmd",
+        "r_cmd_minus_y_sp",
+        "y_s_minus_r_cmd",
+        "x_s_aug",
+    ):
+        if merged.get(key) is None and target_info.get(key) is not None:
+            value = target_info.get(key)
+            merged[key] = np.asarray(value, float).copy() if isinstance(value, np.ndarray) else value
+    if merged.get("target_mode") is None:
+        merged["target_mode"] = target_info.get("target_mode")
+    if merged.get("target_variant") is None:
+        merged["target_variant"] = target_info.get("target_variant")
+    if merged.get("target_stage") is None:
+        merged["target_stage"] = target_info.get("solve_stage") or target_info.get("stage")
+    if merged.get("target_success") is None:
+        merged["target_success"] = bool(target_info.get("success", False))
+    if merged.get("target_usable_for_lmpc") is None:
+        merged["target_usable_for_lmpc"] = target_info.get("usable_for_lmpc") or target_info.get("target_usable_for_lmpc")
+    merged["tracking_controller"] = "gart_lmpc"
+    if merged.get("tracking_solver") is None:
+        method = str(merged.get("method") or "")
+        merged["tracking_solver"] = "gart_lmpc_hold_previous" if method.endswith("hold_prev") else "gart_lmpc"
+    if merged.get("status") is None:
+        merged["status"] = merged.get("method")
+    return merged
+
+
+def _solve_tracking_controller_from_target(
+    *,
+    controller,
+    LMPC_obj,
+    x0_aug,
+    y_sp_k,
+    u_prev_dev,
+    target_info,
+    step_info,
+    IC_opt,
+    bnds,
+    u_dev_min,
+    u_dev_max,
+    rho_lyap,
+    lyap_eps,
+    direct_tracking_use_target_output,
+    first_step_contraction_on,
+    gart_mpc_config,
+):
+    controller = _normalize_fallback_controller(controller)
+    if controller == "gart_lmpc":
+        if gart_mpc_config is None:
+            raise ValueError("gart_mpc_config is required when using controller='gart_lmpc'.")
+        u_dev_apply, IC_opt_next, gart_step_info = solve_gart_lmpc_step(
+            LMPC_obj,
+            x0_aug,
+            y_sp_k,
+            target_info,
+            u_prev_dev,
+            IC_opt,
+            bnds,
+            u_dev_min,
+            u_dev_max,
+            gart_mpc_config,
+        )
+        return (
+            u_dev_apply,
+            IC_opt_next,
+            _merge_gart_lmpc_step_info(step_info, gart_step_info, target_info),
+        )
+    if controller != "direct_lyapunov_mpc":
+        raise ValueError("controller must be 'direct_lyapunov_mpc' or 'gart_lmpc'.")
+    return solve_direct_tracking_from_target(
+        LMPC_obj=LMPC_obj,
+        x0_aug=x0_aug,
+        y_sp_k=y_sp_k,
+        u_prev_dev=u_prev_dev,
+        target_info=target_info,
+        step_info=dict(step_info),
+        IC_opt=IC_opt,
+        bnds=bnds,
+        u_dev_min=u_dev_min,
+        u_dev_max=u_dev_max,
+        rho_lyap=rho_lyap,
+        lyap_eps=lyap_eps,
+        lyapunov_mode="hard",
+        use_target_output_for_tracking=direct_tracking_use_target_output,
+        skip_terminal_if_alpha_small=True,
+        alpha_terminal_min=1e-8,
+        use_target_on_solver_fail=False,
+        first_step_contraction_on=first_step_contraction_on,
+        solver_options={"warm_start": True},
+    )
+
+
 def _legacy_exploration_sigma(phase_cfg, step_idx, agent=None):
     if phase_cfg is None:
         return None
@@ -869,7 +1019,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if step_idx < int(phase_cfg["warmup_end_step"]):
         policy_phase = "warmup_buffer_only"
         teacher_behavior_source = str(phase_cfg["warmup_behavior_source"])
-        use_teacher_behavior = teacher_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
+        use_teacher_behavior = teacher_behavior_source in _TEACHER_CONTROLLER_SOURCES
         behavior_noise_mode = "none" if test else str(phase_cfg.get("warmup_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else "buffer_only"
     elif step_idx < int(phase_cfg["bc_end_step"]):
@@ -880,7 +1030,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
             if bc_behavior_source == "policy_with_lmpc_teacher_demo"
             else bc_behavior_source
         )
-        use_teacher_behavior = bc_behavior_source in {"direct_lyapunov_mpc", "offset_free_mpc"}
+        use_teacher_behavior = bc_behavior_source in _TEACHER_CONTROLLER_SOURCES
         behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
         training_update_mode = "no_learning_test" if test else str(
             phase_cfg.get("bc_update_mode", "critic_td_plus_actor_bc")
@@ -932,7 +1082,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     )
 
     if use_teacher_behavior:
-        teacher_label = "offset_free_mpc" if teacher_behavior_source == "offset_free_mpc" else "direct_lyapunov_mpc"
+        teacher_label = _controller_source_label(teacher_behavior_source)
         if test:
             behavior_policy_source = f"{teacher_label}_eval"
         elif behavior_noise_mode == "gaussian":
@@ -954,7 +1104,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         else:
             behavior_policy_source = "executed_action_nominal"
     elif handoff_active:
-        teacher_label = "offset_free_mpc" if teacher_behavior_source == "offset_free_mpc" else "direct_lyapunov_mpc"
+        teacher_label = _controller_source_label(teacher_behavior_source)
         behavior_policy_source = f"policy_{teacher_label}_handoff"
     else:
         if test:
@@ -1171,6 +1321,8 @@ def run_rl_train(
     first_step_contraction_on=True,
     direct_target_mode="bounded",
     direct_target_config=None,
+    gart_mpc_config=None,
+    fallback_controller="direct_lyapunov_mpc",
     direct_tracking_use_target_output=False,
     disturbance_after_step=True,
     training_phase_config=None,
@@ -1218,6 +1370,8 @@ def run_rl_train(
     n_aug = MPC_obj.A.shape[0]
     n_x = n_aug - n_y
     projection_backend = _normalize_rl_projection_backend(projection_backend)
+    fallback_controller = _normalize_fallback_controller(fallback_controller)
+    direct_target_mode_label = str(direct_target_mode).strip().lower()
     tracking_target_policy = _normalize_tracking_target_policy(
         mpc_target_policy=mpc_target_policy,
         tracking_target_policy=tracking_target_policy,
@@ -1228,6 +1382,22 @@ def run_rl_train(
         n_steps=nFE,
         projection_backend=projection_backend,
     )
+    phase_teacher_sources = set()
+    if phase_cfg is not None:
+        for key in ("warmup_behavior_source", "bc_behavior_source", "bc_teacher_policy"):
+            source = phase_cfg.get(key)
+            if source is not None:
+                phase_teacher_sources.add(str(source).strip().lower())
+    uses_gart_lmpc_controller = (
+        "gart_lmpc" in phase_teacher_sources
+        or (projection_backend == "direct_accept_or_fallback" and fallback_controller == "gart_lmpc")
+    )
+    if projection_backend == "direct_accept_or_fallback" and fallback_controller == "none":
+        raise ValueError("projection_backend='direct_accept_or_fallback' requires an active fallback_controller.")
+    if uses_gart_lmpc_controller and direct_target_mode_label != "gart":
+        raise ValueError("GART-LMPC teacher/fallback requires direct_target_mode='gart'.")
+    if uses_gart_lmpc_controller and gart_mpc_config is None:
+        raise ValueError("GART-LMPC teacher/fallback requires gart_mpc_config.")
     if phase_cfg is not None and hasattr(agent, "configure_parameter_noise"):
         agent.configure_parameter_noise(
             initial_std=phase_cfg.get("parameter_noise_initial_std"),
@@ -1448,6 +1618,7 @@ def run_rl_train(
         step_teacher_fallback_ic = teacher_fallback_ic
         offset_free_teacher_info = None
         offset_free_teacher_u_dev = None
+        gart_lmpc_teacher_info = None
         teacher_action = None
         teacher_u_dev = None
         demo_action = None
@@ -1472,8 +1643,13 @@ def run_rl_train(
             or phase_state.get("handoff_active", False)
         )
         teacher_source = phase_state.get("teacher_behavior_source")
+        teacher_controller = (
+            _normalize_teacher_controller_source(teacher_source)
+            if teacher_source is not None
+            else None
+        )
 
-        if needs_teacher_action and teacher_source == "direct_lyapunov_mpc":
+        if needs_teacher_action and teacher_controller in {"direct_lyapunov_mpc", "gart_lmpc"}:
             precomputed_direct_step_context = prepare_direct_output_disturbance_step(
                 LMPC_obj=MPC_obj,
                 x0_aug=xhat_aug_store[:, k],
@@ -1494,7 +1670,8 @@ def run_rl_train(
             )
             teacher_target_info = precomputed_direct_step_context["target_info"]
             teacher_step_info = precomputed_direct_step_context["step_info"]
-            teacher_u_dev, teacher_fallback_ic_next, teacher_step_info = solve_direct_tracking_from_target(
+            teacher_u_dev, teacher_fallback_ic_next, teacher_step_info = _solve_tracking_controller_from_target(
+                controller=teacher_controller,
                 LMPC_obj=MPC_obj,
                 x0_aug=xhat_aug_store[:, k],
                 y_sp_k=y_sp_k,
@@ -1507,16 +1684,14 @@ def run_rl_train(
                 u_dev_max=u_max,
                 rho_lyap=rho_lyap,
                 lyap_eps=lyap_eps,
-                lyapunov_mode="hard",
-                use_target_output_for_tracking=direct_tracking_use_target_output,
-                skip_terminal_if_alpha_small=True,
-                alpha_terminal_min=1e-8,
-                use_target_on_solver_fail=False,
+                direct_tracking_use_target_output=direct_tracking_use_target_output,
                 first_step_contraction_on=first_step_contraction_on,
-                solver_options={"warm_start": True},
+                gart_mpc_config=gart_mpc_config,
             )
             if teacher_fallback_ic_next is not None:
                 step_fallback_ic = np.asarray(teacher_fallback_ic_next, float).reshape(-1).copy()
+            if teacher_controller == "gart_lmpc":
+                gart_lmpc_teacher_info = dict(teacher_step_info)
 
             teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
             demo_action = teacher_action.copy()
@@ -1535,7 +1710,7 @@ def run_rl_train(
                     action = np.clip(teacher_action, -1.0, 1.0)
             else:
                 action = None
-        elif needs_teacher_action and teacher_source == "offset_free_mpc":
+        elif needs_teacher_action and teacher_controller == "offset_free_mpc":
             teacher_u_dev, teacher_info = solve_offset_free_mpc_candidate(
                 MPC_obj=teacher_MPC_obj,
                 y_sp=y_sp_k,
@@ -1617,6 +1792,8 @@ def run_rl_train(
                 behavior_debug["policy_u_dev_pre_handoff"] = policy_u_dev_pre_handoff.copy()
         if offset_free_teacher_info is not None:
             behavior_debug["offset_free_mpc_teacher_info"] = offset_free_teacher_info
+        if gart_lmpc_teacher_info is not None:
+            behavior_debug["gart_lmpc_teacher_info"] = gart_lmpc_teacher_info
         u_rl_dev = np.clip(map_to_bounds(action, u_min, u_max), u_min, u_max)
         if teacher_u_dev is not None:
             behavior_debug["bc_teacher_gap_inf"] = float(
@@ -1969,24 +2146,27 @@ def run_rl_train(
 
         if projection_backend == "mpc_only_diagnostic":
             diag_obj = MPC_obj if diagnostic_lmpc_obj is None else diagnostic_lmpc_obj
-            direct_step_context = prepare_direct_output_disturbance_step(
-                LMPC_obj=diag_obj,
-                x0_aug=xhat_aug_store[:, k],
-                y_sp_k=y_sp_k,
-                u_prev_dev=u_prev_dev,
-                u_dev_min=u_min,
-                u_dev_max=u_max,
-                target_mode=direct_target_mode,
-                target_config=direct_target_config,
-                target_H=None,
-                x_target_prev_success=direct_x_target_prev_success,
-                gart_target_state=gart_target_state,
-                step_idx=k,
-                y_prev_scaled=y_prev_dev,
-                plant_mode=mode,
-                disturbance_after_step=disturbance_after_step,
-                use_target_output_for_tracking=direct_tracking_use_target_output,
-            )
+            if precomputed_direct_step_context is None:
+                direct_step_context = prepare_direct_output_disturbance_step(
+                    LMPC_obj=diag_obj,
+                    x0_aug=xhat_aug_store[:, k],
+                    y_sp_k=y_sp_k,
+                    u_prev_dev=u_prev_dev,
+                    u_dev_min=u_min,
+                    u_dev_max=u_max,
+                    target_mode=direct_target_mode,
+                    target_config=direct_target_config,
+                    target_H=None,
+                    x_target_prev_success=direct_x_target_prev_success,
+                    gart_target_state=gart_target_state,
+                    step_idx=k,
+                    y_prev_scaled=y_prev_dev,
+                    plant_mode=mode,
+                    disturbance_after_step=disturbance_after_step,
+                    use_target_output_for_tracking=direct_tracking_use_target_output,
+                )
+            else:
+                direct_step_context = precomputed_direct_step_context
             direct_target_info = direct_step_context["target_info"]
             direct_step_info = direct_step_context["step_info"]
             direct_x_target_prev_success = direct_step_context["x_target_prev_success_next"]
@@ -2091,7 +2271,7 @@ def run_rl_train(
                 "rho": rho_lyap,
                 "eps_lyap": lyap_eps,
                 "solver_status": "mpc_only_diagnostic",
-                "solver_name": "diagnostic_direct_gate",
+                "solver_name": "diagnostic_gart_gate" if diagnostic_uses_gart_target else "diagnostic_direct_gate",
                 "solver_residuals": {
                     "candidate_bounds_violation": diagnostic_eval.get("candidate_bounds_violation"),
                     "candidate_move_violation": diagnostic_eval.get("candidate_move_violation"),
@@ -2104,6 +2284,7 @@ def run_rl_train(
                 "qcqp_solved": False,
                 "qcqp_hard_accepted": False,
                 "qcqp_status": "not_attempted",
+                "fallback_controller": fallback_controller,
                 "fallback_mode": None,
                 "fallback_verified": False,
                 "fallback_solver_status": None,
@@ -2370,7 +2551,11 @@ def run_rl_train(
             performance_guard_info = {
                 "performance_guard_enabled": bool(performance_guard_cfg.get("enabled", False)),
                 "performance_guard_ok": None,
-                "performance_guard_reference_policy": performance_guard_cfg.get("reference_policy"),
+                "performance_guard_reference_policy": (
+                    fallback_controller
+                    if str(performance_guard_cfg.get("reference_policy", "direct_mpc")) == "direct_mpc"
+                    else performance_guard_cfg.get("reference_policy")
+                ),
                 "performance_guard_candidate_cost": None,
                 "performance_guard_reference_cost": None,
                 "performance_guard_tolerance": None,
@@ -2378,11 +2563,16 @@ def run_rl_train(
             precomputed_direct_fallback = None
             if candidate_eval.get("accepted", False) and performance_guard_cfg.get("enabled", False):
                 reference_policy = str(performance_guard_cfg.get("reference_policy", "direct_mpc"))
+                effective_reference_policy = (
+                    fallback_controller if reference_policy == "direct_mpc" else reference_policy
+                )
+                performance_guard_info["performance_guard_reference_policy"] = effective_reference_policy
                 reference_u_dev = u_prev_dev.copy()
                 reference_info = None
                 reference_ic_next = None
                 if reference_policy == "direct_mpc":
-                    reference_u_dev, reference_ic_next, reference_info = solve_direct_tracking_from_target(
+                    reference_u_dev, reference_ic_next, reference_info = _solve_tracking_controller_from_target(
+                        controller=fallback_controller,
                         LMPC_obj=MPC_obj,
                         x0_aug=xhat_aug_store[:, k],
                         y_sp_k=y_sp_k,
@@ -2395,13 +2585,9 @@ def run_rl_train(
                         u_dev_max=u_max,
                         rho_lyap=rho_lyap,
                         lyap_eps=lyap_eps,
-                        lyapunov_mode="hard",
-                        use_target_output_for_tracking=direct_tracking_use_target_output,
-                        skip_terminal_if_alpha_small=True,
-                        alpha_terminal_min=1e-8,
-                        use_target_on_solver_fail=False,
+                        direct_tracking_use_target_output=direct_tracking_use_target_output,
                         first_step_contraction_on=first_step_contraction_on,
-                        solver_options={"warm_start": True},
+                        gart_mpc_config=gart_mpc_config,
                     )
                     precomputed_direct_fallback = (reference_u_dev, reference_ic_next, reference_info)
                 candidate_cost = _one_step_raw_tracking_cost(
@@ -2460,12 +2646,13 @@ def run_rl_train(
                 fallback_lyap_ok = None
                 u_fallback_mpc = None
                 solver_status = "candidate_checked"
-                solver_name = "direct_accept_or_fallback_gate"
+                solver_name = f"{fallback_controller}_accept_or_fallback_gate"
             else:
                 if precomputed_direct_fallback is not None:
                     u_dev_safe, fallback_ic_next, direct_step_info = precomputed_direct_fallback
                 else:
-                    u_dev_safe, fallback_ic_next, direct_step_info = solve_direct_tracking_from_target(
+                    u_dev_safe, fallback_ic_next, direct_step_info = _solve_tracking_controller_from_target(
+                        controller=fallback_controller,
                         LMPC_obj=MPC_obj,
                         x0_aug=xhat_aug_store[:, k],
                         y_sp_k=y_sp_k,
@@ -2478,13 +2665,9 @@ def run_rl_train(
                         u_dev_max=u_max,
                         rho_lyap=rho_lyap,
                         lyap_eps=lyap_eps,
-                        lyapunov_mode="hard",
-                        use_target_output_for_tracking=direct_tracking_use_target_output,
-                        skip_terminal_if_alpha_small=True,
-                        alpha_terminal_min=1e-8,
-                        use_target_on_solver_fail=False,
+                        direct_tracking_use_target_output=direct_tracking_use_target_output,
                         first_step_contraction_on=first_step_contraction_on,
-                        solver_options={"warm_start": True},
+                        gart_mpc_config=gart_mpc_config,
                     )
                 if reuse_mpc_solution_as_ic:
                     fallback_ic = np.asarray(fallback_ic_next, float).reshape(-1).copy()
@@ -2509,19 +2692,24 @@ def run_rl_train(
                     accept_reason = "fallback_mpc_verified"
                     verified = True
                     fallback_verified = True
-                    fallback_mode = "direct_lyapunov_mpc"
-                elif direct_step_info.get("method") in {"target_fail_hold_prev", "solver_fail_hold_prev"}:
+                    fallback_mode = fallback_controller
+                elif direct_step_info.get("method") in {
+                    "target_fail_hold_prev",
+                    "solver_fail_hold_prev",
+                    "gart_target_not_usable_hold_prev",
+                    "gart_solver_fail_hold_prev",
+                }:
                     correction_mode = str(direct_step_info.get("method"))
                     accept_reason = None
                     verified = False
                     fallback_verified = False
-                    fallback_mode = "hold_prev"
+                    fallback_mode = "gart_lmpc_hold_prev" if fallback_controller == "gart_lmpc" else "hold_prev"
                 else:
                     correction_mode = "fallback_mpc_unverified"
                     accept_reason = None
                     verified = False
                     fallback_verified = False
-                    fallback_mode = "direct_lyapunov_mpc"
+                    fallback_mode = fallback_controller
 
                 fallback_solver_status = direct_step_info.get("status") or correction_mode
                 fallback_objective_value = direct_step_info.get("fun")
@@ -2598,6 +2786,7 @@ def run_rl_train(
                 "qcqp_solved": False,
                 "qcqp_hard_accepted": False,
                 "qcqp_status": "not_attempted",
+                "fallback_controller": fallback_controller,
                 "fallback_mode": fallback_mode,
                 "fallback_verified": bool(fallback_verified),
                 "fallback_solver_status": fallback_solver_status,

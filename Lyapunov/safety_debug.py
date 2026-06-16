@@ -550,6 +550,7 @@ def make_safety_filter_step_records(lyap_info_storage):
             "qcqp_solved": bool(info.get("qcqp_solved", False)),
             "qcqp_hard_accepted": bool(info.get("qcqp_hard_accepted", False)),
             "qcqp_status": info.get("qcqp_status"),
+            "fallback_controller": info.get("fallback_controller"),
             "fallback_mode": info.get("fallback_mode"),
             "fallback_verified": info.get("fallback_verified"),
             "fallback_solver_status": info.get("fallback_solver_status"),
