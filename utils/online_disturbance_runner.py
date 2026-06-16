@@ -196,10 +196,12 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
     "ofmpc_pretrained_safety_gate": OnlineTD3Preset(
         key="ofmpc_pretrained_safety_gate",
         study_name="OnlineTD3_OFMPCPretrained_SafetyGate",
-        label="OF-MPC-pretrained online TD3 with Direct LMPC safety gate",
+        label="OF-MPC-pretrained online TD3 with GART-LMPC safety gate",
         safety_gate=True,
         pretrain_source="of_mpc",
-        teacher_source="offset_free_mpc",
+        teacher_source="gart_lmpc",
+        direct_target_mode="gart",
+        fallback_controller="gart_lmpc",
     ),
     "lmpc_pretrained_no_safety_gate": OnlineTD3Preset(
         key="lmpc_pretrained_no_safety_gate",
@@ -212,10 +214,12 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
     "ofmpc_pretrained_no_safety_gate": OnlineTD3Preset(
         key="ofmpc_pretrained_no_safety_gate",
         study_name="OnlineTD3_OFMPCPretrained_NoSafetyGate",
-        label="OF-MPC-pretrained online TD3 without safety intervention",
+        label="OF-MPC-pretrained online TD3 without safety intervention and GART-LMPC BC",
         safety_gate=False,
         pretrain_source="of_mpc",
-        teacher_source="offset_free_mpc",
+        teacher_source="gart_lmpc",
+        direct_target_mode="gart",
+        fallback_controller="none",
     ),
     "cold_start_safety_gate": OnlineTD3Preset(
         key="cold_start_safety_gate",
@@ -574,6 +578,11 @@ def _pretrained_selector_note(pretrain_source: str | None, target_mode: str) -> 
     target_label = str(target_mode).strip().lower()
     if pretrain_source is None:
         return f"cold-start run; no pretrained checkpoint was loaded; online target selector is {target_label}"
+    if target_label == "gart":
+        return (
+            f"{pretrain_source} checkpoint loading is unchanged; online teacher/fallback "
+            "uses GART-LMPC with the GART target selector"
+        )
     return (
         f"{pretrain_source} checkpoint loading is unchanged; online Direct LMPC "
         f"gate/diagnostic target selector is {TARGET_SELECTOR_VARIANT}"
@@ -861,7 +870,7 @@ def run_online_td3_disturbance_preset(
         else None
     )
     if uses_gart_lmpc_controller and gart_mpc_config is None:
-        raise RuntimeError("GART-LMPC cold-start control requires a GART disturbance context.")
+        raise RuntimeError("GART-LMPC online control requires a GART disturbance context.")
     case_mpc_obj = context.lmpc_obj
     teacher_mpc_obj = None
     if preset.teacher_source == "offset_free_mpc":
