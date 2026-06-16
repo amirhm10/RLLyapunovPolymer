@@ -11,11 +11,17 @@ from Lyapunov.gart_target import CertifiedDisturbanceConfig, GARTTargetConfig, G
 from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
 
 
+GART_FINAL_RHO_LYAP = 0.98
+GART_FINAL_LYAP_EPS = 1.0e-3
+GART_FINAL_SLACK_PENALTY = 1.0e6
+GART_FINAL_MPC_OBJECTIVE = "raw"
+GART_FINAL_LYAPUNOV_MODE = "hard"
+
 GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "input_headroom_frac": 0.03,
     "alpha_terminal_min": 1.0e-8,
-    "rho": 0.98,
-    "eps": 1.0e-3,
+    "rho": GART_FINAL_RHO_LYAP,
+    "eps": GART_FINAL_LYAP_EPS,
     "primary_tol_abs": 1.0e-8,
     "primary_tol_rel": 1.0e-6,
     "contraction_margin_tol": 1.0e-8,
@@ -35,7 +41,7 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "target_term_gate_disable_on_hold": True,
     "eta_y_when_gated": None,
     "eta_u_when_gated": None,
-    "slack_penalty": 1.0e6,
+    "slack_penalty": GART_FINAL_SLACK_PENALTY,
 }
 
 GART_FINAL_TARGET_OVERRIDES: dict[str, Any] = {
@@ -48,6 +54,12 @@ GART_FINAL_TARGET_OVERRIDES: dict[str, Any] = {
     "dy_s_max_abs": 1.0,
     "d_rate_scale": 1.0,
     "adaptive_rate_enabled": False,
+}
+
+GART_FINAL_TARGET_CONFIG_OVERRIDES: dict[str, Any] = {
+    **GART_FINAL_TARGET_OVERRIDES,
+    "rho": GART_FINAL_RHO_LYAP,
+    "eps": GART_FINAL_LYAP_EPS,
 }
 
 
@@ -496,6 +508,12 @@ def write_json(path: str | Path, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "GART_FINAL_LYAPUNOV_MODE",
+    "GART_FINAL_LYAP_EPS",
+    "GART_FINAL_MPC_OBJECTIVE",
+    "GART_FINAL_RHO_LYAP",
+    "GART_FINAL_SLACK_PENALTY",
+    "GART_FINAL_TARGET_CONFIG_OVERRIDES",
     "GART_FINAL_TARGET_OVERRIDES",
     "GART_INITIAL_DEFAULTS",
     "discover_gart_case_values",

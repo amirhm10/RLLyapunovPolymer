@@ -76,6 +76,12 @@ from utils.direct_lmpc_selector_defaults import (
     make_direct_lmpc_target_config,
 )
 from utils.gart_defaults import (
+    GART_FINAL_LYAPUNOV_MODE,
+    GART_FINAL_LYAP_EPS,
+    GART_FINAL_MPC_OBJECTIVE,
+    GART_FINAL_RHO_LYAP,
+    GART_FINAL_SLACK_PENALTY,
+    GART_FINAL_TARGET_CONFIG_OVERRIDES,
     GART_FINAL_TARGET_OVERRIDES,
     discover_gart_case_values,
     make_gart_mpc_config,
@@ -99,8 +105,8 @@ LYAP_TOL = DIRECT_LMPC_LYAP_TOL
 SLACK_PENALTY = DIRECT_LMPC_SLACK_PENALTY
 TARGET_MODE = DIRECT_LMPC_TARGET_MODE
 TARGET_SELECTOR_VARIANT = DIRECT_LMPC_TARGET_SELECTOR_VARIANT
-GART_LMPC_OBJECTIVE = "raw"
-GART_LMPC_LYAPUNOV_MODE = "hard"
+GART_LMPC_OBJECTIVE = GART_FINAL_MPC_OBJECTIVE
+GART_LMPC_LYAPUNOV_MODE = GART_FINAL_LYAPUNOV_MODE
 
 QY_MPC_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_MPC_DIAG = np.array([1.0, 1.0], dtype=float)
@@ -468,8 +474,22 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
     }
 
 
-def _lyap_eps_for_preset(preset: OnlineTD3Preset) -> float:
-    return float(LYAP_EPS)
+def _preset_uses_gart_family(preset: OnlineTD3Preset) -> bool:
+    return bool(
+        str(preset.direct_target_mode).strip().lower() == "gart"
+        or str(preset.teacher_source).strip().lower() == "gart_lmpc"
+        or str(preset.fallback_controller).strip().lower() == "gart_lmpc"
+    )
+
+
+def _lyap_params_for_preset(preset: OnlineTD3Preset) -> tuple[float, float, str]:
+    if _preset_uses_gart_family(preset):
+        return (
+            float(GART_FINAL_RHO_LYAP),
+            float(GART_FINAL_LYAP_EPS),
+            "utils.gart_defaults final GART constants",
+        )
+    return float(RHO_LYAP), float(LYAP_EPS), "direct_lmpc_online_defaults"
 
 
 def _build_reward(
@@ -510,6 +530,10 @@ def _bounded_mixed_target_config() -> dict[str, float]:
     return make_direct_lmpc_target_config()
 
 
+def _gart_target_final_overrides() -> dict[str, Any]:
+    return dict(GART_FINAL_TARGET_CONFIG_OVERRIDES)
+
+
 def _target_config_for_mode(
     target_mode: str,
     system_data: dict[str, Any],
@@ -517,7 +541,7 @@ def _target_config_for_mode(
 ) -> tuple[Any, dict[str, Any] | None]:
     if str(target_mode).strip().lower() == "gart":
         discovered = discover_gart_case_values(system_data, setup, results_roots=None)
-        return make_gart_target_config(discovered, **GART_FINAL_TARGET_OVERRIDES), discovered
+        return make_gart_target_config(discovered, **_gart_target_final_overrides()), discovered
     return _bounded_mixed_target_config(), None
 
 
@@ -534,7 +558,7 @@ def _gart_mpc_config_for_context(
         {
             "rho": float(rho_lyap),
             "eps": float(lyap_eps),
-            "slack_penalty": float(SLACK_PENALTY),
+            "slack_penalty": float(GART_FINAL_SLACK_PENALTY),
             "first_step_contraction_on": True,
         }
     )
@@ -818,14 +842,21 @@ def run_online_td3_disturbance_preset(
         teacher_source=preset.teacher_source,
         pretrained=preset.pretrain_source is not None,
     )
-    case_lyap_eps = _lyap_eps_for_preset(preset)
+    case_rho_lyap, case_lyap_eps, lyap_param_source = _lyap_params_for_preset(preset)
     projection_backend = "direct_accept_or_fallback" if preset.safety_gate else "mpc_only_diagnostic"
     effective_fallback_controller = preset.fallback_controller if preset.safety_gate else "none"
     uses_gart_lmpc_controller = bool(
         preset.teacher_source == "gart_lmpc" or effective_fallback_controller == "gart_lmpc"
     )
+    if uses_gart_lmpc_controller:
+        controller_family = "gart_lmpc"
+    elif preset.teacher_source == "offset_free_mpc":
+        controller_family = "offset_free_mpc"
+    else:
+        controller_family = "direct_lmpc"
+    case_slack_penalty = float(GART_FINAL_SLACK_PENALTY if uses_gart_lmpc_controller else SLACK_PENALTY)
     gart_mpc_config = (
-        _gart_mpc_config_for_context(context, rho_lyap=RHO_LYAP, lyap_eps=case_lyap_eps)
+        _gart_mpc_config_for_context(context, rho_lyap=case_rho_lyap, lyap_eps=case_lyap_eps)
         if uses_gart_lmpc_controller
         else None
     )
@@ -844,6 +875,7 @@ def run_online_td3_disturbance_preset(
         "case_name": preset.study_name,
         "label": preset.label,
         "controller_mode": "td3_safety_gate" if preset.safety_gate else "td3_no_safety_gate",
+        "controller_family": controller_family,
         "projection_backend": projection_backend,
         "safety_gate_active": bool(preset.safety_gate),
         "pretrain_source": preset.pretrain_source,
@@ -852,11 +884,17 @@ def run_online_td3_disturbance_preset(
         "target_mode": preset.direct_target_mode,
         "target_selector_variant": "gart" if preset.direct_target_mode == "gart" else TARGET_SELECTOR_VARIANT,
         "target_config": _jsonable(context.target_config),
-        "target_config_source": "gart_final_overrides" if preset.direct_target_mode == "gart" else "direct_lmpc_selector_defaults",
-        "gart_target_overrides": dict(GART_FINAL_TARGET_OVERRIDES) if preset.direct_target_mode == "gart" else None,
+        "target_config_source": (
+            "utils.gart_defaults final GART constants"
+            if preset.direct_target_mode == "gart"
+            else "direct_lmpc_selector_defaults"
+        ),
+        "gart_target_overrides": (
+            _jsonable(_gart_target_final_overrides()) if preset.direct_target_mode == "gart" else None
+        ),
         "gart_lmpc_config": _jsonable(gart_mpc_config),
         "gart_lmpc_config_source": (
-            "gart_final_overrides_raw_hard_online_rho_eps" if gart_mpc_config is not None else None
+            "utils.gart_defaults final GART constants" if gart_mpc_config is not None else None
         ),
         "gart_lmpc_objective": GART_LMPC_OBJECTIVE if gart_mpc_config is not None else None,
         "gart_lmpc_lyapunov_mode": GART_LMPC_LYAPUNOV_MODE if gart_mpc_config is not None else None,
@@ -883,13 +921,18 @@ def run_online_td3_disturbance_preset(
         ),
         "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
         "xs_prev_penalty_weight": XS_PREV_PENALTY_WEIGHT,
-        "rho_lyap": RHO_LYAP,
+        "rho_lyap": case_rho_lyap,
         "lyap_eps": case_lyap_eps,
+        "lyap_param_source": lyap_param_source,
+        "rho_lyap_default": RHO_LYAP,
         "lyap_eps_default": LYAP_EPS,
+        "gart_rho_lyap_default": GART_FINAL_RHO_LYAP if uses_gart_lmpc_controller else None,
+        "gart_lyap_eps_default": GART_FINAL_LYAP_EPS if uses_gart_lmpc_controller else None,
         "lyap_eps_pretrained_online_override": None,
         "lyap_eps_override_reason": "online target-diagnostic and fallback-controller Lyapunov epsilon",
         "lyap_tol": LYAP_TOL,
-        "slack_penalty": SLACK_PENALTY,
+        "slack_penalty": case_slack_penalty,
+        "gart_slack_penalty_default": GART_FINAL_SLACK_PENALTY if uses_gart_lmpc_controller else None,
         "training_phase_config": dict(training_phase_config),
         "initial_agent_path": resolved_agent_path,
         "checkpoint_architecture": checkpoint_arch,
@@ -922,7 +965,7 @@ def run_online_td3_disturbance_preset(
         ha_change=HA_CHANGE,
         reward_fn=reward_fn,
         mode=PLANT_MODE,
-        rho_lyap=RHO_LYAP,
+        rho_lyap=case_rho_lyap,
         lyap_eps=case_lyap_eps,
         lyap_tol=LYAP_TOL,
         seed=int(seed),

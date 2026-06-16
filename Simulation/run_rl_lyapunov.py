@@ -127,6 +127,39 @@ def _select_mpc_tracking_target(y_sp_raw, target_info, policy="raw_setpoint"):
     )
 
 
+def _target_diag_value(target_info, *keys):
+    target_info = {} if target_info is None else dict(target_info)
+    for key in keys:
+        value = target_info.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _target_info_is_gart(target_info):
+    target_info = {} if target_info is None else dict(target_info)
+    return bool(
+        str(target_info.get("target_mode", "")).strip().lower() == "gart"
+        or str(target_info.get("target_variant", "")).strip().lower() == "gart"
+        or target_info.get("governor_alpha") is not None
+    )
+
+
+def _print_gart_target_diagnostics(target_info):
+    if not _target_info_is_gart(target_info):
+        return
+    print(
+        "Last GART target diagnostics:",
+        "target_rejection_reason:",
+        _target_diag_value(target_info, "target_rejection_reason", "rejection_reason"),
+        "| target_usable_for_lmpc:",
+        _target_diag_value(target_info, "target_usable_for_lmpc", "usable_for_lmpc"),
+        "| contraction_probe_margin:",
+        _target_diag_value(target_info, "contraction_probe_margin", "governor_probe_margin"),
+        "| governor_alpha:", _target_diag_value(target_info, "governor_alpha"),
+    )
+
+
 def _resolve_effective_target(current_target, prev_target, backup_policy="last_valid"):
     if isinstance(current_target, dict) and current_target.get("success", False):
         return current_target, "current_target"
@@ -1511,7 +1544,7 @@ def run_rl_train(
             raise ValueError("projection_backend='direct_accept_or_fallback' requires use_lyap=True.")
         if not hasattr(MPC_obj, "solve_tracking_mpc_step") or not hasattr(MPC_obj, "standard_tracking_report"):
             raise TypeError(
-                "projection_backend='direct_accept_or_fallback' requires a direct Lyapunov tracking solver "
+                "projection_backend='direct_accept_or_fallback' requires an MPC object with Lyapunov tracking "
                 "such as design_direct_lyapunov_mpc_solver(...)."
             )
         direct_ingredients = direct_lyapunov_evaluation_ingredients(MPC_obj)
@@ -2137,6 +2170,7 @@ def run_rl_train(
                     "| target_slack_inf:", last_target.get("target_slack_inf") if last_target else None,
                     "| selector_status:", last_selector.get("status"),
                 )
+                _print_gart_target_diagnostics(last_target)
 
                 filtered_in_block = 0
                 checked_in_block = 0
@@ -2453,8 +2487,13 @@ def run_rl_train(
                 )
                 diagnostic_rate = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 total_diagnostic_rate = total_filtered / total_checked if total_checked > 0 else 0.0
+                diagnostic_gate_label = (
+                    "GART diagnostic Lyapunov gate"
+                    if direct_target_mode_label == "gart"
+                    else "MPC-only diagnostic Lyapunov gate"
+                )
                 print(
-                    "MPC-only diagnostic Lyapunov gate would activate in block:",
+                    f"{diagnostic_gate_label} would activate in block:",
                     filtered_in_block, "/", checked_in_block,
                     "(ratio:", diagnostic_rate, ")",
                     "| actual safety active/interventions: 0 /", checked_in_block,
@@ -2473,6 +2512,7 @@ def run_rl_train(
                     "| target_stage:", last_target.get("solve_stage") if last_target else None,
                     "| cond_M:", last.get("target_cond_M"),
                 )
+                _print_gart_target_diagnostics(last_target)
                 filtered_in_block = 0
                 checked_in_block = 0
                 fallback_in_block = 0
@@ -2968,8 +3008,13 @@ def run_rl_train(
                 total_accept_ratio = (
                     (total_checked - total_fallback_mpc) / total_checked if total_checked > 0 else 0.0
                 )
+                gate_label = (
+                    "GART safety gate"
+                    if fallback_controller == "gart_lmpc" or direct_target_mode_label == "gart"
+                    else "Safety gate"
+                )
                 print(
-                    "Safety gate accepted in block:",
+                    f"{gate_label} accepted in block:",
                     accepted_in_block, "/", checked_in_block,
                     "(ratio:", block_accept_ratio, ")",
                     "| fallback / hold-prev in block:",
@@ -2990,6 +3035,7 @@ def run_rl_train(
                     "| target_stage:", last_target.get("solve_stage") if last_target else None,
                     "| cond_M:", last.get("target_cond_M"),
                 )
+                _print_gart_target_diagnostics(last_target)
 
                 filtered_in_block = 0
                 checked_in_block = 0
@@ -3524,6 +3570,7 @@ def run_rl_train(
                 "| target_slack_inf:", last_target.get("target_slack_inf") if last_target else None,
                 "| selector_status:", last_selector.get("status"),
             )
+            _print_gart_target_diagnostics(last_target)
 
             filtered_in_block = 0
             checked_in_block = 0

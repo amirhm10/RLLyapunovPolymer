@@ -32,7 +32,12 @@ from utils.direct_lyapunov_study import (
     direct_disturbance_test_cycle,
 )
 from utils.gart_defaults import (
-    GART_FINAL_TARGET_OVERRIDES,
+    GART_FINAL_LYAPUNOV_MODE,
+    GART_FINAL_LYAP_EPS,
+    GART_FINAL_MPC_OBJECTIVE,
+    GART_FINAL_RHO_LYAP,
+    GART_FINAL_SLACK_PENALTY,
+    GART_FINAL_TARGET_CONFIG_OVERRIDES,
     discover_gart_case_values,
     gart_rl_observation,
     make_gart_mpc_config,
@@ -48,18 +53,18 @@ from utils.lyapunov_utils import get_y_sp_step
 
 PREDICT_H = 9
 CONT_H = 3
-RHO_LYAP = 0.98
-LYAP_EPS = 1.0e-3
-SLACK_PENALTY = 1.0e6
+RHO_LYAP = GART_FINAL_RHO_LYAP
+LYAP_EPS = GART_FINAL_LYAP_EPS
+SLACK_PENALTY = GART_FINAL_SLACK_PENALTY
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 
 
 FINAL_GART_CASE_NAME = "gartlmpc"
-FINAL_GART_MPC_OBJECTIVE = "raw"
-FINAL_GART_LYAPUNOV_MODE = "hard"
-FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = dict(GART_FINAL_TARGET_OVERRIDES)
+FINAL_GART_MPC_OBJECTIVE = GART_FINAL_MPC_OBJECTIVE
+FINAL_GART_LYAPUNOV_MODE = GART_FINAL_LYAPUNOV_MODE
+FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = dict(GART_FINAL_TARGET_CONFIG_OVERRIDES)
 
 
 def _jsonable(value: Any) -> Any:

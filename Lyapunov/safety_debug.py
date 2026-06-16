@@ -638,6 +638,19 @@ def make_safety_filter_step_records(lyap_info_storage):
             "residual_rl_authority_multiplier": info.get("residual_rl_authority_multiplier"),
             "target_error_inf": target_info.get("target_error_inf"),
             "target_slack_inf": target_info.get("target_slack_inf"),
+            "target_rejection_reason": target_info.get(
+                "target_rejection_reason",
+                target_info.get("rejection_reason"),
+            ),
+            "target_usable_for_lmpc": target_info.get(
+                "target_usable_for_lmpc",
+                target_info.get("usable_for_lmpc"),
+            ),
+            "contraction_probe_margin": target_info.get(
+                "contraction_probe_margin",
+                target_info.get("governor_probe_margin"),
+            ),
+            "governor_alpha": target_info.get("governor_alpha"),
             "selector_status": selector.get("status"),
             "selector_solver": selector.get("solver"),
             "selector_stage": target_info.get("solve_stage"),
