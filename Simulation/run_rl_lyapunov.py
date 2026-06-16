@@ -2969,7 +2969,7 @@ def run_rl_train(
                     (total_checked - total_fallback_mpc) / total_checked if total_checked > 0 else 0.0
                 )
                 print(
-                    "Direct gate accepted in block:",
+                    "Safety gate accepted in block:",
                     accepted_in_block, "/", checked_in_block,
                     "(ratio:", block_accept_ratio, ")",
                     "| fallback / hold-prev in block:",

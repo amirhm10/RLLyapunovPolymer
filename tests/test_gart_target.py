@@ -194,7 +194,7 @@ def test_alpha_zero_governor_recertifies_current_disturbance_target():
     assert state.d_cert[0] == pytest.approx(result.d_cert[0])
 
 
-def test_stale_hold_previous_fallback_is_not_usable_when_recertification_fails():
+def test_hold_previous_fallback_reuses_steady_target_with_current_disturbance():
     A_aug, B_aug, C_aug = _augmented_model()
     prev = GARTTargetState(
         d_cert=np.array([0.0]),
@@ -224,15 +224,23 @@ def test_stale_hold_previous_fallback_is_not_usable_when_recertification_fails()
         P_x=np.array([[1.0]]),
         K_x=np.array([[0.0]]),
     )
-    assert result.solve_success is False
-    assert result.accepted is False
-    assert result.usable_for_lmpc is False
-    assert result.success is False
-    assert result.status == "hold_previous_not_recertified"
-    assert result.rejection_reason == "held_previous_target_not_recertified"
-    assert result.diagnostics["held_previous_target_not_recertified"] is True
+    assert result.solve_success is True
+    assert result.accepted is True
+    assert result.usable_for_lmpc is True
+    assert result.success is True
+    assert result.status == "hold_previous_current_disturbance_usable"
+    assert result.rejection_reason is None
+    assert result.hold_previous is True
+    assert result.d_cert[0] == pytest.approx(0.2)
+    assert result.x_s[0] == pytest.approx(0.0)
+    assert result.u_s[0] == pytest.approx(0.0)
+    assert result.y_s[0] == pytest.approx(0.2)
+    assert result.y_s[0] == pytest.approx(C_aug[0, 0] * result.x_s[0] + result.d_cert[0], abs=1.0e-6)
+    assert result.target_error_inf == pytest.approx(0.8)
+    assert result.diagnostics["held_previous_current_disturbance"] is True
     assert result.diagnostics["stale_target_equation_residual"][0] == pytest.approx(-0.2)
     assert state.valid is True
+    assert state.d_cert[0] == pytest.approx(result.d_cert[0])
 
 
 def test_certified_disturbance_rate_limit():

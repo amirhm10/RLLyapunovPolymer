@@ -1198,21 +1198,25 @@ def _hold_previous_result(
     disturbance_info: dict[str, Any],
 ) -> GARTTargetResult:
     stale_residual = None
-    if state.x_s is not None and state.y_s is not None:
-        x_old = np.asarray(state.x_s, dtype=float).reshape(model.n_x)
-        y_old = np.asarray(state.y_s, dtype=float).reshape(model.n_y)
-        stale_residual = y_old - np.asarray(model.C @ x_old + model.Cd @ d_cert, dtype=float).reshape(model.n_y)
+    x_old = None if state.x_s is None else np.asarray(state.x_s, dtype=float).reshape(model.n_x)
+    u_old = None if state.u_s is None else np.asarray(state.u_s, dtype=float).reshape(model.n_u)
+    y_old = None if state.y_s is None else np.asarray(state.y_s, dtype=float).reshape(model.n_y)
+    y_current_disturbance = None
+    if x_old is not None:
+        y_current_disturbance = np.asarray(model.C @ x_old + model.Cd @ d_cert, dtype=float).reshape(model.n_y)
+    if y_old is not None and y_current_disturbance is not None:
+        stale_residual = y_old - y_current_disturbance
     candidate = GARTStageResult(
-        success=bool(state.valid),
+        success=bool(state.valid and x_old is not None and u_old is not None and y_current_disturbance is not None),
         stage="hold_previous",
-        status="hold_previous",
+        status="hold_previous_current_disturbance",
         solver=None,
-        x_s=None if state.x_s is None else np.asarray(state.x_s, dtype=float).reshape(model.n_x),
-        u_s=None if state.u_s is None else np.asarray(state.u_s, dtype=float).reshape(model.n_u),
-        y_s=None if state.y_s is None else np.asarray(state.y_s, dtype=float).reshape(model.n_y),
+        x_s=None if x_old is None else x_old.copy(),
+        u_s=None if u_old is None else u_old.copy(),
+        y_s=None if y_current_disturbance is None else y_current_disturbance.copy(),
         primary_cost=None,
         tiebreak_cost=None,
-        diagnostics={"held_previous_target": True},
+        diagnostics={"held_previous_target": True, "held_previous_current_disturbance": True},
     )
     result = _result_from_candidate(
         candidate=candidate,
@@ -1231,24 +1235,25 @@ def _hold_previous_result(
         governor_alpha=0.0,
         governor_active=True,
         hold_previous=True,
-        status="hold_previous",
+        status="hold_previous_current_disturbance",
         extra_diagnostics={
             "disturbance": disturbance_info,
-            "held_previous_target_not_recertified": True,
+            "held_previous_current_disturbance": True,
             "stale_target_equation_residual": stale_residual,
         },
     )
-    result.success = False
-    result.solve_success = False
-    result.accepted = False
-    result.usable_for_lmpc = False
-    result.rejection_reason = "held_previous_target_not_recertified"
-    result.status = "hold_previous_not_recertified"
-    result.diagnostics["solve_success"] = False
-    result.diagnostics["accepted"] = False
-    result.diagnostics["usable_for_lmpc"] = False
-    result.diagnostics["rejection_reason"] = result.rejection_reason
-    result.diagnostics["held_previous_target_not_recertified"] = True
+    if result.accepted:
+        result.status = "hold_previous_current_disturbance_usable"
+        result.success = True
+        result.usable_for_lmpc = True
+        result.rejection_reason = None
+        result.diagnostics["accepted"] = True
+        result.diagnostics["usable_for_lmpc"] = True
+        result.diagnostics["rejection_reason"] = None
+    else:
+        result.status = "hold_previous_current_disturbance_rejected"
+        result.rejection_reason = result.rejection_reason or "held_previous_current_disturbance_rejected"
+        result.diagnostics["rejection_reason"] = result.rejection_reason
     return result
 
 
