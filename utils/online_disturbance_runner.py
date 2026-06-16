@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from pprint import pprint
@@ -74,6 +74,11 @@ from utils.direct_lmpc_selector_defaults import (
     DIRECT_LMPC_U_REF_WEIGHT,
     DIRECT_LMPC_X_REF_WEIGHT,
     make_direct_lmpc_target_config,
+)
+from utils.gart_defaults import (
+    GART_FINAL_TARGET_OVERRIDES,
+    discover_gart_case_values,
+    make_gart_target_config,
 )
 from utils.path_helpers import repo_path, resolve_repo_path
 from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS
@@ -146,6 +151,7 @@ class OnlineTD3Preset:
     safety_gate: bool
     pretrain_source: str | None
     teacher_source: str
+    direct_target_mode: str = TARGET_MODE
 
 
 @dataclass(frozen=True)
@@ -164,7 +170,8 @@ class DisturbanceContext:
     u_dev_max: np.ndarray
     reward_config: dict[str, Any]
     reward_fn: Any
-    target_config: dict[str, Any]
+    target_config: Any
+    gart_discovered: dict[str, Any] | None = None
 
 
 ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
@@ -207,6 +214,7 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
         safety_gate=True,
         pretrain_source=None,
         teacher_source="direct_lyapunov_mpc",
+        direct_target_mode="gart",
     ),
     "cold_start_no_safety_gate": OnlineTD3Preset(
         key="cold_start_no_safety_gate",
@@ -215,6 +223,7 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
         safety_gate=False,
         pretrain_source=None,
         teacher_source="offset_free_mpc",
+        direct_target_mode="gart",
     ),
 }
 
@@ -226,6 +235,8 @@ def _jsonable(value: Any) -> Any:
         return value.item()
     if isinstance(value, Path):
         return os.fspath(value)
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -493,16 +504,28 @@ def _bounded_mixed_target_config() -> dict[str, float]:
     return make_direct_lmpc_target_config()
 
 
-def _pretrained_selector_note(pretrain_source: str | None) -> str:
+def _target_config_for_mode(
+    target_mode: str,
+    system_data: dict[str, Any],
+    setup: Any,
+) -> tuple[Any, dict[str, Any] | None]:
+    if str(target_mode).strip().lower() == "gart":
+        discovered = discover_gart_case_values(system_data, setup, results_roots=None)
+        return make_gart_target_config(discovered, **GART_FINAL_TARGET_OVERRIDES), discovered
+    return _bounded_mixed_target_config(), None
+
+
+def _pretrained_selector_note(pretrain_source: str | None, target_mode: str) -> str:
+    target_label = str(target_mode).strip().lower()
     if pretrain_source is None:
-        return "cold-start run; no pretrained checkpoint was loaded"
+        return f"cold-start run; no pretrained checkpoint was loaded; online target selector is {target_label}"
     return (
         f"{pretrain_source} checkpoint loading is unchanged; online Direct LMPC "
         f"gate/diagnostic target selector is {TARGET_SELECTOR_VARIANT}"
     )
 
 
-def build_disturbance_context() -> DisturbanceContext:
+def build_disturbance_context(target_mode: str = TARGET_MODE) -> DisturbanceContext:
     setup = build_polymer_setup()
     system_data = load_of_mpc_system_data(
         setup,
@@ -564,7 +587,7 @@ def build_disturbance_context() -> DisturbanceContext:
         n_inputs,
         fallback_penalty_enabled=False,
     )
-    target_config = _bounded_mixed_target_config()
+    target_config, gart_discovered = _target_config_for_mode(target_mode, system_data, setup)
 
     return DisturbanceContext(
         setup=setup,
@@ -582,6 +605,7 @@ def build_disturbance_context() -> DisturbanceContext:
         reward_config=reward_config,
         reward_fn=reward_fn,
         target_config=target_config,
+        gart_discovered=gart_discovered,
     )
 
 
@@ -742,7 +766,7 @@ def run_online_td3_disturbance_preset(
         raise ValueError("set_points_len must be positive.")
 
     set_seed(int(seed))
-    context = build_disturbance_context()
+    context = build_disturbance_context(preset.direct_target_mode)
     scaling_contract = _scaling_contract(context.setup, context)
     reward_config, reward_fn = _build_reward(
         context.system_data["data_min"],
@@ -782,10 +806,12 @@ def run_online_td3_disturbance_preset(
         "safety_gate_active": bool(preset.safety_gate),
         "pretrain_source": preset.pretrain_source,
         "teacher_source": preset.teacher_source,
-        "target_mode": TARGET_MODE,
-        "target_selector_variant": TARGET_SELECTOR_VARIANT,
-        "target_config": dict(context.target_config),
-        "pretrained_checkpoint_selector_note": _pretrained_selector_note(preset.pretrain_source),
+        "target_mode": preset.direct_target_mode,
+        "target_selector_variant": "gart" if preset.direct_target_mode == "gart" else TARGET_SELECTOR_VARIANT,
+        "target_config": _jsonable(context.target_config),
+        "target_config_source": "gart_final_overrides" if preset.direct_target_mode == "gart" else "direct_lmpc_selector_defaults",
+        "gart_target_overrides": dict(GART_FINAL_TARGET_OVERRIDES) if preset.direct_target_mode == "gart" else None,
+        "pretrained_checkpoint_selector_note": _pretrained_selector_note(preset.pretrain_source, preset.direct_target_mode),
         "plant_mode": PLANT_MODE,
         "n_tests": episodes,
         "n_episodes": episodes,
@@ -859,8 +885,8 @@ def run_online_td3_disturbance_preset(
         reset_system_on_entry=True,
         projection_backend=projection_backend,
         first_step_contraction_on=True,
-        direct_target_mode=TARGET_MODE,
-        direct_target_config=dict(context.target_config),
+        direct_target_mode=preset.direct_target_mode,
+        direct_target_config=context.target_config,
         direct_tracking_use_target_output=USE_TARGET_OUTPUT_FOR_TRACKING,
         diagnostic_lmpc_obj=context.lmpc_obj,
         teacher_mpc_obj=teacher_mpc_obj,
@@ -888,6 +914,7 @@ def run_online_td3_disturbance_preset(
             "actor_losses": agent.actor_losses,
             "critic_losses": agent.critic_losses,
             "timing": timing,
+            "gart_discovered": context.gart_discovered,
         },
     )
     debug_dir = save_safety_filter_debug_artifacts(

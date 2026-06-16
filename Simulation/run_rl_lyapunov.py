@@ -1405,6 +1405,7 @@ def run_rl_train(
     prev_target_info = None
     last_verified_safe_dev = None
     direct_x_target_prev_success = None
+    gart_target_state = None
     last_param_noise_cycle_idx = None
     param_noise_cycle_states = []
 
@@ -1484,6 +1485,7 @@ def run_rl_train(
                 target_config=direct_target_config,
                 target_H=None,
                 x_target_prev_success=direct_x_target_prev_success,
+                gart_target_state=gart_target_state,
                 step_idx=k,
                 y_prev_scaled=y_prev_dev,
                 plant_mode=mode,
@@ -1978,6 +1980,7 @@ def run_rl_train(
                 target_config=direct_target_config,
                 target_H=None,
                 x_target_prev_success=direct_x_target_prev_success,
+                gart_target_state=gart_target_state,
                 step_idx=k,
                 y_prev_scaled=y_prev_dev,
                 plant_mode=mode,
@@ -1987,6 +1990,14 @@ def run_rl_train(
             direct_target_info = direct_step_context["target_info"]
             direct_step_info = direct_step_context["step_info"]
             direct_x_target_prev_success = direct_step_context["x_target_prev_success_next"]
+            gart_target_state = direct_step_context.get("gart_target_state_next", gart_target_state)
+            diagnostic_uses_gart_target = str(direct_target_info.get("target_mode", "")).strip().lower() == "gart"
+            diagnostic_target_source = "diagnostic_gart" if diagnostic_uses_gart_target else "diagnostic_direct"
+            diagnostic_selector_mode = (
+                "diagnostic_gart_target_selector"
+                if diagnostic_uses_gart_target
+                else "diagnostic_direct_output_disturbance_target"
+            )
 
             cx_s, cd_d_s = _selector_decomposition(diag_obj.C, n_x, direct_target_info)
             target_mismatch_inf = None
@@ -2117,12 +2128,12 @@ def run_rl_train(
                 "effective_target_stage": direct_target_info.get("solve_stage"),
                 "effective_target_source": "current_target" if direct_target_info.get("success", False) else None,
                 "effective_target_reused": False,
-                "target_source": "diagnostic_direct",
+                "target_source": diagnostic_target_source,
                 "target_stage": direct_target_info.get("solve_stage"),
-                "target_generation_mode": "diagnostic_direct_output_disturbance",
-                "selector_mode": "diagnostic_direct_output_disturbance_target",
+                "target_generation_mode": diagnostic_selector_mode,
+                "selector_mode": diagnostic_selector_mode,
                 "effective_selector_mode": (
-                    "diagnostic_direct_output_disturbance_target" if direct_target_info.get("success", False) else None
+                    diagnostic_selector_mode if direct_target_info.get("success", False) else None
                 ),
                 "selector_name": direct_target_info.get("target_variant"),
                 "effective_selector_name": direct_target_info.get("target_variant"),
@@ -2302,6 +2313,7 @@ def run_rl_train(
                     target_config=direct_target_config,
                     target_H=None,
                     x_target_prev_success=direct_x_target_prev_success,
+                    gart_target_state=gart_target_state,
                     step_idx=k,
                     y_prev_scaled=y_prev_dev,
                     plant_mode=mode,
@@ -2313,6 +2325,10 @@ def run_rl_train(
             direct_target_info = direct_step_context["target_info"]
             direct_step_info = direct_step_context["step_info"]
             direct_x_target_prev_success = direct_step_context["x_target_prev_success_next"]
+            gart_target_state = direct_step_context.get("gart_target_state_next", gart_target_state)
+            uses_gart_target = str(direct_target_info.get("target_mode", "")).strip().lower() == "gart"
+            target_source_label = "recomputed_gart" if uses_gart_target else "recomputed_direct"
+            selector_mode_label = "gart_target_selector" if uses_gart_target else "direct_output_disturbance_target"
 
             cx_s, cd_d_s = _selector_decomposition(MPC_obj.C, n_x, direct_target_info)
             target_mismatch_inf = None
@@ -2606,12 +2622,12 @@ def run_rl_train(
                 "effective_target_stage": direct_target_info.get("solve_stage"),
                 "effective_target_source": "current_target" if direct_target_info.get("success", False) else None,
                 "effective_target_reused": False,
-                "target_source": "recomputed_direct",
+                "target_source": target_source_label,
                 "target_stage": direct_target_info.get("solve_stage"),
-                "target_generation_mode": "direct_output_disturbance",
-                "selector_mode": "direct_output_disturbance_target",
+                "target_generation_mode": selector_mode_label,
+                "selector_mode": selector_mode_label,
                 "effective_selector_mode": (
-                    "direct_output_disturbance_target" if direct_target_info.get("success", False) else None
+                    selector_mode_label if direct_target_info.get("success", False) else None
                 ),
                 "selector_name": direct_target_info.get("target_variant"),
                 "effective_selector_name": direct_target_info.get("target_variant"),

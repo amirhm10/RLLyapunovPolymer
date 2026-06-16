@@ -1019,6 +1019,115 @@ def _annotate_target_quality(
     return target_info
 
 
+def _gart_target_classification(error_inf: Optional[float], target_config: Any) -> Dict[str, Optional[bool]]:
+    value = _finite_or_none(error_inf)
+    if value is None:
+        return {
+            "target_exact": None,
+            "target_good": None,
+            "target_acceptable": None,
+            "target_unreachable": None,
+        }
+    exact_tol = float(getattr(target_config, "target_exact_tol", 1.0e-6))
+    good_tol = float(getattr(target_config, "target_good_tol", 0.1))
+    acceptable_tol = float(getattr(target_config, "target_acceptable_tol", 0.5))
+    return {
+        "target_exact": bool(value <= exact_tol),
+        "target_good": bool(value <= good_tol),
+        "target_acceptable": bool(value <= acceptable_tol),
+        "target_unreachable": bool(value > acceptable_tol),
+    }
+
+
+def _gart_result_to_direct_target_info(
+    target_result: Any,
+    *,
+    target_config: Any,
+    y_sp_k: np.ndarray,
+    step_idx: Optional[int],
+    x0_aug: np.ndarray,
+    yhat_now: np.ndarray,
+    innovation: Optional[np.ndarray],
+) -> Dict[str, Any]:
+    target_info = dict(target_result.to_dict())
+    n_outputs = y_sp_k.size
+    x_s = None if target_result.x_s is None else np.asarray(target_result.x_s, dtype=float).reshape(-1)
+    u_s = None if target_result.u_s is None else np.asarray(target_result.u_s, dtype=float).reshape(-1)
+    y_s = None if target_result.y_s is None else np.asarray(target_result.y_s, dtype=float).reshape(n_outputs)
+    d_s = None if target_result.d_cert is None else np.asarray(target_result.d_cert, dtype=float).reshape(n_outputs)
+    d_raw = None if target_result.d_raw is None else np.asarray(target_result.d_raw, dtype=float).reshape(n_outputs)
+    r_cmd = None if target_result.r_cmd is None else np.asarray(target_result.r_cmd, dtype=float).reshape(n_outputs)
+    target_diag = target_result.diagnostics if isinstance(target_result.diagnostics, dict) else {}
+    disturbance_diag = target_diag.get("disturbance", {}) if isinstance(target_diag.get("disturbance", {}), dict) else {}
+    dx_s_max = None if getattr(target_config, "dx_s_max", None) is None else np.asarray(target_config.dx_s_max, dtype=float).reshape(-1)
+    dc_rate_inf = disturbance_diag.get("d_cert_delta_inf")
+    x_s_aug = None
+    if x_s is not None and d_s is not None:
+        x_s_aug = np.concatenate([x_s, d_s])
+
+    target_info.update(
+        {
+            "step": int(step_idx) if step_idx is not None else -1,
+            "success": bool(target_result.success),
+            "target_mode": "gart",
+            "target_variant": "gart",
+            "disturbance_model_mode": "certified_output_disturbance",
+            "solve_stage": target_result.stage,
+            "status": target_result.status,
+            "x_s": None if x_s is None else x_s.copy(),
+            "u_s": None if u_s is None else u_s.copy(),
+            "y_s": None if y_s is None else y_s.copy(),
+            "d_s": None if d_s is None else d_s.copy(),
+            "d_cert": None if d_s is None else d_s.copy(),
+            "d_raw": None if d_raw is None else d_raw.copy(),
+            "r_cmd": None if r_cmd is None else r_cmd.copy(),
+            "x_s_aug": None if x_s_aug is None else x_s_aug.copy(),
+            "y_sp": y_sp_k.copy(),
+            "x0_aug": x0_aug.copy(),
+            "yhat_now": yhat_now.copy(),
+            "innovation": None if innovation is None else innovation.copy(),
+            "residual_total_norm": target_result.target_error_inf,
+            "target_error_norm": target_result.target_error_inf,
+            "target_solve_success": bool(target_result.solve_success),
+            "target_accepted": bool(target_result.accepted),
+            "target_usable_for_lmpc": bool(target_result.usable_for_lmpc),
+            "target_rejection_reason": target_result.rejection_reason,
+            "target_quality_enabled": True,
+            "target_quality_ok": bool(target_result.accepted),
+            "target_quality_reason": target_result.status,
+            "target_quality_policy": "gart_acceptance",
+            "target_quality_bypass": False,
+            "target_quality_mismatch_inf": target_result.target_error_inf,
+            "target_quality_residual_norm": target_result.target_error_inf,
+            "target_rate_inf": target_result.target_rate_y_inf,
+            "target_rate_x_inf": target_result.target_rate_x_inf,
+            "dx_s_inf": target_result.target_rate_x_inf,
+            "dc_rate_inf": dc_rate_inf,
+            "d_cert_delta_inf": dc_rate_inf,
+            "dx_s_max_active": dx_s_max is not None,
+            "dx_s_max_inf": None if dx_s_max is None else float(np.max(np.abs(dx_s_max))),
+            "command_move_inf": target_result.target_rate_y_inf,
+            "r_cmd_minus_y_sp": None if r_cmd is None else r_cmd - y_sp_k,
+            "y_s_minus_r_cmd": None if y_s is None or r_cmd is None else y_s - r_cmd,
+            "governor_active": bool(target_result.governor_active),
+            "governor_status": target_result.status,
+            "governor_alpha": target_result.governor_alpha,
+            "governor_hold_previous": bool(target_result.hold_previous),
+            "governor_probe_available": target_result.contraction_probe_success is not None,
+            "governor_probe_success": target_result.contraction_probe_success,
+            "governor_probe_margin_good": target_result.contraction_probe_margin_good,
+            "governor_probe_margin": target_result.contraction_probe_margin,
+            "governor_probe_min_value": target_result.contraction_probe_min_value,
+            "governor_probe_bound": target_result.contraction_probe_bound,
+            "governor_probe_status": target_result.status,
+            "input_headroom_min": target_result.input_headroom_min,
+            "input_headroom_frac": getattr(target_config, "input_headroom_frac", None),
+            **_gart_target_classification(target_result.target_error_inf, target_config),
+        }
+    )
+    return target_info
+
+
 def direct_lyapunov_evaluation_ingredients(LMPC_obj) -> Dict[str, np.ndarray]:
     A_aug = np.asarray(LMPC_obj.A, dtype=float)
     B_aug = np.asarray(LMPC_obj.B, dtype=float)
@@ -1047,10 +1156,11 @@ def prepare_direct_output_disturbance_step(
     u_dev_min: np.ndarray,
     u_dev_max: np.ndarray,
     target_mode: str = "bounded",
-    target_config: Optional[Dict[str, Any]] = None,
+    target_config: Optional[Any] = None,
     target_H: Optional[np.ndarray] = None,
     x_target_prev_success: Optional[np.ndarray] = None,
     r_cmd_prev_success: Optional[np.ndarray] = None,
+    gart_target_state: Optional[Any] = None,
     step_idx: Optional[int] = None,
     y_prev_scaled: Optional[np.ndarray] = None,
     plant_mode: Optional[str] = None,
@@ -1077,7 +1187,37 @@ def prepare_direct_output_disturbance_step(
         innovation = np.asarray(y_prev_scaled, dtype=float).reshape(-1) - yhat_now
 
     target_mode_normalized = str(target_mode).strip().lower()
-    if target_mode_normalized == "governed_reference":
+    gart_target_state_next = gart_target_state
+    if target_mode_normalized == "gart":
+        if target_config is None:
+            raise ValueError("target_config must be a GARTTargetConfig when target_mode='gart'.")
+        from Lyapunov.gart_target import select_gart_target
+
+        target_result, gart_target_state_next = select_gart_target(
+            LMPC_obj.A,
+            LMPC_obj.B,
+            LMPC_obj.C,
+            x0_aug,
+            y_sp_k,
+            u_dev_min,
+            u_dev_max,
+            state=gart_target_state,
+            config=target_config,
+            P_x=getattr(LMPC_obj, "P_x", None),
+            K_x=getattr(LMPC_obj, "K_x", None),
+            innovation=innovation,
+            u_smooth_ref=u_prev_dev,
+        )
+        target_info = _gart_result_to_direct_target_info(
+            target_result,
+            target_config=target_config,
+            y_sp_k=y_sp_k,
+            step_idx=step_idx,
+            x0_aug=x0_aug,
+            yhat_now=yhat_now,
+            innovation=innovation,
+        )
+    elif target_mode_normalized == "governed_reference":
         from Lyapunov.governed_reference_target import solve_governed_reference_target
 
         target_info = solve_governed_reference_target(
@@ -1123,12 +1263,13 @@ def prepare_direct_output_disturbance_step(
             "target_mode": target_mode,
         }
     )
-    target_info = _annotate_target_quality(
-        target_info,
-        y_sp_k=y_sp_k,
-        x_target_prev_success=x_target_prev_success,
-        target_config=target_config,
-    )
+    if target_mode_normalized != "gart":
+        target_info = _annotate_target_quality(
+            target_info,
+            y_sp_k=y_sp_k,
+            x_target_prev_success=x_target_prev_success,
+            target_config=target_config,
+        )
 
     x_target_next = x_target_prev_success
     if target_info.get("success", False) and target_info.get("x_s") is not None:
@@ -1251,6 +1392,7 @@ def prepare_direct_output_disturbance_step(
         "step_info": step_info,
         "x_target_prev_success_next": x_target_next,
         "r_cmd_prev_success_next": r_cmd_next,
+        "gart_target_state_next": gart_target_state_next,
         "yhat_now": yhat_now,
         "innovation": innovation,
     }

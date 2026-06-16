@@ -38,6 +38,18 @@ GART_INITIAL_DEFAULTS: dict[str, Any] = {
     "slack_penalty": 1.0e6,
 }
 
+GART_FINAL_TARGET_OVERRIDES: dict[str, Any] = {
+    "disable_u_mid_tiebreak": True,
+    "disable_x_smoothing": True,
+    "disable_y_smoothing": True,
+    "input_headroom_frac": 0.01,
+    "dx_s_max_abs": 0.05,
+    "du_s_max_abs": [0.998, 0.740],
+    "dy_s_max_abs": 1.0,
+    "d_rate_scale": 1.0,
+    "adaptive_rate_enabled": False,
+}
+
 
 def _as_vector(value: Any, *, size: int | None = None, default: float | None = None) -> np.ndarray:
     if value is None:
@@ -484,6 +496,7 @@ def write_json(path: str | Path, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "GART_FINAL_TARGET_OVERRIDES",
     "GART_INITIAL_DEFAULTS",
     "discover_gart_case_values",
     "make_gart_target_config",

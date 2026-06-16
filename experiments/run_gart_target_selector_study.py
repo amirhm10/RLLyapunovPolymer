@@ -32,6 +32,7 @@ from utils.direct_lyapunov_study import (
     direct_disturbance_test_cycle,
 )
 from utils.gart_defaults import (
+    GART_FINAL_TARGET_OVERRIDES,
     discover_gart_case_values,
     gart_rl_observation,
     make_gart_mpc_config,
@@ -58,17 +59,7 @@ RDU_DIAG = np.array([1.0, 1.0], dtype=float)
 FINAL_GART_CASE_NAME = "gartlmpc"
 FINAL_GART_MPC_OBJECTIVE = "raw"
 FINAL_GART_LYAPUNOV_MODE = "hard"
-FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = {
-    "disable_u_mid_tiebreak": True,
-    "disable_x_smoothing": True,
-    "disable_y_smoothing": True,
-    "input_headroom_frac": 0.01,
-    "dx_s_max_abs": 0.05,
-    "du_s_max_abs": [0.998, 0.740],
-    "dy_s_max_abs": 1.0,
-    "d_rate_scale": 1.0,
-    "adaptive_rate_enabled": False,
-}
+FINAL_GART_TARGET_OVERRIDES: dict[str, Any] = dict(GART_FINAL_TARGET_OVERRIDES)
 
 
 def _jsonable(value: Any) -> Any:

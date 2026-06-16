@@ -32,15 +32,25 @@ _TARGET_STAGE_CODE_MAP = {
     "refined_step_a": 2.0,
     "frozen_dhat_exact": 3.0,
     "frozen_dhat_bounded_fallback": 4.0,
+    "stage1": 5.0,
+    "stage2": 6.0,
+    "margin_search": 7.0,
+    "hold_previous": 8.0,
+    "exception": 9.0,
 }
 
-_TARGET_STAGE_TICKS = [0.0, 1.0, 2.0, 3.0, 4.0]
+_TARGET_STAGE_TICKS = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
 _TARGET_STAGE_LABELS = [
     "failed",
     "legacy_slack_target",
     "refined_step_a",
     "frozen_dhat_exact",
     "frozen_dhat_bounded_fallback",
+    "gart_stage1",
+    "gart_stage2",
+    "gart_margin_search",
+    "gart_hold_previous",
+    "gart_exception",
 ]
 
 _SAFETY_PAPER_FILENAME_MAP = {
