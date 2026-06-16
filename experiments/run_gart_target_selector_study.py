@@ -746,10 +746,18 @@ def run_closed_loop(
     mode: str,
     n_tests: int,
     set_points_len: int,
+    target_overrides: dict[str, Any] | None = None,
+    mpc_overrides: dict[str, Any] | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     case_name = FINAL_GART_CASE_NAME
+    effective_target_overrides = (
+        dict(FINAL_GART_TARGET_OVERRIDES)
+        if target_overrides is None
+        else dict(target_overrides)
+    )
+    effective_mpc_overrides = None if mpc_overrides is None else dict(mpc_overrides)
     print(f"[GART] running {case_name} ({mode}, n_tests={n_tests}, set_points_len={set_points_len})")
     payload = run_gart_closed_loop_case(
         ctx,
@@ -759,8 +767,8 @@ def run_closed_loop(
         mode=mode,
         n_tests=n_tests,
         set_points_len=set_points_len,
-        target_overrides=FINAL_GART_TARGET_OVERRIDES,
-        mpc_overrides=None,
+        target_overrides=effective_target_overrides,
+        mpc_overrides=effective_mpc_overrides,
         guard=guard,
     )
     case_dir = output_dir / case_name
@@ -791,7 +799,8 @@ def run_closed_loop(
         "case_name": case_name,
         "objective": FINAL_GART_MPC_OBJECTIVE,
         "lyapunov_mode": FINAL_GART_LYAPUNOV_MODE,
-        "target_overrides": FINAL_GART_TARGET_OVERRIDES,
+        "target_overrides": effective_target_overrides,
+        "mpc_overrides": effective_mpc_overrides,
         "records": records,
         "artifacts": artifacts,
     }
