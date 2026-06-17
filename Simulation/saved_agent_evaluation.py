@@ -304,8 +304,15 @@ def actual_fallback_flags(bundle: dict) -> np.ndarray:
 
 def intervention_flags(bundle: dict) -> np.ndarray:
     n = int(bundle.get("nFE", 0))
+    if "actual_intervention_flags" in bundle:
+        return np.asarray(bundle["actual_intervention_flags"], dtype=float).reshape(-1)
     flags = np.zeros(n, dtype=float)
-    for key in ("projection_active_flags", "fallback_verified_flags", "constrained_mpc_applied_flags"):
+    for key in (
+        "projection_active_flags",
+        "fallback_verified_flags",
+        "constrained_mpc_applied_flags",
+        "target_failure_flags",
+    ):
         if key in bundle:
             values = np.asarray(bundle[key], dtype=float).reshape(-1)
             use = min(n, values.size)
@@ -429,14 +436,14 @@ def plot_episode_counts(ctx: SavedAgentEvalContext, bundles: dict[str, dict], ou
     width = 0.8 / max(len(bundles), 1)
     fig, ax = plt.subplots(figsize=(11, 5))
     for idx, (case_name, bundle) in enumerate(bundles.items()):
-        flags = would_be_activation_flags(bundle) if case_name == "mpc_only" else actual_fallback_flags(bundle)
+        flags = would_be_activation_flags(bundle) if case_name == "mpc_only" else intervention_flags(bundle)
         counts = counts_by_episode(ctx, flags)
         offset = (idx - (len(bundles) - 1) / 2) * width
         ax.bar(x + offset, counts, width=width, label=case_name)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("count per episode")
-    ax.set_title("Fallback/intervention counts; MPC-only uses would-be gate activation")
+    ax.set_title("Actual intervention counts; MPC-only uses would-be gate activation")
     ax.grid(axis="y", alpha=0.25)
     ax.legend(fontsize=8)
     fig.tight_layout()

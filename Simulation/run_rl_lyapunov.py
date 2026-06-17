@@ -3343,11 +3343,15 @@ def run_rl_train(
                 avg_rewards.append(
                     _print_block_reward_summary(sub_changes[k], rewards, lyap_info_storage, start, k + 1)
                 )
-                accepted_in_block = checked_in_block - fallback_in_block
+                intervention_in_block = filtered_in_block + fallback_in_block
+                accepted_in_block = checked_in_block - intervention_in_block
                 block_accept_ratio = accepted_in_block / checked_in_block if checked_in_block > 0 else 0.0
                 block_fallback_ratio = fallback_in_block / checked_in_block if checked_in_block > 0 else 0.0
+                block_projection_ratio = filtered_in_block / checked_in_block if checked_in_block > 0 else 0.0
+                block_intervention_ratio = intervention_in_block / checked_in_block if checked_in_block > 0 else 0.0
+                total_interventions = total_filtered + total_fallback_mpc
                 total_accept_ratio = (
-                    (total_checked - total_fallback_mpc) / total_checked if total_checked > 0 else 0.0
+                    (total_checked - total_interventions) / total_checked if total_checked > 0 else 0.0
                 )
                 gate_label = (
                     "GART safety gate"
@@ -3358,11 +3362,17 @@ def run_rl_train(
                     f"{gate_label} accepted in block:",
                     accepted_in_block, "/", checked_in_block,
                     "(ratio:", block_accept_ratio, ")",
+                    "| Section16 projection in block:",
+                    filtered_in_block, "/", checked_in_block,
+                    "(ratio:", block_projection_ratio, ")",
                     "| fallback / hold-prev in block:",
                     fallback_in_block, "/", checked_in_block,
                     "(ratio:", block_fallback_ratio, ")",
+                    "| total intervention in block:",
+                    intervention_in_block, "/", checked_in_block,
+                    "(ratio:", block_intervention_ratio, ")",
                     "| total accepted:",
-                    total_checked - total_fallback_mpc, "/", total_checked,
+                    total_checked - total_interventions, "/", total_checked,
                     "(ratio:", total_accept_ratio, ")",
                 )
                 last = lyap_info_storage[-1]

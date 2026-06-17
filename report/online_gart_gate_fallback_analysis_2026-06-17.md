@@ -250,6 +250,34 @@ The performance problem is not that fallback is never triggered. It is that the 
 
 The OF-MPC-pretrained no-gate run has the best tracking and reward, but also the highest diagnostic unsafe rate: 4.73% overall. That run is therefore not a safe controller. It is a useful diagnostic showing that the actor can learn good raw tracking when it is not constrained by the gate.
 
+## Latest Cold-Run Plot Count Audit
+
+The later cold-start safety-gate run
+`results/OnlineTD3_ColdStart_SafetyGate/20260617_104553` explains the apparent mismatch between the printed activation counts and the plots.
+
+That run was generated with the older Section-16 projection backend, so its intervention modes were:
+
+- Accepted TD3 candidate: 231,311 steps.
+- Section-16 QCQP projection: 6,987 steps.
+- Verified GART-LMPC fallback: 19 steps.
+- GART target-not-usable hold previous: 1,683 steps.
+
+The plotted `activation_counts.png` uses total actual safety activity. In this run,
+
+$$
+N_{\mathrm{actual}} =
+N_{\mathrm{projection}} +
+N_{\mathrm{fallback}} +
+N_{\mathrm{hold}}
+= 6987 + 19 + 1683 = 8689.
+$$
+
+That is why some episodes show 50 to 60 actual interventions. For example, episode 191 has 66 actual interventions, decomposed as 54 projections, 1 verified fallback, and 11 target-failure holds.
+
+The console print was not showing this same quantity. In the GART direct branch, the printed `fallback / hold-prev in block` counter excluded `gart_section16_projected`, and the printed accepted count effectively treated projections as accepted. Therefore the print could stay below 10 while the activation plot showed 50 to 60 total interventions per 800-step episode.
+
+This is a labeling/accounting issue, not evidence that the plot is reading the wrong run. The plot is correct for total safety activity, but it was too easy to confuse total intervention with fallback-only counts. The code has been updated so future runs print Section-16 projection counts separately and episode tables include explicit projection and GART hold-previous columns.
+
 ## Risks And Inconsistencies Found
 
 The result artifacts need to be interpreted carefully:

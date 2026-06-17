@@ -1468,6 +1468,7 @@ def make_safety_filter_episode_records(bundle):
     diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
     diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
     actual_intervention = np.asarray(bundle.get("actual_intervention_flags", []), dtype=float).reshape(-1)
+    projection_active = np.asarray(bundle.get("projection_active_flags", []), dtype=float).reshape(-1)
     contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
     executed_action_gap_inf = np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float).reshape(-1)
     modes = list(bundle.get("correction_modes", []))
@@ -1484,6 +1485,18 @@ def make_safety_filter_episode_records(bundle):
         rmse = np.sqrt(np.mean(err**2, axis=0)) if err.size else np.array([], dtype=float)
         max_abs = np.max(np.abs(err), axis=0) if err.size else np.array([], dtype=float)
         mode_slice = modes[start:stop]
+        projection_count = int(
+            max(
+                np.nansum(projection_active[start:stop] > 0.5) if projection_active.size else 0,
+                sum(mode == "gart_section16_projected" for mode in mode_slice),
+            )
+        )
+        target_hold_prev_count = int(
+            sum(mode in {"target_fail_hold_prev", "gart_target_not_usable_hold_prev"} for mode in mode_slice)
+        )
+        solver_hold_prev_count = int(
+            sum(mode in {"solver_fail_hold_prev", "gart_solver_fail_hold_prev"} for mode in mode_slice)
+        )
         row = {
             "episode": int(episode_idx + 1),
             "step_start": int(start),
@@ -1501,7 +1514,10 @@ def make_safety_filter_episode_records(bundle):
             "diagnostic_unstable_rate": _safe_nanmean(diagnostic_unstable[start:stop]),
             "actual_intervention_count": int(np.nansum(actual_intervention[start:stop] > 0.5)),
             "actual_intervention_rate": _safe_nanmean(actual_intervention[start:stop]),
+            "projection_count": projection_count,
+            "projection_rate": float(projection_count / max(stop - start, 1)),
             "accepted_candidate_count": int(sum(mode == "accepted_candidate" for mode in mode_slice)),
+            "section16_projection_count": int(sum(mode == "gart_section16_projected" for mode in mode_slice)),
             "fallback_count": int(
                 sum(mode in {"fallback_mpc_verified", "fallback_mpc_unverified"} for mode in mode_slice)
             ),
@@ -1509,6 +1525,10 @@ def make_safety_filter_episode_records(bundle):
             "fallback_unverified_count": int(sum(mode == "fallback_mpc_unverified" for mode in mode_slice)),
             "target_fail_hold_prev_count": int(sum(mode == "target_fail_hold_prev" for mode in mode_slice)),
             "solver_fail_hold_prev_count": int(sum(mode == "solver_fail_hold_prev" for mode in mode_slice)),
+            "target_hold_prev_count": target_hold_prev_count,
+            "solver_hold_prev_count": solver_hold_prev_count,
+            "gart_target_hold_prev_count": int(sum(mode == "gart_target_not_usable_hold_prev" for mode in mode_slice)),
+            "gart_solver_hold_prev_count": int(sum(mode == "gart_solver_fail_hold_prev" for mode in mode_slice)),
             "target_failure_count": int(
                 np.sum(np.asarray(bundle.get("target_failure_flags", np.zeros(n_steps)), dtype=float)[start:stop] > 0.5)
             ),
@@ -1529,6 +1549,20 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
     summary = dict(bundle.get("summary", {}))
     rmse = safety_output_rmse_post_step(bundle)
     episode_records = make_safety_filter_episode_records(bundle)
+    mode_counts = summary.get("mode_counts", {})
+    if not isinstance(mode_counts, dict):
+        mode_counts = {}
+    section16_projection_count = summary.get("n_qcqp_hard_accepted")
+    if section16_projection_count is None:
+        section16_projection_count = mode_counts.get("gart_section16_projected", 0)
+    target_hold_prev_total = (
+        (summary.get("n_target_fail_hold_prev", 0) or 0)
+        + (mode_counts.get("gart_target_not_usable_hold_prev", 0) or 0)
+    )
+    solver_hold_prev_total = (
+        (summary.get("n_solver_fail_hold_prev", 0) or 0)
+        + (mode_counts.get("gart_solver_fail_hold_prev", 0) or 0)
+    )
 
     record = {
         "case_name": str(case_name),
@@ -1557,8 +1591,11 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
         "n_accepted_candidate": summary.get("n_accepted_candidate"),
         "n_fallback_mpc_verified": summary.get("n_fallback_mpc_verified"),
         "n_fallback_mpc_unverified": summary.get("n_fallback_mpc_unverified"),
+        "n_section16_projection": section16_projection_count,
         "n_target_fail_hold_prev": summary.get("n_target_fail_hold_prev"),
         "n_solver_fail_hold_prev": summary.get("n_solver_fail_hold_prev"),
+        "n_target_hold_prev_total": target_hold_prev_total,
+        "n_solver_hold_prev_total": solver_hold_prev_total,
         "n_target_failures": summary.get("n_target_failures"),
         "lyapunov_margin_min": summary.get("lyapunov_margin_min"),
         "target_cond_M_max": summary.get("target_cond_M_max"),
@@ -1577,6 +1614,10 @@ def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
             [row.get("reward_no_penalty_mean") for row in episode_records]
         ),
         "episode_fallback_mean": _safe_nanmean([row.get("fallback_count") for row in episode_records]),
+        "episode_projection_mean": _safe_nanmean([row.get("projection_count") for row in episode_records]),
+        "episode_actual_intervention_mean": _safe_nanmean(
+            [row.get("actual_intervention_count") for row in episode_records]
+        ),
         "episode_gap_inf_max": _safe_nanmax([row.get("max_executed_action_gap_inf") for row in episode_records]),
         "wall_clock_seconds": summary.get("wall_clock_seconds"),
         "wall_clock_seconds_per_episode": summary.get("wall_clock_seconds_per_episode"),
@@ -1795,26 +1836,33 @@ def _save_safety_mode_stacked_bar(records, path):
     x = np.arange(len(records))
     case_labels = [str(record["case_name"]) for record in records]
     accepted = _record_series(records, "n_accepted_candidate")
+    section16_projection = _record_series(records, "n_section16_projection")
     fallback_verified = _record_series(records, "n_fallback_mpc_verified")
     fallback_unverified = _record_series(records, "n_fallback_mpc_unverified")
-    target_fail = _record_series(records, "n_target_fail_hold_prev")
-    solver_fail = _record_series(records, "n_solver_fail_hold_prev")
+    target_fail = _record_series(records, "n_target_hold_prev_total")
+    solver_fail = _record_series(records, "n_solver_hold_prev_total")
 
     fig, ax = plt.subplots(figsize=(11, 4.8))
     ax.bar(x, accepted, label="accepted_candidate")
-    ax.bar(x, fallback_verified, bottom=accepted, label="fallback_verified")
-    ax.bar(x, fallback_unverified, bottom=accepted + fallback_verified, label="fallback_unverified")
+    ax.bar(x, section16_projection, bottom=accepted, label="section16_projection")
+    ax.bar(x, fallback_verified, bottom=accepted + section16_projection, label="fallback_verified")
+    ax.bar(
+        x,
+        fallback_unverified,
+        bottom=accepted + section16_projection + fallback_verified,
+        label="fallback_unverified",
+    )
     ax.bar(
         x,
         target_fail,
-        bottom=accepted + fallback_verified + fallback_unverified,
-        label="target_fail_hold_prev",
+        bottom=accepted + section16_projection + fallback_verified + fallback_unverified,
+        label="target_hold_prev",
     )
     ax.bar(
         x,
         solver_fail,
-        bottom=accepted + fallback_verified + fallback_unverified + target_fail,
-        label="solver_fail_hold_prev",
+        bottom=accepted + section16_projection + fallback_verified + fallback_unverified + target_fail,
+        label="solver_hold_prev",
     )
     ax.set_xticks(x)
     ax.set_xticklabels(case_labels, rotation=25, ha="right")

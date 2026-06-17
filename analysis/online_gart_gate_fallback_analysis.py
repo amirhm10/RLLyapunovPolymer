@@ -290,6 +290,7 @@ def _summary_row(case: dict[str, Any], run_dir: Path, summary: dict[str, Any], a
     mae_sp = _mae(err_sp)
     max_sp = _max_abs(err_sp)
     n_steps = int(summary.get("n_steps", arrays["rewards"].shape[0]))
+    section16_projection = _mode_count(summary, "gart_section16_projected")
     verified_fallback = _mode_count(summary, "fallback_mpc_verified")
     target_hold = _mode_count(summary, "gart_target_not_usable_hold_prev")
     solver_hold = _mode_count(summary, "gart_solver_fail_hold_prev")
@@ -333,6 +334,8 @@ def _summary_row(case: dict[str, Any], run_dir: Path, summary: dict[str, Any], a
         "diagnostic_unsafe_rate": float(summary.get("diagnostic_unsafe_rate", np.nan)),
         "actual_intervention_count": intervention_count,
         "actual_intervention_rate": float(summary.get("actual_intervention_rate", np.nan)),
+        "section16_projection_count": section16_projection,
+        "section16_projection_rate": float(section16_projection / n_steps),
         "verified_fallback_count": verified_fallback,
         "verified_fallback_rate": float(verified_fallback / n_steps),
         "target_hold_prev_count": target_hold,
@@ -479,13 +482,21 @@ def _plot_gate_mode_counts(summary: pd.DataFrame) -> None:
     fig, ax = plt.subplots(figsize=(9, 5))
     x = np.arange(len(gate_summary))
     accepted = gate_summary["accepted_candidate_count"].to_numpy(dtype=float)
+    projected = gate_summary.get("section16_projection_count", pd.Series(0.0, index=gate_summary.index)).to_numpy(dtype=float)
     verified = gate_summary["verified_fallback_count"].to_numpy(dtype=float)
     target_hold = gate_summary["target_hold_prev_count"].to_numpy(dtype=float)
     solver_hold = gate_summary["solver_hold_prev_count"].to_numpy(dtype=float)
     ax.bar(x, accepted, label="accepted TD3 candidate", color="#7aa6c2")
-    ax.bar(x, verified, bottom=accepted, label="verified GART-LMPC fallback", color="#4d8f6f")
-    ax.bar(x, target_hold, bottom=accepted + verified, label="target-not-usable hold previous", color="#d1914f")
-    ax.bar(x, solver_hold, bottom=accepted + verified + target_hold, label="solver-fail hold previous", color="#b55a5a")
+    ax.bar(x, projected, bottom=accepted, label="Section 16 QCQP projection", color="#b790d4")
+    ax.bar(x, verified, bottom=accepted + projected, label="verified GART-LMPC fallback", color="#4d8f6f")
+    ax.bar(x, target_hold, bottom=accepted + projected + verified, label="target-not-usable hold previous", color="#d1914f")
+    ax.bar(
+        x,
+        solver_hold,
+        bottom=accepted + projected + verified + target_hold,
+        label="solver-fail hold previous",
+        color="#b55a5a",
+    )
     ax.set_xticks(x, gate_summary["case"], rotation=15, ha="right")
     ax.set_ylabel("step count")
     ax.set_title("Safety-gate mode counts")
