@@ -5,10 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from pprint import pprint
 
-from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
-
-THREADS = 20
-set_single_thread_env(THREADS)
+from utils.gart_runtime import GARTStudyLimits, ResourceGuard
 
 from experiments.run_gart_target_selector_study import (
     FINAL_GART_CASE_NAME,
@@ -56,7 +53,6 @@ def _configured_overrides() -> tuple[dict, dict]:
 
 
 def run_configured_study() -> dict:
-    set_single_thread_env(THREADS)
     guard = ResourceGuard(
         GARTStudyLimits(
             max_target_evals=None,

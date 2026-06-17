@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass
 from typing import Optional
-
-
-def set_single_thread_env(threads: int = 1) -> None:
-    threads = max(int(threads), 1)
-    value = str(threads)
-    os.environ["OMP_NUM_THREADS"] = value
-    os.environ["OPENBLAS_NUM_THREADS"] = value
-    os.environ["MKL_NUM_THREADS"] = value
-    os.environ["VECLIB_MAXIMUM_THREADS"] = value
-    os.environ["NUMEXPR_NUM_THREADS"] = value
 
 
 @dataclass
