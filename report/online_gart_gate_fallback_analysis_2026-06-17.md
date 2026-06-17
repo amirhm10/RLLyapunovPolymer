@@ -107,6 +107,102 @@ This means the gate is not mostly failing due to optimizer crashes. Most interve
 
 ![Gate mode counts](figures/2026-06-17_online_gart_gate_fallback/gate_mode_counts.png)
 
+## Near-Steady Gate Activation Diagnosis
+
+The completed gate runs analyzed here used `projection_backend = "direct_accept_or_fallback"`, so the active safety correction is not the Section 16 QCQP projection. It is either a verified GART-LMPC fallback solve or a hold-previous event. In these bundles the Section 16 projection rate is zero.
+
+The gate can still activate when the output appears close to steady state because the certificate is not based only on raw output error. The TD3 candidate is checked against the first-step Lyapunov tube around the moving GART target:
+
+$$
+V_{k+1}^{\mathrm{cand}}
+\le
+\rho V_k + \epsilon .
+$$
+
+Near the target, $V_k$ is small, so $\epsilon$ dominates the tube radius. With the current value $\epsilon = 10^{-3}$, many rejected near-steady candidates have only a small positive margin. In the near-5x reward band, the median active candidate margin was about $9.4 \times 10^{-4}$ for cold start and $5.4 \times 10^{-4}$ for OF-MPC-pretrained. That means these are mostly borderline tube violations, not large input-bound failures.
+
+The table below defines near steady as being after the first 50 steps of a setpoint block and inside five times the reward band for both outputs. For the first setpoint this band is approximately $|\eta-\eta_{sp}| \le 0.0338$ and $|T-T_{sp}| \le 0.243$ in physical units.
+
+| Case | Near steps | Intervention | Verified fallback | Hold prev |
+|---|---:|---:|---:|---:|
+| Cold start + gate | 168,948 | 1.340% | 1.333% | 0.007% |
+| OF-MPC pretrained + gate | 193,408 | 2.358% | 2.356% | 0.002% |
+
+Inside the exact reward band, the intervention rate is smaller but still nonzero:
+
+| Case | Exact-band steps | Intervention | Verified fallback |
+|---|---:|---:|---:|
+| Cold start + gate | 36,478 | 0.521% | 0.521% |
+| OF-MPC pretrained + gate | 72,866 | 0.991% | 0.991% |
+
+This shows two different effects:
+
+- Near steady, the dominant intervention is verified GART-LMPC fallback, not hold-previous.
+- Hold-previous is mostly a transition problem. It is concentrated just after setpoint changes, especially steps 10 to 25 inside each 400-step setpoint block.
+
+| Case | Setpoint age | Fallback solve | Target hold |
+|---|---:|---:|---:|
+| Cold start + gate | 0-10 | 4.95% | 0.05% |
+| Cold start + gate | 10-25 | 3.37% | 12.80% |
+| Cold start + gate | 300-400 | 1.66% | 0.14% |
+| OF-MPC pretrained + gate | 0-10 | 9.10% | 0.03% |
+| OF-MPC pretrained + gate | 10-25 | 3.41% | 9.17% |
+| OF-MPC pretrained + gate | 300-400 | 3.09% | 0.02% |
+
+The hold-previous path is therefore not a frequent steady-state mechanism. It happens when the GART target is not usable for LMPC. In these runs all target-unusable holds were reported as `contraction_probe_failed` by the target selector. The fallback solver itself almost never failed: 13 solver holds for cold start and 11 for OF-MPC-pretrained over 240,000 steps.
+
+## Parameter Sensitivity Around The Tube
+
+The saved bundles store $V_k$ and $V_{k+1}^{\mathrm{cand}}$, so the candidate can be rescored offline against alternative $(\rho,\epsilon)$ values without rerunning the plant. In the near-5x reward band, changing $\rho$ helps modestly, but increasing $\epsilon$ has the main effect because $V_k$ is already small.
+
+| Case | Current 0.98/1e-3 | 0.98/3e-3 | 0.98/1e-2 |
+|---|---:|---:|---:|
+| Cold start + gate | 98.66% accepted | 99.67% | 99.98% |
+| Cold start no gate diagnostic | 98.42% accepted | 99.59% | 99.98% |
+| OF-MPC pretrained + gate | 97.64% accepted | 99.74% | 100.00% |
+| OF-MPC pretrained no gate diagnostic | 95.73% accepted | 98.99% | 99.98% |
+
+This suggests the current practical Lyapunov tube is too tight for noisy online TD3 behavior near the setpoint. A settled-zone value such as $\epsilon = 3 \times 10^{-3}$ would remove most near-steady interventions while preserving a much tighter gate than $\epsilon = 10^{-2}$. A global change should still be tested carefully because the same $\epsilon$ also governs transition behavior.
+
+The Stage 2 target tie-breaker is not enough to prevent input changes by itself. It smooths the selected target input $u_s$ toward the previous applied input, but it does not constrain the TD3 candidate. In the completed runs:
+
+- `W_u_smooth_diag = [1, 1]` is active.
+- `W_x_smooth_diag`, `W_y_smooth_diag`, and `W_u_mid_diag` are disabled by the GART final overrides.
+- `target_u_ref_active` is not used in the GART target path.
+- The GART target can remain far from the applied input even when the output is near the setpoint. In the near-5x reward band, $\|u_s-u_{k-1}\|_\infty$ averaged about 5.02 scaled input units for cold start and 4.75 for OF-MPC-pretrained.
+
+That last point is the key mechanism. The current GART design creates a moving certified steady target, not an input-invariant settled tube around the actual applied input. If the actor explores inside the output tube, the candidate may violate the target-centered Lyapunov inequality and trigger fallback. The target smoother does not stop that actor-side poke.
+
+Exploration is also still active in the settled region. The direct fallback backend does not currently use the certificate-aware exploration shrinkage that was added for the Section 16 projection branch. The no-gate diagnostics confirm that the actor itself keeps proposing certificate-breaking moves near the setpoint:
+
+| Case | Near-5x diagnostic unsafe |
+|---|---:|
+| Cold start no gate | 1.585% |
+| OF-MPC pretrained no gate | 4.275% |
+
+## Implications For The Next Tuning
+
+The parameters most likely to prevent unwanted input changes after settling are:
+
+- `lyap_eps`: raise only in a settled zone first. Test `3e-3` before `1e-2`.
+- `full_rl_exploration_std_end`: reduce toward zero near the setpoint, or add certificate-aware exploration scaling to `direct_accept_or_fallback`.
+- `maintenance_move_weight` in the shaped reward: currently zero, so the reward has no extra no-move term inside the maintenance band.
+- `Rdu_diag` in `gart_lmpc_config`: increasing it should make fallback moves less aggressive.
+- `W_u_smooth_diag` and `du_s_max_abs` in the GART target selector: these can reduce target-input drift, but making them too strict can increase target-unusable holds.
+- `alpha_d`, `alpha_d_slow`, and `d_rate_scale`: these control certified disturbance movement. Slower disturbance movement can reduce target motion, but may worsen disturbance adaptation.
+
+The safest next experiment is not to weaken the gate everywhere. It is to add a settled-zone policy:
+
+$$
+\text{if } |y-y_{sp}| \le c_y \text{ and } |\Delta y_{sp}|=0,
+\quad
+\epsilon_{\mathrm{gate}} = \epsilon_{\mathrm{settled}},
+\quad
+\sigma_{\mathrm{explore}} \rightarrow 0,
+$$
+
+with $c_y$ set around the 5x reward band and $\epsilon_{\mathrm{settled}} = 3 \times 10^{-3}$ as the first test. A stronger version is to hold $u_{k-1}$ when it also passes the same contraction check. That would make the settled behavior closer to the tube intuition: enter the tube, stop poking it, and only move again if tracking leaves the tube or the setpoint changes.
+
 ## Learning-Phase Behavior
 
 The long full-RL portion is where the performance gap matters most.
