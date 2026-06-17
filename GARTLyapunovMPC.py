@@ -31,6 +31,13 @@ SET_POINTS_LEN = 400
 RHO_LYAP = GART_FINAL_RHO_LYAP
 LYAP_EPS = GART_FINAL_LYAP_EPS
 
+# GART target rate limits in scaled-deviation coordinates.  The shared final
+# default allows large steady-input target moves; this runner tightens only the
+# GART-LMPC experiment first, before carrying the tuning into RL.
+DX_S_MAX_ABS = 0.05
+DU_S_MAX_ABS = [0.05, 0.05]
+DY_S_MAX_ABS = 1.0
+
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
 TIMESTAMP = None
@@ -43,6 +50,9 @@ def _configured_overrides() -> tuple[dict, dict]:
         {
             "rho": float(RHO_LYAP),
             "eps": float(LYAP_EPS),
+            "dx_s_max_abs": DX_S_MAX_ABS,
+            "du_s_max_abs": list(DU_S_MAX_ABS),
+            "dy_s_max_abs": DY_S_MAX_ABS,
         }
     )
     mpc_overrides = {
