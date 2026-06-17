@@ -23,6 +23,7 @@ from Lyapunov.direct_lyapunov_mpc import (
 )
 from Lyapunov.gart_lmpc import solve_gart_lmpc_step
 from Lyapunov.gart_target import GARTTargetState, jsonable, select_gart_target
+from Lyapunov.lyapunov_core import first_step_contraction_metrics
 from Simulation.mpc import compute_observer_gain
 from Simulation.run_mpc_lyapunov import _reset_system_on_entry, _set_system_input_phys, _system_io_phys
 from Simulation.system_functions import PolymerCSTR
@@ -78,6 +79,19 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _is_scalar(value: Any) -> bool:
     return value is None or isinstance(value, (str, bool, int, float, np.bool_, np.integer, np.floating))
+
+
+def _exploration_std_vector(value: Any, n_inputs: int) -> np.ndarray:
+    if value is None:
+        return np.zeros(int(n_inputs), dtype=float)
+    arr = np.asarray(value, dtype=float).reshape(-1)
+    if arr.size == 1:
+        arr = np.full(int(n_inputs), float(arr.item()), dtype=float)
+    if arr.size != int(n_inputs):
+        raise ValueError(f"input_exploration_std must be scalar or length {n_inputs}, got length {arr.size}.")
+    if np.any(arr < 0.0):
+        raise ValueError("input_exploration_std entries must be nonnegative.")
+    return arr.astype(float, copy=True)
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -304,6 +318,8 @@ def run_gart_closed_loop_case(
     set_points_len: int,
     target_overrides: dict[str, Any] | None = None,
     mpc_overrides: dict[str, Any] | None = None,
+    input_exploration_std: Any | None = None,
+    input_exploration_seed: int | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     setup = ctx["setup"]
@@ -346,6 +362,9 @@ def run_gart_closed_loop_case(
     IC_opt = ctx["ic_opt"].copy()
     target_config = make_gart_target_config(ctx["discovered"], **(target_overrides or {}))
     mpc_config = make_gart_mpc_config(ctx["discovered"], objective=mpc_objective, lyapunov_mode=lyapunov_mode, **(mpc_overrides or {}))
+    exploration_std = _exploration_std_vector(input_exploration_std, n_inputs)
+    exploration_enabled = bool(np.any(exploration_std > 0.0))
+    exploration_rng = np.random.default_rng(input_exploration_seed) if exploration_enabled else None
 
     for step_idx in range(int(nFE)):
         if guard is not None:
@@ -432,6 +451,55 @@ def run_gart_closed_loop_case(
         )
         if guard is not None:
             guard.tick_solver()
+
+        u_dev_nominal = np.asarray(u_dev_apply, dtype=float).reshape(n_inputs)
+        exploration_requested = np.zeros(n_inputs, dtype=float)
+        exploration_applied = np.zeros(n_inputs, dtype=float)
+        if exploration_rng is not None:
+            exploration_requested = exploration_rng.normal(loc=0.0, scale=exploration_std, size=n_inputs)
+            u_dev_executed = np.clip(u_dev_nominal + exploration_requested, ctx["u_dev_min"], ctx["u_dev_max"])
+            exploration_applied = u_dev_executed - u_dev_nominal
+            u_dev_apply = u_dev_executed
+        else:
+            u_dev_apply = u_dev_nominal
+
+        executed_contraction: dict[str, Any] = {}
+        if step_info.get("x_s") is not None:
+            try:
+                x_next_executed = lmpc_obj.A @ x0_aug + lmpc_obj.B @ u_dev_apply
+                x_pred_executed = np.column_stack([x0_aug, x_next_executed])
+                executed_metrics = first_step_contraction_metrics(
+                    x0_aug,
+                    x_pred_executed,
+                    np.asarray(step_info["x_s"], dtype=float).reshape(n_x),
+                    lmpc_obj.P_x,
+                    rho=float(mpc_config.rho),
+                    eps_lyap=float(mpc_config.eps),
+                )
+                executed_contraction = {
+                    "executed_first_step_contraction_satisfied": executed_metrics["first_step_contraction_satisfied"],
+                    "executed_contraction_margin": executed_metrics["contraction_margin"],
+                    "executed_contraction_constraint_violation": executed_metrics["contraction_constraint_violation"],
+                    "executed_V_k": executed_metrics["V_k"],
+                    "executed_V_next_first": executed_metrics["V_next_first"],
+                    "executed_V_bound": executed_metrics["V_bound"],
+                }
+            except Exception as exc:
+                executed_contraction = {"executed_contraction_error": repr(exc)}
+
+        step_info.update(
+            {
+                "input_exploration_enabled": exploration_enabled,
+                "input_exploration_std": exploration_std.copy(),
+                "input_exploration_seed": input_exploration_seed,
+                "u_apply_nominal": u_dev_nominal.copy(),
+                "input_exploration_requested": exploration_requested.copy(),
+                "input_exploration_applied": exploration_applied.copy(),
+                "u_apply": u_dev_apply.copy(),
+                "u_apply_executed": u_dev_apply.copy(),
+                **executed_contraction,
+            }
+        )
 
         u_scaled = u_dev_apply + ss_scaled_inputs
         u_phys = reverse_min_max(u_scaled, data_min[:n_inputs], data_max[:n_inputs])
@@ -574,6 +642,9 @@ def run_gart_closed_loop_case(
         "lyap_eps": LYAP_EPS,
         "slack_penalty": SLACK_PENALTY,
         "first_step_contraction_on": True,
+        "input_exploration_enabled": exploration_enabled,
+        "input_exploration_std": exploration_std.copy(),
+        "input_exploration_seed": input_exploration_seed,
         "u_dev_min": ctx["u_dev_min"].copy(),
         "u_dev_max": ctx["u_dev_max"].copy(),
         "delta_t": float(setup["delta_t"]),
@@ -608,6 +679,9 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
     d_raw_gap_inf = []
     d_rate_max_effective_inf = []
     dx_s_max_active = []
+    exploration_inf = []
+    executed_contraction_probe = []
+    executed_contraction_violation = []
     for row in payload.get("direct_info_storage", []):
         y_s = row.get("y_s")
         if y_s is not None:
@@ -635,7 +709,18 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         if row.get("d_rate_max_effective_inf") is not None:
             d_rate_max_effective_inf.append(float(row.get("d_rate_max_effective_inf")))
         dx_s_max_active.append(1.0 if bool(row.get("dx_s_max_active", False)) else 0.0)
+        if row.get("input_exploration_applied") is not None:
+            exploration_inf.append(float(np.max(np.abs(np.asarray(row.get("input_exploration_applied"), dtype=float).reshape(-1)))))
+        if row.get("executed_first_step_contraction_satisfied") is not None:
+            executed_contraction_probe.append(1.0 if bool(row.get("executed_first_step_contraction_satisfied")) else 0.0)
+        if row.get("executed_contraction_constraint_violation") is not None:
+            executed_contraction_violation.append(float(row.get("executed_contraction_constraint_violation")))
     du = np.asarray(payload.get("delta_u_storage", []), dtype=float)
+    dhat_delta_inf = np.asarray([], dtype=float)
+    xhatdhat = np.asarray(payload.get("xhatdhat", []), dtype=float)
+    if xhatdhat.ndim == 2 and xhatdhat.shape[1] > 1 and y_sp.ndim == 2 and y_sp.shape[1] > 0:
+        d_hat = xhatdhat[-int(y_sp.shape[1]) :, :]
+        dhat_delta_inf = np.max(np.abs(np.diff(d_hat, axis=1)), axis=0)
     return {
         "case_name": case_name,
         "plant_mode": payload.get("plant_mode"),
@@ -656,6 +741,15 @@ def _controller_metrics(payload: dict[str, Any], ctx: dict[str, Any], *, case_na
         "mean_slack_lyap": float(np.mean(slack)) if slack else None,
         "p95_slack_lyap": float(np.quantile(slack, 0.95)) if slack else None,
         "mean_abs_delta_u": None if du.size == 0 else float(np.mean(np.abs(du))),
+        "input_exploration_inf_mean": None if not exploration_inf else float(np.mean(exploration_inf)),
+        "input_exploration_inf_max": None if not exploration_inf else float(np.max(exploration_inf)),
+        "input_exploration_active_rate": None if not exploration_inf else float(np.mean(np.asarray(exploration_inf) > 0.0)),
+        "executed_contraction_satisfied_rate": None if not executed_contraction_probe else float(np.mean(executed_contraction_probe)),
+        "executed_contraction_violation_mean": None if not executed_contraction_violation else float(np.mean(executed_contraction_violation)),
+        "executed_contraction_violation_max": None if not executed_contraction_violation else float(np.max(executed_contraction_violation)),
+        "dhat_delta_inf_mean": None if dhat_delta_inf.size == 0 else float(np.mean(dhat_delta_inf)),
+        "dhat_delta_inf_p95": None if dhat_delta_inf.size == 0 else float(np.quantile(dhat_delta_inf, 0.95)),
+        "dhat_delta_inf_max": None if dhat_delta_inf.size == 0 else float(np.max(dhat_delta_inf)),
         "governor_active_rate": float(np.mean(governor)) if governor else None,
         "hold_previous_rate": float(np.mean(holds)) if holds else None,
         "unreachable_rate": None if not target_err else float(np.mean(np.asarray(target_err) > 0.5)),
@@ -701,6 +795,9 @@ def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dic
         "lyap_eps": LYAP_EPS,
         "slack_penalty": SLACK_PENALTY,
         "setpoint_y_phys": DIRECT_TWO_SETPOINT_Y_PHYS.tolist(),
+        "input_exploration_enabled": payload.get("input_exploration_enabled", False),
+        "input_exploration_std": payload.get("input_exploration_std"),
+        "input_exploration_seed": payload.get("input_exploration_seed"),
     }
     if payload.get("target_config") is not None:
         config["target_config"] = payload.get("target_config")
@@ -748,6 +845,8 @@ def run_closed_loop(
     set_points_len: int,
     target_overrides: dict[str, Any] | None = None,
     mpc_overrides: dict[str, Any] | None = None,
+    input_exploration_std: Any | None = None,
+    input_exploration_seed: int | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -769,6 +868,8 @@ def run_closed_loop(
         set_points_len=set_points_len,
         target_overrides=effective_target_overrides,
         mpc_overrides=effective_mpc_overrides,
+        input_exploration_std=input_exploration_std,
+        input_exploration_seed=input_exploration_seed,
         guard=guard,
     )
     case_dir = output_dir / case_name
@@ -801,6 +902,8 @@ def run_closed_loop(
         "lyapunov_mode": FINAL_GART_LYAPUNOV_MODE,
         "target_overrides": effective_target_overrides,
         "mpc_overrides": effective_mpc_overrides,
+        "input_exploration_std": input_exploration_std,
+        "input_exploration_seed": input_exploration_seed,
         "records": records,
         "artifacts": artifacts,
     }
