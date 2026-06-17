@@ -35,8 +35,10 @@ LYAP_EPS = GART_FINAL_LYAP_EPS
 # default allows large steady-input target moves; this runner tightens only the
 # GART-LMPC experiment first, before carrying the tuning into RL.
 DX_S_MAX_ABS = 0.05
-DU_S_MAX_ABS = [0.05, 0.05]
+DU_S_MAX_ABS = [0.2, 0.2]
 DY_S_MAX_ABS = 0.25
+D_RATE_SCALE = 0.25
+ALPHA_D = 0.05
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
@@ -53,6 +55,8 @@ def _configured_overrides() -> tuple[dict, dict]:
             "dx_s_max_abs": DX_S_MAX_ABS,
             "du_s_max_abs": list(DU_S_MAX_ABS),
             "dy_s_max_abs": DY_S_MAX_ABS,
+            "d_rate_scale": D_RATE_SCALE,
+            "alpha_d": ALPHA_D,
         }
     )
     mpc_overrides = {
