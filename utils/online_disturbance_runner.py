@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from pprint import pprint
@@ -150,6 +150,14 @@ BC_TEACHER_EPISODES = 20
 HANDOFF_EPISODES = 5
 PRETRAINED_HANDOFF_EPISODES = 10
 COLD_START_HANDOFF_EPISODES = HANDOFF_EPISODES
+
+STANDARD_RL_OBSERVATION_MODE = "standard"
+GART_RL_OBSERVATION_MODE = "gart"
+SECTION16_PROJECTION_BACKEND = "gart_section16_projection"
+DIRECT_GATE_PROJECTION_BACKEND = "direct_accept_or_fallback"
+MPC_ONLY_DIAGNOSTIC_BACKEND = "mpc_only_diagnostic"
+DEFAULT_SECTION16_CERT_MARGIN_SCALE = 1.0
+DEFAULT_SECTION16_CERT_SIGMA_FLOOR = 0.0
 
 
 @dataclass(frozen=True)
@@ -370,6 +378,57 @@ def _td3_online_hparams(agent: TD3Agent) -> dict[str, Any]:
     }
 
 
+def normalize_rl_observation_mode(mode: str | None) -> str:
+    if mode is None:
+        return STANDARD_RL_OBSERVATION_MODE
+    mode = str(mode).strip().lower()
+    aliases = {
+        "standard": STANDARD_RL_OBSERVATION_MODE,
+        "default": STANDARD_RL_OBSERVATION_MODE,
+        "legacy": STANDARD_RL_OBSERVATION_MODE,
+        "td3": STANDARD_RL_OBSERVATION_MODE,
+        "gart": GART_RL_OBSERVATION_MODE,
+        "section16": GART_RL_OBSERVATION_MODE,
+        "gart_section16": GART_RL_OBSERVATION_MODE,
+    }
+    if mode not in aliases:
+        raise ValueError("RL_OBSERVATION_MODE must be 'standard' or 'gart'.")
+    return aliases[mode]
+
+
+def gart_observation_state_dim(dimensions: TD3Dimensions) -> int:
+    n_aug = int(dimensions.state_dim) - int(dimensions.set_points_number) - int(dimensions.inputs_number)
+    return int(n_aug + 4 * int(dimensions.set_points_number) + 2 * int(dimensions.inputs_number) + 1)
+
+
+def dimensions_for_observation_mode(dimensions: TD3Dimensions, mode: str | None) -> TD3Dimensions:
+    normalized = normalize_rl_observation_mode(mode)
+    if normalized == GART_RL_OBSERVATION_MODE:
+        return replace(dimensions, state_dim=gart_observation_state_dim(dimensions))
+    return dimensions
+
+
+def _normalize_projection_backend_override(value: str | None, *, safety_gate: bool) -> str:
+    if value is None:
+        return DIRECT_GATE_PROJECTION_BACKEND if safety_gate else MPC_ONLY_DIAGNOSTIC_BACKEND
+    backend = str(value).strip().lower()
+    aliases = {
+        "direct_accept_or_fallback": DIRECT_GATE_PROJECTION_BACKEND,
+        "direct_gate": DIRECT_GATE_PROJECTION_BACKEND,
+        "gart_section16_projection": SECTION16_PROJECTION_BACKEND,
+        "section16_projection": SECTION16_PROJECTION_BACKEND,
+        "gart_projection": SECTION16_PROJECTION_BACKEND,
+        "mpc_only": MPC_ONLY_DIAGNOSTIC_BACKEND,
+        "mpc_only_diagnostic": MPC_ONLY_DIAGNOSTIC_BACKEND,
+    }
+    if backend not in aliases:
+        raise ValueError(
+            "PROJECTION_BACKEND must be 'direct_accept_or_fallback', "
+            "'gart_section16_projection', or 'mpc_only_diagnostic'."
+        )
+    return aliases[backend]
+
+
 def _scaling_contract(setup: Any, context: DisturbanceContext) -> dict[str, Any]:
     system_data = context.system_data
     min_max_dict = system_data["min_max_dict"]
@@ -418,7 +477,12 @@ def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
     )
 
 
-def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str, Any]:
+def _training_phase_config(
+    *,
+    teacher_source: str,
+    pretrained: bool,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if teacher_source not in {"direct_lyapunov_mpc", "offset_free_mpc", "gart_lmpc"}:
         raise ValueError(f"Unsupported teacher source: {teacher_source!r}")
     exploration_std = (
@@ -451,7 +515,7 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         if pretrained
         else "td3_full"
     )
-    return {
+    cfg = {
         "episode_unit": "cycle",
         "warmup_buffer_only_episodes": WARMUP_EPISODES,
         "behavior_clone_teacher_episodes": BC_TEACHER_EPISODES,
@@ -476,6 +540,9 @@ def _training_phase_config(*, teacher_source: str, pretrained: bool) -> dict[str
         "handoff_behavior_noise": "none" if handoff_exploration_std_end <= 0.0 else "gaussian",
         "full_rl_behavior_noise": "gaussian",
     }
+    if overrides:
+        cfg.update({key: value for key, value in dict(overrides).items() if value is not None})
+    return cfg
 
 
 def _preset_uses_gart_family(preset: OnlineTD3Preset) -> bool:
@@ -502,9 +569,19 @@ def _build_reward(
     n_inputs: int,
     *,
     fallback_penalty_enabled: bool,
+    gamma_fallback: float | None = None,
+    fallback_event_penalty: float | None = None,
 ) -> tuple[dict[str, Any], Any]:
-    gamma_fallback = 3.0 if fallback_penalty_enabled else 0.0
-    fallback_event_penalty = 10.0 if fallback_penalty_enabled else 0.0
+    gamma_fallback = (
+        (3.0 if fallback_penalty_enabled else 0.0)
+        if gamma_fallback is None
+        else float(gamma_fallback)
+    )
+    fallback_event_penalty = (
+        (10.0 if fallback_penalty_enabled else 0.0)
+        if fallback_event_penalty is None
+        else float(fallback_event_penalty)
+    )
     return make_reward_fn_relative_QR(
         data_min=data_min,
         data_max=data_max,
@@ -817,6 +894,17 @@ def run_online_td3_disturbance_preset(
     save_plots: bool = True,
     agent_path: str | None = None,
     reset_pretrained_critic: bool = DEFAULT_RESET_PRETRAINED_CRITIC,
+    timestamp: str | None = None,
+    rl_observation_mode: str = STANDARD_RL_OBSERVATION_MODE,
+    projection_backend: str | None = None,
+    reward_fallback_penalty_enabled: bool | None = None,
+    gamma_fallback: float | None = None,
+    fallback_event_penalty: float | None = None,
+    rho_lyap: float | None = None,
+    lyap_eps: float | None = None,
+    lyap_tol: float | None = None,
+    training_phase_overrides: dict[str, Any] | None = None,
+    section16_projection_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if preset_key not in ONLINE_TD3_PRESETS:
         known = ", ".join(sorted(ONLINE_TD3_PRESETS))
@@ -831,12 +919,24 @@ def run_online_td3_disturbance_preset(
 
     set_seed(int(seed))
     context = build_disturbance_context(preset.direct_target_mode)
+    rl_observation_mode = normalize_rl_observation_mode(rl_observation_mode)
+    context = replace(
+        context,
+        dimensions=dimensions_for_observation_mode(context.dimensions, rl_observation_mode),
+    )
     scaling_contract = _scaling_contract(context.setup, context)
+    fallback_penalty_enabled = (
+        bool(preset.safety_gate)
+        if reward_fallback_penalty_enabled is None
+        else bool(reward_fallback_penalty_enabled)
+    )
     reward_config, reward_fn = _build_reward(
         context.system_data["data_min"],
         context.system_data["data_max"],
         context.dimensions.inputs_number,
-        fallback_penalty_enabled=bool(preset.safety_gate),
+        fallback_penalty_enabled=fallback_penalty_enabled,
+        gamma_fallback=gamma_fallback,
+        fallback_event_penalty=fallback_event_penalty,
     )
     agent, resolved_agent_path, checkpoint_arch, critic_reset_metadata = _agent_for_preset(
         preset,
@@ -845,17 +945,35 @@ def run_online_td3_disturbance_preset(
         agent_path=agent_path,
         reset_pretrained_critic=bool(reset_pretrained_critic),
     )
-    study_root = _study_root(preset.study_name)
+    study_root = _study_root(preset.study_name, timestamp=timestamp)
     test_cycle = direct_disturbance_test_cycle(episodes)
     training_phase_config = _training_phase_config(
         teacher_source=preset.teacher_source,
         pretrained=preset.pretrain_source is not None,
+        overrides=training_phase_overrides,
     )
     case_rho_lyap, case_lyap_eps, lyap_param_source = _lyap_params_for_preset(preset)
-    projection_backend = "direct_accept_or_fallback" if preset.safety_gate else "mpc_only_diagnostic"
-    effective_fallback_controller = preset.fallback_controller if preset.safety_gate else "none"
+    if rho_lyap is not None:
+        case_rho_lyap = float(rho_lyap)
+        lyap_param_source = f"{lyap_param_source}; runner override rho_lyap"
+    if lyap_eps is not None:
+        case_lyap_eps = float(lyap_eps)
+        lyap_param_source = f"{lyap_param_source}; runner override lyap_eps"
+    case_lyap_tol = float(LYAP_TOL if lyap_tol is None else lyap_tol)
+    projection_backend = _normalize_projection_backend_override(
+        projection_backend,
+        safety_gate=bool(preset.safety_gate),
+    )
+    if projection_backend == MPC_ONLY_DIAGNOSTIC_BACKEND:
+        effective_fallback_controller = "none"
+    elif projection_backend == SECTION16_PROJECTION_BACKEND:
+        effective_fallback_controller = "gart_lmpc"
+    else:
+        effective_fallback_controller = preset.fallback_controller if preset.safety_gate else "none"
     uses_gart_lmpc_controller = bool(
-        preset.teacher_source == "gart_lmpc" or effective_fallback_controller == "gart_lmpc"
+        preset.teacher_source == "gart_lmpc"
+        or effective_fallback_controller == "gart_lmpc"
+        or rl_observation_mode == GART_RL_OBSERVATION_MODE
     )
     if uses_gart_lmpc_controller:
         controller_family = "gart_lmpc"
@@ -886,6 +1004,13 @@ def run_online_td3_disturbance_preset(
         "controller_mode": "td3_safety_gate" if preset.safety_gate else "td3_no_safety_gate",
         "controller_family": controller_family,
         "projection_backend": projection_backend,
+        "rl_observation_mode": rl_observation_mode,
+        "rl_observation_state_dim": int(context.dimensions.state_dim),
+        "standard_rl_observation_state_dim": int(compute_td3_dimensions(
+            context.system_data["A_aug"],
+            context.system_data["B_aug"],
+            context.system_data["C_aug"],
+        ).state_dim),
         "safety_gate_active": bool(preset.safety_gate),
         "pretrain_source": preset.pretrain_source,
         "teacher_source": preset.teacher_source,
@@ -922,10 +1047,10 @@ def run_online_td3_disturbance_preset(
         "Qy_reward_diag": QY_REWARD_DIAG.copy(),
         "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
         "reward_config": dict(reward_config),
-        "reward_fallback_penalty_enabled": bool(preset.safety_gate),
+        "reward_fallback_penalty_enabled": fallback_penalty_enabled,
         "reward_fallback_penalty_activation_rule": (
-            f"fallback_active when {effective_fallback_controller} safety gate changes the TD3 candidate action"
-            if preset.safety_gate
+            f"fallback_active when {projection_backend} changes the TD3 candidate action"
+            if fallback_penalty_enabled and projection_backend != MPC_ONLY_DIAGNOSTIC_BACKEND
             else "disabled; no-safety-gate runs log diagnostics only and never apply fallback penalties"
         ),
         "u_prev_penalty_weight": U_PREV_PENALTY_WEIGHT,
@@ -939,10 +1064,12 @@ def run_online_td3_disturbance_preset(
         "gart_lyap_eps_default": GART_FINAL_LYAP_EPS if uses_gart_lmpc_controller else None,
         "lyap_eps_pretrained_online_override": None,
         "lyap_eps_override_reason": "online target-diagnostic and fallback-controller Lyapunov epsilon",
-        "lyap_tol": LYAP_TOL,
+        "lyap_tol": case_lyap_tol,
         "slack_penalty": case_slack_penalty,
         "gart_slack_penalty_default": GART_FINAL_SLACK_PENALTY if uses_gart_lmpc_controller else None,
         "training_phase_config": dict(training_phase_config),
+        "training_phase_overrides": _jsonable(training_phase_overrides),
+        "section16_projection_config": _jsonable(section16_projection_config),
         "initial_agent_path": resolved_agent_path,
         "checkpoint_architecture": checkpoint_arch,
         "online_td3_hparams": _td3_online_hparams(agent),
@@ -976,7 +1103,7 @@ def run_online_td3_disturbance_preset(
         mode=PLANT_MODE,
         rho_lyap=case_rho_lyap,
         lyap_eps=case_lyap_eps,
-        lyap_tol=LYAP_TOL,
+        lyap_tol=case_lyap_tol,
         seed=int(seed),
         use_lyap=bool(preset.safety_gate),
         IC_opt=context.ic_opt_template.copy(),
@@ -996,6 +1123,8 @@ def run_online_td3_disturbance_preset(
         disturbance_after_step=DISTURBANCE_AFTER_STEP,
         training_phase_config=training_phase_config,
         force_final_test=FORCE_FINAL_TEST,
+        rl_observation_mode=rl_observation_mode,
+        gart_section16_config=section16_projection_config,
     )
     timing = _timing_metadata(timer_start, n_steps=int(results[5]), episode_len=int(results[6]))
     case_config.update(timing)

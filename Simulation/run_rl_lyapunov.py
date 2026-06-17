@@ -24,6 +24,7 @@ from Lyapunov.upstream_controllers import (
     default_mpc_initial_guess,
     solve_offset_free_mpc_candidate,
 )
+from utils.gart_defaults import gart_rl_observation
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.scaling_helpers import apply_min_max, apply_rl_scaled, reverse_min_max
 
@@ -192,6 +193,10 @@ def _normalize_rl_projection_backend(projection_backend):
         "direct_accept_or_fallback": "direct_accept_or_fallback",
         "direct_gate": "direct_accept_or_fallback",
         "direct": "direct_accept_or_fallback",
+        "gart_section16_projection": "gart_section16_projection",
+        "section16_projection": "gart_section16_projection",
+        "gart_projection": "gart_section16_projection",
+        "section16": "gart_section16_projection",
         "mpc_only": "mpc_only_diagnostic",
         "offset_free_mpc_only": "mpc_only_diagnostic",
         "mpc_only_diagnostic": "mpc_only_diagnostic",
@@ -199,9 +204,112 @@ def _normalize_rl_projection_backend(projection_backend):
     if backend not in aliases:
         raise ValueError(
             "projection_backend must be 'legacy_augstate', 'safety_filter', "
-            "'first_step_contraction_mpc', 'direct_accept_or_fallback', or 'mpc_only'."
+            "'first_step_contraction_mpc', 'direct_accept_or_fallback', "
+            "'gart_section16_projection', or 'mpc_only'."
         )
     return aliases[backend]
+
+
+def _normalize_rl_observation_mode(rl_observation_mode):
+    if rl_observation_mode is None:
+        return "standard"
+    mode = str(rl_observation_mode).strip().lower()
+    aliases = {
+        "standard": "standard",
+        "default": "standard",
+        "legacy": "standard",
+        "td3": "standard",
+        "gart": "gart",
+        "gart_section16": "gart",
+        "section16": "gart",
+        "section16_gart": "gart",
+    }
+    if mode not in aliases:
+        raise ValueError("rl_observation_mode must be 'standard' or 'gart'.")
+    return aliases[mode]
+
+
+def _expected_rl_observation_dim(rl_observation_mode, *, n_aug, n_y, n_u):
+    if rl_observation_mode == "gart":
+        return int(n_aug + 4 * n_y + 2 * n_u + 1)
+    return int(n_aug + n_y + n_u)
+
+
+def _gart_observation_disturbance(xhat_aug, target_info, n_x, n_y):
+    if isinstance(target_info, dict) and target_info.get("d_s") is not None:
+        return np.asarray(target_info["d_s"], dtype=float).reshape(n_y)
+    return np.asarray(xhat_aug, dtype=float).reshape(-1)[n_x:n_x + n_y]
+
+
+def _build_rl_observation(
+    *,
+    rl_observation_mode,
+    min_max_dict,
+    xhat_aug,
+    y_sp,
+    u_prev_dev,
+    direct_step_context,
+    n_x,
+    n_y,
+):
+    if rl_observation_mode == "standard":
+        return apply_rl_scaled(min_max_dict, xhat_aug, y_sp, u_prev_dev)
+
+    target_info = {} if direct_step_context is None else dict(direct_step_context.get("target_info", {}) or {})
+    d_cert = _gart_observation_disturbance(xhat_aug, target_info, n_x=n_x, n_y=n_y)
+    return gart_rl_observation(
+        min_max_dict=min_max_dict,
+        x_aug_raw=xhat_aug,
+        d_cert=d_cert,
+        y_sp=y_sp,
+        u_prev=u_prev_dev,
+        target_result=target_info,
+    )
+
+
+def _normalize_section16_config(config, *, n_u, n_y):
+    cfg = {} if config is None else dict(config)
+
+    def _vector(name, default, size):
+        value = cfg.get(name, default)
+        arr = np.asarray(value, dtype=float).reshape(-1)
+        if arr.size == 1 and size > 1:
+            arr = np.full(size, float(arr.item()), dtype=float)
+        if arr.size != size:
+            raise ValueError(f"gart_section16_config['{name}'] must have size {size}.")
+        return arr
+
+    return {
+        "candidate_weight_diag": _vector("candidate_weight_diag", np.ones(n_u, dtype=float), n_u),
+        "move_weight_diag": _vector("move_weight_diag", np.zeros(n_u, dtype=float), n_u),
+        "steady_weight_diag": _vector("steady_weight_diag", np.zeros(n_u, dtype=float), n_u),
+        "output_weight_diag": _vector("output_weight_diag", np.zeros(n_y, dtype=float), n_y),
+        "use_output_tracking_term": bool(cfg.get("use_output_tracking_term", False)),
+        "allow_lyap_slack": bool(cfg.get("allow_lyap_slack", False)),
+        "allow_trust_region_slack": bool(cfg.get("allow_trust_region_slack", False)),
+        "lyap_acceptance_mode": str(cfg.get("lyap_acceptance_mode", "hard_only")),
+        "solver_pref": cfg.get("solver_pref"),
+        "certificate_aware_exploration": bool(cfg.get("certificate_aware_exploration", False)),
+        "certificate_margin_scale": float(cfg.get("certificate_margin_scale", 1.0)),
+        "certificate_sigma_floor": float(cfg.get("certificate_sigma_floor", 0.0)),
+    }
+
+
+def _certificate_aware_sigma(base_sigma, margin, section16_cfg):
+    if not bool(section16_cfg.get("certificate_aware_exploration", False)):
+        return base_sigma
+    if base_sigma is None:
+        return None
+    margin_scale = max(float(section16_cfg.get("certificate_margin_scale", 1.0)), 1e-12)
+    sigma_floor = max(float(section16_cfg.get("certificate_sigma_floor", 0.0)), 0.0)
+    try:
+        margin_value = float(margin)
+    except (TypeError, ValueError):
+        margin_value = 0.0
+    if not np.isfinite(margin_value):
+        margin_value = 0.0
+    scale = float(np.clip(max(margin_value, 0.0) / margin_scale, 0.0, 1.0))
+    return float(base_sigma) * max(scale, sigma_floor)
 
 
 def _as_selector_config_dict(config):
@@ -668,11 +776,12 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             "'direct_lyapunov_mpc', 'offset_free_mpc', or 'gart_lmpc'."
         )
 
-    if projection_backend not in {"direct_accept_or_fallback", "mpc_only_diagnostic"} and (
+    if projection_backend not in {"direct_accept_or_fallback", "gart_section16_projection", "mpc_only_diagnostic"} and (
         warmup_behavior_source in _TEACHER_CONTROLLER_SOURCES or bc_steps > 0
     ):
         raise ValueError(
-            "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback' or 'mpc_only'."
+            "Teacher-driven phase scheduling currently requires projection_backend='direct_accept_or_fallback', "
+            "'gart_section16_projection', or 'mpc_only'."
         )
 
     def _normalize_behavior_noise(name, default):
@@ -1365,6 +1474,8 @@ def run_rl_train(
     residual_rl_config=None,
     force_final_test=True,
     disturbance_profile=None,
+    rl_observation_mode="standard",
+    gart_section16_config=None,
 ):
     # warm_start only controls when online TD3 parameter updates begin through
     # the generated train/test schedule. It is not an MPC takeover or control
@@ -1403,6 +1514,7 @@ def run_rl_train(
     n_aug = MPC_obj.A.shape[0]
     n_x = n_aug - n_y
     projection_backend = _normalize_rl_projection_backend(projection_backend)
+    rl_observation_mode = _normalize_rl_observation_mode(rl_observation_mode)
     fallback_controller = _normalize_fallback_controller(fallback_controller)
     direct_target_mode_label = str(direct_target_mode).strip().lower()
     tracking_target_policy = _normalize_tracking_target_policy(
@@ -1423,10 +1535,17 @@ def run_rl_train(
                 phase_teacher_sources.add(str(source).strip().lower())
     uses_gart_lmpc_controller = (
         "gart_lmpc" in phase_teacher_sources
-        or (projection_backend == "direct_accept_or_fallback" and fallback_controller == "gart_lmpc")
+        or (
+            projection_backend in {"direct_accept_or_fallback", "gart_section16_projection"}
+            and fallback_controller == "gart_lmpc"
+        )
     )
-    if projection_backend == "direct_accept_or_fallback" and fallback_controller == "none":
-        raise ValueError("projection_backend='direct_accept_or_fallback' requires an active fallback_controller.")
+    if projection_backend in {"direct_accept_or_fallback", "gart_section16_projection"} and fallback_controller == "none":
+        raise ValueError(f"projection_backend={projection_backend!r} requires an active fallback_controller.")
+    if projection_backend == "gart_section16_projection" and fallback_controller != "gart_lmpc":
+        raise ValueError("projection_backend='gart_section16_projection' requires fallback_controller='gart_lmpc'.")
+    if rl_observation_mode == "gart" and direct_target_mode_label != "gart":
+        raise ValueError("rl_observation_mode='gart' requires direct_target_mode='gart'.")
     if uses_gart_lmpc_controller and direct_target_mode_label != "gart":
         raise ValueError("GART-LMPC teacher/fallback requires direct_target_mode='gart'.")
     if uses_gart_lmpc_controller and gart_mpc_config is None:
@@ -1498,6 +1617,19 @@ def run_rl_train(
 
     performance_guard_cfg = _normalize_performance_guard_config(performance_guard_config)
     residual_rl_cfg = _normalize_residual_rl_config(residual_rl_config, n_u)
+    section16_cfg = _normalize_section16_config(gart_section16_config, n_u=n_u, n_y=n_y)
+    expected_rl_dim = _expected_rl_observation_dim(
+        rl_observation_mode,
+        n_aug=n_aug,
+        n_y=n_y,
+        n_u=n_u,
+    )
+    agent_state_dim = getattr(agent, "state_dim", None)
+    if agent_state_dim is not None and int(agent_state_dim) != expected_rl_dim:
+        raise ValueError(
+            f"Agent state_dim={int(agent_state_dim)} does not match "
+            f"rl_observation_mode={rl_observation_mode!r} expected_dim={expected_rl_dim}."
+        )
 
     selector_cfg = None
     lyap_model = None
@@ -1539,12 +1671,12 @@ def run_rl_train(
         )
         if P_lyap is not None:
             lyap_model["P_x"] = _coerce_supplied_lyapunov_matrix(P_lyap, n_x=n_x, n_aug=n_aug)
-    elif projection_backend == "direct_accept_or_fallback":
+    elif projection_backend in {"direct_accept_or_fallback", "gart_section16_projection"}:
         if not use_lyap:
-            raise ValueError("projection_backend='direct_accept_or_fallback' requires use_lyap=True.")
+            raise ValueError(f"projection_backend={projection_backend!r} requires use_lyap=True.")
         if not hasattr(MPC_obj, "solve_tracking_mpc_step") or not hasattr(MPC_obj, "standard_tracking_report"):
             raise TypeError(
-                "projection_backend='direct_accept_or_fallback' requires an MPC object with Lyapunov tracking "
+                f"projection_backend={projection_backend!r} requires an MPC object with Lyapunov tracking "
                 "such as design_direct_lyapunov_mpc_solver(...)."
             )
         direct_ingredients = direct_lyapunov_evaluation_ingredients(MPC_obj)
@@ -1611,6 +1743,41 @@ def run_rl_train(
     gart_target_state = None
     last_param_noise_cycle_idx = None
     param_noise_cycle_states = []
+    cached_direct_step_idx = None
+    cached_direct_step_context = None
+
+    def _prepare_direct_context_once(step_idx, x0_aug, y_sp_step, u_prev_dev_step, y_prev_scaled_step):
+        nonlocal cached_direct_step_idx
+        nonlocal cached_direct_step_context
+        nonlocal direct_x_target_prev_success
+        nonlocal gart_target_state
+
+        if cached_direct_step_idx == int(step_idx) and cached_direct_step_context is not None:
+            return cached_direct_step_context
+
+        context = prepare_direct_output_disturbance_step(
+            LMPC_obj=MPC_obj,
+            x0_aug=x0_aug,
+            y_sp_k=y_sp_step,
+            u_prev_dev=u_prev_dev_step,
+            u_dev_min=u_min,
+            u_dev_max=u_max,
+            target_mode=direct_target_mode,
+            target_config=direct_target_config,
+            target_H=None,
+            x_target_prev_success=direct_x_target_prev_success,
+            gart_target_state=gart_target_state,
+            step_idx=int(step_idx),
+            y_prev_scaled=y_prev_scaled_step,
+            plant_mode=mode,
+            disturbance_after_step=disturbance_after_step,
+            use_target_output_for_tracking=direct_tracking_use_target_output,
+        )
+        direct_x_target_prev_success = context["x_target_prev_success_next"]
+        gart_target_state = context.get("gart_target_state_next", gart_target_state)
+        cached_direct_step_idx = int(step_idx)
+        cached_direct_step_context = context
+        return context
 
     for k in range(nFE):
         if k in test_train_dict:
@@ -1641,12 +1808,41 @@ def run_rl_train(
             warm_start_idx=WARM_START,
             phase_cfg=phase_cfg,
         )
-        sigma_override = _phase_exploration_sigma(phase_cfg, k, phase_state=phase_state, agent=agent)
         current_cycle_idx = int(k // max(int(time_in_sub_episodes), 1))
         parameter_noise_resampled_this_step = False
 
-        rl_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k], y_sp_k, u_prev_dev)
         precomputed_direct_step_context = None
+        if (
+            projection_backend in {"direct_accept_or_fallback", "gart_section16_projection"}
+            or rl_observation_mode == "gart"
+        ):
+            precomputed_direct_step_context = _prepare_direct_context_once(
+                k,
+                xhat_aug_store[:, k],
+                y_sp_k,
+                u_prev_dev,
+                y_prev_dev,
+            )
+
+        sigma_override = _phase_exploration_sigma(phase_cfg, k, phase_state=phase_state, agent=agent)
+        if projection_backend == "gart_section16_projection":
+            margin = None
+            if precomputed_direct_step_context is not None:
+                margin = (precomputed_direct_step_context.get("target_info") or {}).get(
+                    "contraction_probe_margin"
+                )
+            sigma_override = _certificate_aware_sigma(sigma_override, margin, section16_cfg)
+
+        rl_state = _build_rl_observation(
+            rl_observation_mode=rl_observation_mode,
+            min_max_dict=min_max_dict,
+            xhat_aug=xhat_aug_store[:, k],
+            y_sp=y_sp_k,
+            u_prev_dev=u_prev_dev,
+            direct_step_context=precomputed_direct_step_context,
+            n_x=n_x,
+            n_y=n_y,
+        )
         step_fallback_ic = fallback_ic
         step_teacher_fallback_ic = teacher_fallback_ic
         offset_free_teacher_info = None
@@ -1683,24 +1879,14 @@ def run_rl_train(
         )
 
         if needs_teacher_action and teacher_controller in {"direct_lyapunov_mpc", "gart_lmpc"}:
-            precomputed_direct_step_context = prepare_direct_output_disturbance_step(
-                LMPC_obj=MPC_obj,
-                x0_aug=xhat_aug_store[:, k],
-                y_sp_k=y_sp_k,
-                u_prev_dev=u_prev_dev,
-                u_dev_min=u_min,
-                u_dev_max=u_max,
-                target_mode=direct_target_mode,
-                target_config=direct_target_config,
-                target_H=None,
-                x_target_prev_success=direct_x_target_prev_success,
-                gart_target_state=gart_target_state,
-                step_idx=k,
-                y_prev_scaled=y_prev_dev,
-                plant_mode=mode,
-                disturbance_after_step=disturbance_after_step,
-                use_target_output_for_tracking=direct_tracking_use_target_output,
-            )
+            if precomputed_direct_step_context is None:
+                precomputed_direct_step_context = _prepare_direct_context_once(
+                    k,
+                    xhat_aug_store[:, k],
+                    y_sp_k,
+                    u_prev_dev,
+                    y_prev_dev,
+                )
             teacher_target_info = precomputed_direct_step_context["target_info"]
             teacher_step_info = precomputed_direct_step_context["step_info"]
             teacher_u_dev, teacher_fallback_ic_next, teacher_step_info = _solve_tracking_controller_from_target(
@@ -1815,6 +2001,12 @@ def run_rl_train(
         )
         behavior_debug["parameter_noise_resampled_this_step"] = bool(parameter_noise_resampled_this_step)
         behavior_debug["behavior_action_pre_filter"] = action.copy()
+        behavior_debug["rl_observation_mode"] = rl_observation_mode
+        behavior_debug["rl_observation_dim"] = int(np.asarray(rl_state, dtype=float).reshape(-1).size)
+        behavior_debug["section16_certificate_aware_exploration"] = bool(
+            section16_cfg.get("certificate_aware_exploration", False)
+        )
+        behavior_debug["section16_certificate_margin_scale"] = float(section16_cfg.get("certificate_margin_scale", 1.0))
         if teacher_action is not None:
             behavior_debug["teacher_action_pre_filter"] = np.asarray(teacher_action, float).reshape(-1).copy()
         if teacher_u_dev is not None:
@@ -2114,7 +2306,16 @@ def run_rl_train(
             # Keep the TD3 transition tied to the setpoint active when the
             # action was chosen and rewarded. Using y_sp_kp1 here would mix
             # two different tasks at a setpoint-change boundary.
-            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
+            next_state = _build_rl_observation(
+                rl_observation_mode=rl_observation_mode,
+                min_max_dict=min_max_dict,
+                xhat_aug=xhat_aug_store[:, k + 1],
+                y_sp=y_sp_k,
+                u_prev_dev=next_u_dev,
+                direct_step_context=precomputed_direct_step_context,
+                n_x=n_x,
+                n_y=n_y,
+            )
 
             done = 0.0
             if not test:
@@ -2460,7 +2661,16 @@ def run_rl_train(
             rewards[k] = float(r)
 
             next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
-            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
+            next_state = _build_rl_observation(
+                rl_observation_mode=rl_observation_mode,
+                min_max_dict=min_max_dict,
+                xhat_aug=xhat_aug_store[:, k + 1],
+                y_sp=y_sp_k,
+                u_prev_dev=next_u_dev,
+                direct_step_context=direct_step_context,
+                n_x=n_x,
+                n_y=n_y,
+            )
 
             if not test:
                 _apply_agent_training_updates(
@@ -2519,34 +2729,21 @@ def run_rl_train(
 
             continue
 
-        if projection_backend == "direct_accept_or_fallback":
+        if projection_backend in {"direct_accept_or_fallback", "gart_section16_projection"}:
             direct_tracking_target = y_sp_k.copy()
             direct_tracking_target_source = "raw_setpoint"
             if precomputed_direct_step_context is None:
-                direct_step_context = prepare_direct_output_disturbance_step(
-                    LMPC_obj=MPC_obj,
-                    x0_aug=xhat_aug_store[:, k],
-                    y_sp_k=y_sp_k,
-                    u_prev_dev=u_prev_dev,
-                    u_dev_min=u_min,
-                    u_dev_max=u_max,
-                    target_mode=direct_target_mode,
-                    target_config=direct_target_config,
-                    target_H=None,
-                    x_target_prev_success=direct_x_target_prev_success,
-                    gart_target_state=gart_target_state,
-                    step_idx=k,
-                    y_prev_scaled=y_prev_dev,
-                    plant_mode=mode,
-                    disturbance_after_step=disturbance_after_step,
-                    use_target_output_for_tracking=direct_tracking_use_target_output,
+                direct_step_context = _prepare_direct_context_once(
+                    k,
+                    xhat_aug_store[:, k],
+                    y_sp_k,
+                    u_prev_dev,
+                    y_prev_dev,
                 )
             else:
                 direct_step_context = precomputed_direct_step_context
             direct_target_info = direct_step_context["target_info"]
             direct_step_info = direct_step_context["step_info"]
-            direct_x_target_prev_success = direct_step_context["x_target_prev_success_next"]
-            gart_target_state = direct_step_context.get("gart_target_state_next", gart_target_state)
             uses_gart_target = str(direct_target_info.get("target_mode", "")).strip().lower() == "gart"
             target_source_label = "recomputed_gart" if uses_gart_target else "recomputed_direct"
             selector_mode_label = "gart_target_selector" if uses_gart_target else "direct_output_disturbance_target"
@@ -2671,6 +2868,9 @@ def run_rl_train(
 
             applied_eval = None
             fallback_ic_next = None
+            projection_info = None
+            projection_u_dev = None
+            projection_verified = False
             if candidate_eval.get("accepted", False):
                 u_dev_safe = u_rl_dev.copy()
                 applied_eval = dict(candidate_eval)
@@ -2688,7 +2888,89 @@ def run_rl_train(
                 solver_status = "candidate_checked"
                 solver_name = f"{fallback_controller}_accept_or_fallback_gate"
             else:
-                if precomputed_direct_fallback is not None:
+                if projection_backend == "gart_section16_projection":
+                    section16_model_info = {
+                        **direct_ingredients,
+                        "n_u": n_u,
+                        "n_y": n_y,
+                    }
+                    section16_lyap_config = {
+                        "source": "gart_section16_projection",
+                        "rho": rho_lyap,
+                        "eps_lyap": lyap_eps,
+                        "tol": lyap_tol,
+                        "candidate_weight_diag": section16_cfg["candidate_weight_diag"],
+                        "move_weight_diag": section16_cfg["move_weight_diag"],
+                        "steady_weight_diag": section16_cfg["steady_weight_diag"],
+                        "output_weight_diag": section16_cfg["output_weight_diag"],
+                        "use_output_tracking_term": section16_cfg["use_output_tracking_term"],
+                        "allow_lyap_slack": section16_cfg["allow_lyap_slack"],
+                        "allow_trust_region_slack": section16_cfg["allow_trust_region_slack"],
+                        "lyap_acceptance_mode": section16_cfg["lyap_acceptance_mode"],
+                        "solver_pref": section16_cfg["solver_pref"] if section16_cfg["solver_pref"] is not None else filter_solver_pref,
+                        "tracking_output_target": direct_tracking_target,
+                        "tracking_output_target_source": direct_tracking_target_source,
+                        "target_backup_policy": "none",
+                    }
+                    projection_u_dev, projection_info = apply_lyapunov_safety_filter(
+                        u_cand=u_rl_dev,
+                        xhat_aug=xhat_aug_store[:, k],
+                        target_info=direct_target_info,
+                        model_info=section16_model_info,
+                        lyap_config=section16_lyap_config,
+                        u_prev=u_prev_dev,
+                        bounds_info={
+                            "u_min": u_min,
+                            "u_max": u_max,
+                            "du_min": du_min,
+                            "du_max": du_max,
+                        },
+                        fallback_config=None,
+                        return_debug=True,
+                    )
+                    projection_mode = None if projection_info is None else str(
+                        projection_info.get("correction_mode", "")
+                    )
+                    projection_verified = bool(
+                        projection_info is not None
+                        and projection_info.get("verified", False)
+                        and projection_mode in {"optimized_correction", "accepted_candidate"}
+                    )
+
+                if projection_verified:
+                    u_dev_safe = np.clip(np.asarray(projection_u_dev, float).reshape(-1), u_min, u_max)
+                    applied_eval = evaluate_candidate_action(
+                        u_cand=u_dev_safe,
+                        xhat_aug=xhat_aug_store[:, k],
+                        target_info=direct_target_info,
+                        ingredients=direct_ingredients,
+                        rho=rho_lyap,
+                        eps_lyap=lyap_eps,
+                        u_min=u_min,
+                        u_max=u_max,
+                        u_prev=u_prev_dev,
+                        du_min=du_min,
+                        du_max=du_max,
+                        tol=lyap_tol,
+                    )
+                    correction_mode = "gart_section16_projected"
+                    accept_reason = "gart_section16_projection_verified"
+                    verified = True
+                    fallback_verified = False
+                    fallback_mode = None
+                    fallback_solver_status = None
+                    fallback_objective_value = None
+                    fallback_bounds_ok = None
+                    fallback_move_ok = None
+                    fallback_lyap_ok = None
+                    u_fallback_mpc = None
+                    solver_status = (
+                        projection_info.get("solver_status")
+                        or projection_info.get("qcqp_status")
+                        or correction_mode
+                    )
+                    solver_name = projection_info.get("solver_name")
+                elif precomputed_direct_fallback is not None:
                     u_dev_safe, fallback_ic_next, direct_step_info = precomputed_direct_fallback
                 else:
                     u_dev_safe, fallback_ic_next, direct_step_info = _solve_tracking_controller_from_target(
@@ -2709,9 +2991,9 @@ def run_rl_train(
                         first_step_contraction_on=first_step_contraction_on,
                         gart_mpc_config=gart_mpc_config,
                     )
-                if reuse_mpc_solution_as_ic:
+                if not projection_verified and reuse_mpc_solution_as_ic:
                     fallback_ic = np.asarray(fallback_ic_next, float).reshape(-1).copy()
-                if direct_target_info.get("success", False):
+                if not projection_verified and direct_target_info.get("success", False):
                     applied_eval = evaluate_candidate_action(
                         u_cand=u_dev_safe,
                         xhat_aug=xhat_aug_store[:, k],
@@ -2727,7 +3009,9 @@ def run_rl_train(
                         tol=lyap_tol,
                     )
 
-                if direct_step_info.get("success", False):
+                if projection_verified:
+                    pass
+                elif direct_step_info.get("success", False):
                     correction_mode = "fallback_mpc_verified"
                     accept_reason = "fallback_mpc_verified"
                     verified = True
@@ -2751,14 +3035,15 @@ def run_rl_train(
                     fallback_verified = False
                     fallback_mode = fallback_controller
 
-                fallback_solver_status = direct_step_info.get("status") or correction_mode
-                fallback_objective_value = direct_step_info.get("fun")
-                fallback_bounds_ok = None if applied_eval is None else applied_eval.get("candidate_bounds_ok")
-                fallback_move_ok = None if applied_eval is None else applied_eval.get("candidate_move_ok")
-                fallback_lyap_ok = None if applied_eval is None else applied_eval.get("candidate_lyap_ok")
-                u_fallback_mpc = u_dev_safe.copy()
-                solver_status = direct_step_info.get("status") or correction_mode
-                solver_name = direct_step_info.get("tracking_solver")
+                if not projection_verified:
+                    fallback_solver_status = direct_step_info.get("status") or correction_mode
+                    fallback_objective_value = direct_step_info.get("fun")
+                    fallback_bounds_ok = None if applied_eval is None else applied_eval.get("candidate_bounds_ok")
+                    fallback_move_ok = None if applied_eval is None else applied_eval.get("candidate_move_ok")
+                    fallback_lyap_ok = None if applied_eval is None else applied_eval.get("candidate_lyap_ok")
+                    u_fallback_mpc = u_dev_safe.copy()
+                    solver_status = direct_step_info.get("status") or correction_mode
+                    solver_name = direct_step_info.get("tracking_solver")
 
             if applied_eval is None:
                 applied_eval = dict(candidate_eval)
@@ -2769,6 +3054,15 @@ def run_rl_train(
             final_lyap_margin = None
             if applied_v_next is not None and candidate_eval.get("V_bound") is not None:
                 final_lyap_margin = float(candidate_eval.get("V_bound")) - float(applied_v_next)
+
+            projection_solver_residuals = (
+                {} if projection_info is None else dict(projection_info.get("solver_residuals", {}) or {})
+            )
+            section16_projection_attempted = bool(projection_info is not None)
+            section16_projection_status = None if projection_info is None else (
+                projection_info.get("qcqp_status") or projection_info.get("solver_status")
+            )
+            section16_projection_objective = None if projection_info is None else projection_info.get("objective_value")
 
             info = {
                 "source": "rl",
@@ -2817,15 +3111,49 @@ def run_rl_train(
                     "candidate_bounds_violation": candidate_eval.get("candidate_bounds_violation"),
                     "candidate_move_violation": candidate_eval.get("candidate_move_violation"),
                     "tracking_error": direct_step_info.get("tracking_error"),
+                    **projection_solver_residuals,
                 },
-                "trust_region_violation": 0.0,
-                "slack_v": float(direct_step_info.get("slack_lyap", 0.0) or 0.0),
-                "slack_u": 0.0,
+                "trust_region_violation": (
+                    projection_info.get("trust_region_violation")
+                    if projection_info is not None
+                    else 0.0
+                ),
+                "slack_v": (
+                    float(projection_info.get("slack_v", 0.0) or 0.0)
+                    if projection_info is not None
+                    else float(direct_step_info.get("slack_lyap", 0.0) or 0.0)
+                ),
+                "slack_u": (
+                    float(projection_info.get("slack_u", 0.0) or 0.0)
+                    if projection_info is not None
+                    else 0.0
+                ),
                 "correction_mode": correction_mode,
-                "qcqp_attempted": False,
-                "qcqp_solved": False,
-                "qcqp_hard_accepted": False,
-                "qcqp_status": "not_attempted",
+                "qcqp_attempted": bool(
+                    projection_info.get("qcqp_attempted", False)
+                    if projection_info is not None
+                    else False
+                ),
+                "qcqp_solved": bool(
+                    projection_info.get("qcqp_solved", False)
+                    if projection_info is not None
+                    else False
+                ),
+                "qcqp_hard_accepted": bool(
+                    projection_info.get("qcqp_hard_accepted", False)
+                    if projection_info is not None
+                    else False
+                ),
+                "qcqp_status": (
+                    projection_info.get("qcqp_status", "not_attempted")
+                    if projection_info is not None
+                    else "not_attempted"
+                ),
+                "section16_projection_attempted": section16_projection_attempted,
+                "section16_projection_verified": bool(projection_verified),
+                "section16_projection_status": section16_projection_status,
+                "section16_projection_objective_value": section16_projection_objective,
+                "section16_projection_config": dict(section16_cfg),
                 "fallback_controller": fallback_controller,
                 "fallback_mode": fallback_mode,
                 "fallback_verified": bool(fallback_verified),
@@ -2907,6 +3235,7 @@ def run_rl_train(
                 "qcqp_tracking_target_source": direct_tracking_target_source,
                 "cx_s": None if cx_s is None else cx_s.copy(),
                 "cd_d_s": None if cd_d_s is None else cd_d_s.copy(),
+                "u_projected": None if projection_u_dev is None else np.asarray(projection_u_dev, float).reshape(-1).copy(),
                 "u_fallback_mpc": None if u_fallback_mpc is None else u_fallback_mpc.copy(),
                 "allow_trust_region_slack": False,
                 "lyap_acceptance_mode": "hard_only",
@@ -2920,7 +3249,10 @@ def run_rl_train(
             if use_lyap:
                 total_checked += 1
                 checked_in_block += 1
-                if info.get("correction_mode") != "accepted_candidate":
+                if info.get("correction_mode") == "gart_section16_projected":
+                    total_filtered += 1
+                    filtered_in_block += 1
+                elif info.get("correction_mode") != "accepted_candidate":
                     total_fallback_mpc += 1
                     fallback_in_block += 1
 
@@ -2976,7 +3308,16 @@ def run_rl_train(
             rewards[k] = float(r)
 
             next_u_dev = u_scaled_applied[k, :] - ss_scaled_u
-            next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
+            next_state = _build_rl_observation(
+                rl_observation_mode=rl_observation_mode,
+                min_max_dict=min_max_dict,
+                xhat_aug=xhat_aug_store[:, k + 1],
+                y_sp=y_sp_k,
+                u_prev_dev=next_u_dev,
+                direct_step_context=direct_step_context,
+                n_x=n_x,
+                n_y=n_y,
+            )
 
             done = 0.0
             if not test:
@@ -3501,7 +3842,16 @@ def run_rl_train(
         # Keep the TD3 transition tied to the setpoint active when the
         # action was chosen and rewarded. Using y_sp_kp1 here would mix
         # two different tasks at a setpoint-change boundary.
-        next_state = apply_rl_scaled(min_max_dict, xhat_aug_store[:, k + 1], y_sp_k, next_u_dev)
+        next_state = _build_rl_observation(
+            rl_observation_mode=rl_observation_mode,
+            min_max_dict=min_max_dict,
+            xhat_aug=xhat_aug_store[:, k + 1],
+            y_sp=y_sp_k,
+            u_prev_dev=next_u_dev,
+            direct_step_context=precomputed_direct_step_context,
+            n_x=n_x,
+            n_y=n_y,
+        )
 
         done = 0.0
         if not test:

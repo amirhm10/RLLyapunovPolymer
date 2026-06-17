@@ -747,6 +747,7 @@ def apply_lyapunov_safety_filter(
                 "trust_region_violation": trial_debug["trust_region_violation"],
                 "slack_v": trial_debug["slack_v"],
                 "slack_u": trial_debug["slack_u"],
+                "objective_value": trial_debug["objective_value"],
                 "verified": True,
             })
             _attach_final_lyap(
@@ -780,6 +781,7 @@ def apply_lyapunov_safety_filter(
                     "trust_region_violation": trial_debug["trust_region_violation"],
                     "slack_v": trial_debug["slack_v"],
                     "slack_u": trial_debug["slack_u"],
+                    "objective_value": trial_debug["objective_value"],
                     "verified": False,
                 })
                 _attach_final_lyap(
@@ -807,6 +809,7 @@ def apply_lyapunov_safety_filter(
             "trust_region_violation": best_debug["trust_region_violation"],
             "slack_v": best_debug["slack_v"],
             "slack_u": best_debug["slack_u"],
+            "objective_value": best_debug["objective_value"],
         })
     else:
         base_debug["qcqp_status"] = "qcqp_attempted_unsolved"
