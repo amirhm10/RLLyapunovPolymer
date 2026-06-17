@@ -36,7 +36,7 @@ LYAP_EPS = GART_FINAL_LYAP_EPS
 # GART-LMPC experiment first, before carrying the tuning into RL.
 DX_S_MAX_ABS = 0.05
 DU_S_MAX_ABS = [0.05, 0.05]
-DY_S_MAX_ABS = 1.0
+DY_S_MAX_ABS = 0.25
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
