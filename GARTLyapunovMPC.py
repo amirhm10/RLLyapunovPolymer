@@ -7,7 +7,7 @@ from pprint import pprint
 
 from utils.gart_runtime import GARTStudyLimits, ResourceGuard, set_single_thread_env
 
-THREADS = 4
+THREADS = 20
 set_single_thread_env(THREADS)
 
 from experiments.run_gart_target_selector_study import (
@@ -19,7 +19,6 @@ from experiments.run_gart_target_selector_study import (
 )
 from utils.gart_defaults import GART_FINAL_LYAP_EPS, GART_FINAL_RHO_LYAP
 from utils.path_helpers import repo_path
-
 
 # GART-LMPC runner configuration.
 #
