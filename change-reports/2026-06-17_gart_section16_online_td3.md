@@ -45,6 +45,7 @@ Implemented the Section 16 GART-aware online TD3 path for the cold-start safety-
   - `PROJECTION_BACKEND = "gart_section16_projection"`
 - `OnlineTD3_ColdStart_NoSafetyGate.py` keeps `RL_OBSERVATION_MODE = "standard"` by default for continuity.
 - OF-MPC-pretrained runners keep `RL_OBSERVATION_MODE = "standard"` so existing checkpoints remain dimension-compatible.
+- All four online TD3 root runners use `DIRECT_DISTURBANCE_N_TESTS` for `EPISODES`, preserving the previous shared default of 300 episodes unless the root file is edited.
 
 ## Validation
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pprint import pprint
 
 from utils.gart_defaults import GART_FINAL_LYAP_EPS, GART_FINAL_RHO_LYAP
+from utils.direct_lyapunov_study import DIRECT_DISTURBANCE_N_TESTS
 from utils.online_disturbance_runner import run_online_td3_disturbance_preset
 
 # Cold-start online TD3 with the GART Section 16 safety gate.
@@ -10,7 +11,7 @@ from utils.online_disturbance_runner import run_online_td3_disturbance_preset
 # This root runner is intentionally editable, following the style of
 # GARTLyapunovMPC.py. Change these values here for day-to-day experiments.
 
-EPISODES = 5
+EPISODES = DIRECT_DISTURBANCE_N_TESTS
 SET_POINTS_LEN = 400
 SEED = 123
 SAVE_PLOTS = True
