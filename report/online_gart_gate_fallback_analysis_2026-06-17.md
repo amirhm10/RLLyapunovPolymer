@@ -119,7 +119,9 @@ V_{k+1}^{\mathrm{cand}}
 \rho V_k + \epsilon .
 $$
 
-Near the target, $V_k$ is small, so $\epsilon$ dominates the tube radius. With the current value $\epsilon = 10^{-3}$, many rejected near-steady candidates have only a small positive margin. In the near-5x reward band, the median active candidate margin was about $9.4 \times 10^{-4}$ for cold start and $5.4 \times 10^{-4}$ for OF-MPC-pretrained. That means these are mostly borderline tube violations, not large input-bound failures.
+Near the target, $V_k$ is small, so $\epsilon$ strongly affects the practical tube radius. With the current value $\epsilon = 10^{-3}$, many rejected near-steady candidates have only a small positive margin. In the near-5x reward band, the median active candidate margin was about $9.4 \times 10^{-4}$ for cold start and $5.4 \times 10^{-4}$ for OF-MPC-pretrained. That means these are mostly borderline tube violations, not large input-bound failures.
+
+This is not only an RL-exploration issue. The same mechanism can appear in GART-LMPC-only experiments: the measured output can look settled while the certified target $(x_s,u_s,d_s)$ is still moving because of target selection, disturbance-estimate updates, or setpoint-governor logic. Since the Lyapunov function is evaluated relative to the current target, a small target movement can make a previously settled state look less settled in the target-centered coordinates. The controller can then move the input even though the raw output plot looks like it should stay still.
 
 The table below defines near steady as being after the first 50 steps of a setpoint block and inside five times the reward band for both outputs. For the first setpoint this band is approximately $|\eta-\eta_{sp}| \le 0.0338$ and $|T-T_{sp}| \le 0.243$ in physical units.
 
@@ -162,7 +164,21 @@ The saved bundles store $V_k$ and $V_{k+1}^{\mathrm{cand}}$, so the candidate ca
 | OF-MPC pretrained + gate | 97.64% accepted | 99.74% | 100.00% |
 | OF-MPC pretrained no gate diagnostic | 95.73% accepted | 98.99% | 99.98% |
 
-This suggests the current practical Lyapunov tube is too tight for noisy online TD3 behavior near the setpoint. A settled-zone value such as $\epsilon = 3 \times 10^{-3}$ would remove most near-steady interventions while preserving a much tighter gate than $\epsilon = 10^{-2}$. A global change should still be tested carefully because the same $\epsilon$ also governs transition behavior.
+This suggests the current practical Lyapunov tube is often too tight near the setpoint, but increasing $\epsilon$ is not the full fix. A settled-zone value such as $\epsilon = 3 \times 10^{-3}$ would remove most near-steady gate interventions in the saved TD3 bundles while preserving a much tighter gate than $\epsilon = 10^{-2}$. A global change should still be tested carefully because the same $\epsilon$ also governs transition behavior.
+
+For a moving GART target, the more principled form is not only a larger constant $\epsilon$. The practical allowance should either freeze/reuse the target once the loop is settled, or include a target-motion term:
+
+$$
+V_{k+1}(x_{s,k+1})
+\le
+\rho V_k(x_{s,k})
+\epsilon_0
+\kappa_z \|z_{s,k+1}-z_{s,k}\|^2,
+\quad
+z_s = (x_s,u_s,d_s).
+$$
+
+That target-motion term should be interpreted carefully. It is useful during setpoint and disturbance transients, but in a settled zone the better behavior may be to suppress target motion rather than keep enlarging the tube.
 
 The Stage 2 target tie-breaker is not enough to prevent input changes by itself. It smooths the selected target input $u_s$ toward the previous applied input, but it does not constrain the TD3 candidate. In the completed runs:
 
@@ -171,9 +187,9 @@ The Stage 2 target tie-breaker is not enough to prevent input changes by itself.
 - `target_u_ref_active` is not used in the GART target path.
 - The GART target can remain far from the applied input even when the output is near the setpoint. In the near-5x reward band, $\|u_s-u_{k-1}\|_\infty$ averaged about 5.02 scaled input units for cold start and 4.75 for OF-MPC-pretrained.
 
-That last point is the key mechanism. The current GART design creates a moving certified steady target, not an input-invariant settled tube around the actual applied input. If the actor explores inside the output tube, the candidate may violate the target-centered Lyapunov inequality and trigger fallback. The target smoother does not stop that actor-side poke.
+That last point is the key mechanism. The current GART design creates a moving certified steady target, not an input-invariant settled tube around the actual applied input. If the actor explores inside the output tube, or if the GART target itself moves while the raw output is visually settled, the candidate or the fallback controller may violate the no-move intuition. The target smoother does not by itself create a "go to the tube and stay there" policy.
 
-Exploration is also still active in the settled region. The direct fallback backend does not currently use the certificate-aware exploration shrinkage that was added for the Section 16 projection branch. The no-gate diagnostics confirm that the actor itself keeps proposing certificate-breaking moves near the setpoint:
+Exploration is an additional mechanism, not the only mechanism. The direct fallback backend does not currently use the certificate-aware exploration shrinkage that was added for the older Section 16 projection branch. The no-gate diagnostics confirm that the actor itself keeps proposing certificate-breaking moves near the setpoint:
 
 | Case | Near-5x diagnostic unsafe |
 |---|---:|
@@ -182,9 +198,12 @@ Exploration is also still active in the settled region. The direct fallback back
 
 ## Implications For The Next Tuning
 
-The parameters most likely to prevent unwanted input changes after settling are:
+The parameters and logic most likely to prevent unwanted input changes after settling are:
 
-- `lyap_eps`: raise only in a settled zone first. Test `3e-3` before `1e-2`.
+- `lyap_eps`: raise only in a settled zone first. Test `3e-3` before `1e-2`. Do not treat this as the only fix.
+- target freeze/reuse hysteresis: once the raw setpoint is unchanged and the output is inside the settled band, reuse the previous certified target unless the target quality clearly fails.
+- target-motion allowance: if the target is intentionally moving, use an $\epsilon_{\mathrm{eff}}$ that includes a bounded target-motion term instead of pretending the target is stationary.
+- hold-previous certification: inside the settled band, first test whether $u_{k-1}$ itself satisfies the contraction/tube condition. If it does, apply $u_{k-1}$ rather than solving a fallback that may move the input.
 - `full_rl_exploration_std_end`: reduce toward zero near the setpoint, or add certificate-aware exploration scaling to `direct_accept_or_fallback`.
 - `maintenance_move_weight` in the shaped reward: currently zero, so the reward has no extra no-move term inside the maintenance band.
 - `Rdu_diag` in `gart_lmpc_config`: increasing it should make fallback moves less aggressive.
@@ -276,7 +295,7 @@ That is why some episodes show 50 to 60 actual interventions. For example, episo
 
 The console print was not showing this same quantity. In the GART direct branch, the printed `fallback / hold-prev in block` counter excluded `gart_section16_projected`, and the printed accepted count effectively treated projections as accepted. Therefore the print could stay below 10 while the activation plot showed 50 to 60 total interventions per 800-step episode.
 
-This is a labeling/accounting issue, not evidence that the plot is reading the wrong run. The plot is correct for total safety activity, but it was too easy to confuse total intervention with fallback-only counts. The code has been updated so future runs print Section-16 projection counts separately and episode tables include explicit projection and GART hold-previous columns.
+This is a labeling/accounting issue, not evidence that the plot is reading the wrong run. The plot is correct for total safety activity, but it was too easy to confuse total intervention with fallback-only counts. The high-level online TD3 presets now reject Section-16 projection overrides and use direct accept-or-GART-LMPC-fallback for active safety-gate runs. The accounting code also reports projection and GART hold-previous columns explicitly when reading older saved bundles that still contain projections.
 
 ## Risks And Inconsistencies Found
 

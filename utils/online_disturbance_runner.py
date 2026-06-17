@@ -153,7 +153,6 @@ COLD_START_HANDOFF_EPISODES = HANDOFF_EPISODES
 
 STANDARD_RL_OBSERVATION_MODE = "standard"
 GART_RL_OBSERVATION_MODE = "gart"
-SECTION16_PROJECTION_BACKEND = "gart_section16_projection"
 DIRECT_GATE_PROJECTION_BACKEND = "direct_accept_or_fallback"
 MPC_ONLY_DIAGNOSTIC_BACKEND = "mpc_only_diagnostic"
 DEFAULT_SECTION16_CERT_MARGIN_SCALE = 1.0
@@ -415,16 +414,14 @@ def _normalize_projection_backend_override(value: str | None, *, safety_gate: bo
     aliases = {
         "direct_accept_or_fallback": DIRECT_GATE_PROJECTION_BACKEND,
         "direct_gate": DIRECT_GATE_PROJECTION_BACKEND,
-        "gart_section16_projection": SECTION16_PROJECTION_BACKEND,
-        "section16_projection": SECTION16_PROJECTION_BACKEND,
-        "gart_projection": SECTION16_PROJECTION_BACKEND,
         "mpc_only": MPC_ONLY_DIAGNOSTIC_BACKEND,
         "mpc_only_diagnostic": MPC_ONLY_DIAGNOSTIC_BACKEND,
     }
     if backend not in aliases:
         raise ValueError(
-            "PROJECTION_BACKEND must be 'direct_accept_or_fallback', "
-            "'gart_section16_projection', or 'mpc_only_diagnostic'."
+            "Online safety-gate presets no longer support Section-16 QCQP projection. "
+            "Use PROJECTION_BACKEND='direct_accept_or_fallback' for GART-LMPC fallback "
+            "or 'mpc_only_diagnostic' for no-gate diagnostics."
         )
     return aliases[backend]
 
@@ -966,8 +963,6 @@ def run_online_td3_disturbance_preset(
     )
     if projection_backend == MPC_ONLY_DIAGNOSTIC_BACKEND:
         effective_fallback_controller = "none"
-    elif projection_backend == SECTION16_PROJECTION_BACKEND:
-        effective_fallback_controller = "gart_lmpc"
     else:
         effective_fallback_controller = preset.fallback_controller if preset.safety_gate else "none"
     uses_gart_lmpc_controller = bool(
