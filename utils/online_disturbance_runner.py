@@ -397,7 +397,7 @@ def normalize_rl_observation_mode(mode: str | None) -> str:
 
 def gart_observation_state_dim(dimensions: TD3Dimensions) -> int:
     n_aug = int(dimensions.state_dim) - int(dimensions.set_points_number) - int(dimensions.inputs_number)
-    return int(n_aug + 4 * int(dimensions.set_points_number) + 2 * int(dimensions.inputs_number) + 1)
+    return int(n_aug + 4 * int(dimensions.set_points_number) + 2 * int(dimensions.inputs_number))
 
 
 def dimensions_for_observation_mode(dimensions: TD3Dimensions, mode: str | None) -> TD3Dimensions:

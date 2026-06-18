@@ -231,7 +231,7 @@ def _normalize_rl_observation_mode(rl_observation_mode):
 
 def _expected_rl_observation_dim(rl_observation_mode, *, n_aug, n_y, n_u):
     if rl_observation_mode == "gart":
-        return int(n_aug + 4 * n_y + 2 * n_u + 1)
+        return int(n_aug + 4 * n_y + 2 * n_u)
     return int(n_aug + n_y + n_u)
 
 

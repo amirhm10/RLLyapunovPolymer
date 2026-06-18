@@ -484,35 +484,35 @@ def gart_rl_observation(
     x_max = min_max_dict.get("x_max")
     y_min = min_max_dict.get("y_sp_min")
     y_max = min_max_dict.get("y_sp_max")
+    u_min = min_max_dict.get("u_min")
+    u_max = min_max_dict.get("u_max")
     d_min = None if x_min is None else np.asarray(x_min, dtype=float).reshape(-1)[-n_y:]
     d_max = None if x_max is None else np.asarray(x_max, dtype=float).reshape(-1)[-n_y:]
 
     if isinstance(target_result, dict):
         r_cmd = target_result.get("r_cmd")
+        if r_cmd is None:
+            r_cmd = target_result.get("r_s")
         y_s = target_result.get("y_s")
         u_s = target_result.get("u_s")
-        margin = target_result.get("contraction_probe_margin")
     else:
         r_cmd = target_result.r_cmd
         y_s = target_result.y_s
         u_s = target_result.u_s
-        margin = target_result.contraction_probe_margin
 
     r_cmd_arr = np.zeros(n_y) if r_cmd is None else np.asarray(r_cmd, dtype=float).reshape(n_y)
     y_s_arr = np.zeros(n_y) if y_s is None else np.asarray(y_s, dtype=float).reshape(n_y)
     u_s_arr = np.zeros_like(u_prev) if u_s is None else np.asarray(u_s, dtype=float).reshape(u_prev.size)
-    margin_arr = np.array([0.0 if margin is None or not np.isfinite(float(margin)) else float(margin)], dtype=float)
 
     return np.concatenate(
         [
             _scale_pm1(x_aug_raw, x_min, x_max),
             _scale_pm1(d_cert, d_min, d_max),
             _scale_pm1(y_sp, y_min, y_max),
-            u_prev,
+            _scale_pm1(u_prev, u_min, u_max),
             _scale_pm1(r_cmd_arr, y_min, y_max),
             _scale_pm1(y_s_arr, y_min, y_max),
-            u_s_arr,
-            margin_arr,
+            _scale_pm1(u_s_arr, u_min, u_max),
         ]
     )
 
