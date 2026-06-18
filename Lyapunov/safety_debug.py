@@ -3111,7 +3111,7 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
                 plt.savefig(filepath, dpi=300, bbox_inches="tight")
                 plt.close(fig)
 
-            block_starts = list(range(0, n_episodes, 10))[:20]
+            block_starts = list(range(0, n_episodes, 10))
             for block_start in block_starts:
                 block_end = min(block_start + 10, n_episodes)
                 if block_start >= block_end:
