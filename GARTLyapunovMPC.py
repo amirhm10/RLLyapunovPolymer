@@ -45,7 +45,7 @@ ALPHA_D = 0.05
 # Target-selector geometry. Edit these values directly for manual ablations.
 # Original active values: headroom=0.01, primary_tol_rel=1.0e-6,
 # W_u_smooth=[1.0, 1.0], Wy=[5.0, 1.0].
-INPUT_HEADROOM_FRAC = 0.03
+INPUT_HEADROOM_FRAC = 0.05
 PRIMARY_TOL_REL = 1.0e-4
 W_U_SMOOTH_DIAG = [2.0, 2.0]
 TARGET_WY_DIAG = [1.0, 1.0]
