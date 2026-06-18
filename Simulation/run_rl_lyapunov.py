@@ -863,6 +863,9 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             0,
             int(cfg.get("handoff_actor_bc_updates_per_step", 0)),
         ),
+        "warmup_exploration_std": float(
+            max(0.0, cfg.get("warmup_exploration_std", cfg.get("bc_exploration_std", 0.0)))
+        ),
         "bc_exploration_std": float(max(0.0, cfg.get("bc_exploration_std", 0.0))),
         "handoff_exploration_std_start": float(max(0.0, cfg.get("handoff_exploration_std_start", 0.0))),
         "handoff_exploration_std_end": float(max(0.0, cfg.get("handoff_exploration_std_end", 0.0))),
@@ -1096,6 +1099,9 @@ def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
         return None
 
     policy_phase = str(phase_state.get("policy_phase", "")).strip().lower()
+    if policy_phase == "warmup_buffer_only":
+        return float(max(0.0, phase_cfg.get("warmup_exploration_std", 0.0)))
+
     if policy_phase == "behavior_clone_teacher":
         return float(max(0.0, phase_cfg.get("bc_exploration_std", 0.0)))
 

@@ -150,6 +150,8 @@ BC_TEACHER_EPISODES = 20
 HANDOFF_EPISODES = 5
 PRETRAINED_HANDOFF_EPISODES = 10
 COLD_START_HANDOFF_EPISODES = HANDOFF_EPISODES
+NOISY_TEACHER_EPISODES = 10
+NOISY_TEACHER_HANDOFF_EPISODES = 10
 
 STANDARD_RL_OBSERVATION_MODE = "standard"
 GART_RL_OBSERVATION_MODE = "gart"
@@ -466,11 +468,100 @@ def _scaling_contract(setup: Any, context: DisturbanceContext) -> dict[str, Any]
     }
 
 
-def _phase_plot_boundaries(episodes: int, set_points_len: int) -> np.ndarray:
+def _phase_plot_boundaries(
+    episodes: int,
+    set_points_len: int,
+    training_phase_config: dict[str, Any] | None = None,
+) -> np.ndarray:
     time_in_sub_episodes = int(DIRECT_TWO_SETPOINT_Y_PHYS.shape[0]) * int(set_points_len)
+    phase_episodes = WARMUP_EPISODES + BC_TEACHER_EPISODES
+    if training_phase_config is not None:
+        phase_episodes = int(training_phase_config.get("warmup_buffer_only_episodes", 0)) + int(
+            training_phase_config.get("behavior_clone_teacher_episodes", 0)
+        )
     return np.array(
-        [(WARMUP_EPISODES + BC_TEACHER_EPISODES) * time_in_sub_episodes],
+        [phase_episodes * time_in_sub_episodes],
         dtype=int,
+    )
+
+
+def _teacher_noise_std(pretrained: bool) -> float:
+    return float(PRETRAINED_BC_EXPLORATION_STD if pretrained else COLD_START_BC_EXPLORATION_STD)
+
+
+def _handoff_noise_std_end(pretrained: bool) -> float:
+    return float(PRETRAINED_HANDOFF_EXPLORATION_STD_END if pretrained else COLD_START_HANDOFF_EXPLORATION_STD_END)
+
+
+def noisy_teacher_buffer_warmup_overrides(
+    *,
+    teacher_source: str = "gart_lmpc",
+    pretrained: bool = False,
+    teacher_episodes: int = NOISY_TEACHER_EPISODES,
+    handoff_episodes: int = NOISY_TEACHER_HANDOFF_EPISODES,
+) -> dict[str, Any]:
+    """Alternative A: noisy teacher rollout fills replay before TD3 updates."""
+    noise_std = _teacher_noise_std(pretrained)
+    return {
+        "warmup_buffer_only_episodes": int(teacher_episodes),
+        "warmup_behavior_source": teacher_source,
+        "warmup_behavior_noise": "none" if noise_std <= 0.0 else "gaussian",
+        "warmup_exploration_std": noise_std,
+        "behavior_clone_teacher_episodes": 0,
+        "bc_teacher_policy": teacher_source,
+        "bc_behavior_source": teacher_source,
+        "bc_update_mode": "buffer_only",
+        "bc_behavior_noise": "none",
+        "bc_exploration_std": noise_std,
+        "handoff_episodes": int(handoff_episodes),
+        "handoff_update_mode": "td3_full",
+        "handoff_actor_bc_updates_per_step": 0,
+        "handoff_behavior_noise": "gaussian",
+        "handoff_exploration_std_start": 0.0,
+        "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
+    }
+
+
+def noisy_teacher_critic_warmup_overrides(
+    *,
+    teacher_source: str = "gart_lmpc",
+    pretrained: bool = False,
+    teacher_episodes: int = NOISY_TEACHER_EPISODES,
+    handoff_episodes: int = NOISY_TEACHER_HANDOFF_EPISODES,
+) -> dict[str, Any]:
+    """Alternative B: noisy teacher rollout trains critic only, with no actor BC."""
+    noise_std = _teacher_noise_std(pretrained)
+    return {
+        "warmup_buffer_only_episodes": 0,
+        "warmup_behavior_source": teacher_source,
+        "warmup_behavior_noise": "none",
+        "warmup_exploration_std": noise_std,
+        "behavior_clone_teacher_episodes": int(teacher_episodes),
+        "bc_teacher_policy": teacher_source,
+        "bc_behavior_source": teacher_source,
+        "bc_update_mode": "critic_td_only",
+        "bc_actor_updates_per_step": 1,
+        "bc_behavior_noise": "none" if noise_std <= 0.0 else "gaussian",
+        "bc_exploration_std": noise_std,
+        "handoff_episodes": int(handoff_episodes),
+        "handoff_update_mode": "td3_full",
+        "handoff_actor_bc_updates_per_step": 0,
+        "handoff_behavior_noise": "gaussian",
+        "handoff_exploration_std_start": 0.0,
+        "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
+    }
+
+
+def default_noisy_teacher_critic_warmup_overrides(
+    *,
+    teacher_source: str = "gart_lmpc",
+    pretrained: bool = False,
+) -> dict[str, Any]:
+    return noisy_teacher_critic_warmup_overrides(
+        teacher_source=teacher_source,
+        pretrained=pretrained,
+        teacher_episodes=NOISY_TEACHER_EPISODES,
+        handoff_episodes=NOISY_TEACHER_HANDOFF_EPISODES,
     )
 
 
@@ -1134,7 +1225,11 @@ def run_online_td3_disturbance_preset(
         data_max=context.system_data["data_max"],
         extra={
             "delta_t": context.setup.delta_t,
-            "phase_plot_boundaries": _phase_plot_boundaries(episodes, set_points_len),
+            "phase_plot_boundaries": _phase_plot_boundaries(
+                episodes,
+                set_points_len,
+                training_phase_config=training_phase_config,
+            ),
             "start_plot_idx": 10,
             "agent_path": resolved_agent_path,
             "reward_config": reward_config,

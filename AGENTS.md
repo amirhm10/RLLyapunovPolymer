@@ -93,9 +93,7 @@ If a change only concerns the standard Lyapunov path, do not start from those fi
 These are the main active experiment entrypoints in the repository root:
 
 - `DirectLyapunovMPC.py`
-- `OnlineTD3_LMPCPretrained_SafetyGate.py`
 - `OnlineTD3_OFMPCPretrained_SafetyGate.py`
-- `OnlineTD3_LMPCPretrained_NoSafetyGate.py`
 - `OnlineTD3_OFMPCPretrained_NoSafetyGate.py`
 - `OnlineTD3_ColdStart_SafetyGate.py`
 - `OnlineTD3_ColdStart_NoSafetyGate.py`

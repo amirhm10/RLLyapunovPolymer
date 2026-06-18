@@ -4,7 +4,10 @@ from pprint import pprint
 
 from utils.gart_defaults import GART_FINAL_LYAP_EPS, GART_FINAL_RHO_LYAP
 from utils.direct_lyapunov_study import DIRECT_DISTURBANCE_N_TESTS
-from utils.online_disturbance_runner import run_online_td3_disturbance_preset
+from utils.online_disturbance_runner import (
+    default_noisy_teacher_critic_warmup_overrides,
+    run_online_td3_disturbance_preset,
+)
 
 # OF-MPC-pretrained online TD3 without active safety intervention.
 #
@@ -31,12 +34,10 @@ REWARD_FALLBACK_PENALTY_ENABLED = False
 GAMMA_FALLBACK = 0.0
 FALLBACK_EVENT_PENALTY = 0.0
 
-TRAINING_PHASE_OVERRIDES = {
-    # Examples:
-    # "behavior_clone_teacher_episodes": 20,
-    # "handoff_episodes": 10,
-    # "full_rl_exploration_std_start": 0.02,
-}
+TRAINING_PHASE_OVERRIDES = default_noisy_teacher_critic_warmup_overrides(
+    teacher_source="gart_lmpc",
+    pretrained=True,
+)
 
 
 def run_configured_study() -> dict:
