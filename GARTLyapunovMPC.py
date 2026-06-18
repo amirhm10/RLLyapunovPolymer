@@ -39,6 +39,10 @@ DU_S_MAX_ABS = [0.2, 0.2]
 DY_S_MAX_ABS = 0.25
 D_RATE_SCALE = 0.25
 ALPHA_D = 0.05
+INPUT_HEADROOM_FRAC = 0.03
+PRIMARY_TOL_REL = 1.0e-4
+W_U_SMOOTH_DIAG = [2.0, 2.0]
+TARGET_WY_DIAG = [1.0, 1.0]
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
@@ -57,6 +61,10 @@ def _configured_overrides() -> tuple[dict, dict]:
             "dy_s_max_abs": DY_S_MAX_ABS,
             "d_rate_scale": D_RATE_SCALE,
             "alpha_d": ALPHA_D,
+            "input_headroom_frac": INPUT_HEADROOM_FRAC,
+            "primary_tol_rel": PRIMARY_TOL_REL,
+            "W_u_smooth_diag": list(W_U_SMOOTH_DIAG),
+            "Wy_diag": list(TARGET_WY_DIAG),
         }
     )
     mpc_overrides = {

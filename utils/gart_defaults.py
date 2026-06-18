@@ -307,6 +307,18 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
             arr = np.zeros(size, dtype=float)
         return arr
 
+    def _diag_config_or_base(key: str, base: np.ndarray) -> np.ndarray:
+        base = np.asarray(base, dtype=float).reshape(-1)
+        raw = cfg.get(key)
+        if raw is None:
+            return base.copy()
+        vec = np.asarray(raw, dtype=float).reshape(-1)
+        if vec.size == 1:
+            return np.full(base.size, float(vec.item()), dtype=float)
+        if vec.size == base.size:
+            return vec.copy()
+        raise ValueError(f"{key} must be scalar or length {base.size}, got length {vec.size}.")
+
     if bool(cfg.get("disable_dy_rate", False)):
         dy_s_max = None
     else:
@@ -382,7 +394,7 @@ def make_gart_target_config(values: dict[str, Any], **overrides: Any) -> GARTTar
         dx_s_max=None if dx_s_max is None else dx_s_max.copy(),
         primary_tol_abs=float(cfg["primary_tol_abs"]),
         primary_tol_rel=float(cfg["primary_tol_rel"]),
-        Wy_diag=np.asarray(values["Wy_diag"], dtype=float).copy(),
+        Wy_diag=_diag_config_or_base("Wy_diag", np.asarray(values["Wy_diag"], dtype=float)),
         W_u_smooth_diag=_diag_override("W_u_smooth_diag", size=du_template.size, default=1.0, disable_key="disable_u_smoothing"),
         W_x_smooth_diag=_diag_override("W_x_smooth_diag", size=dx_template.size, default=0.01, disable_key="disable_x_smoothing"),
         W_y_smooth_diag=_diag_override("W_y_smooth_diag", size=dy_template.size, default=1.0, disable_key="disable_y_smoothing"),
