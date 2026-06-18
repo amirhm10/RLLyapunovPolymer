@@ -37,12 +37,33 @@ LYAP_EPS = GART_FINAL_LYAP_EPS
 DX_S_MAX_ABS = 0.05
 DU_S_MAX_ABS = [0.2, 0.2]
 DY_S_MAX_ABS = 0.25
+
+# Certified-disturbance target update.
 D_RATE_SCALE = 0.25
 ALPHA_D = 0.05
-INPUT_HEADROOM_FRAC = 0.03
-PRIMARY_TOL_REL = 1.0e-4
-W_U_SMOOTH_DIAG = [2.0, 2.0]
-TARGET_WY_DIAG = [1.0, 1.0]
+
+# Target-selector geometry.  Change ABLATION_CASE to test one suspected cause
+# at a time while keeping all other candidate-fix values unchanged.
+#
+#   "candidate": current fixed geometry
+#   "A_wy":      test whether Wy=[1,1] was the main cause
+#   "B_headroom": test whether input headroom was the main cause
+#   "C_u_smooth": test whether stronger u_previous smoothing was the main cause
+#   "D_primary_tol": test whether Stage 2 freedom was the main cause
+ABLATION_CASE = "candidate"
+
+CANDIDATE_INPUT_HEADROOM_FRAC = 0.03
+CANDIDATE_PRIMARY_TOL_REL = 1.0e-4
+CANDIDATE_W_U_SMOOTH_DIAG = [2.0, 2.0]
+CANDIDATE_TARGET_WY_DIAG = [1.0, 1.0]
+
+TARGET_SELECTOR_ABLATIONS = {
+    "candidate": {},
+    "A_wy": {"Wy_diag": [5.0, 1.0]},
+    "B_headroom": {"input_headroom_frac": 0.01},
+    "C_u_smooth": {"W_u_smooth_diag": [1.0, 1.0]},
+    "D_primary_tol": {"primary_tol_rel": 1.0e-6},
+}
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
@@ -51,6 +72,16 @@ CASE_NAME = FINAL_GART_CASE_NAME
 
 
 def _configured_overrides() -> tuple[dict, dict]:
+    target_geometry = {
+        "input_headroom_frac": CANDIDATE_INPUT_HEADROOM_FRAC,
+        "primary_tol_rel": CANDIDATE_PRIMARY_TOL_REL,
+        "W_u_smooth_diag": list(CANDIDATE_W_U_SMOOTH_DIAG),
+        "Wy_diag": list(CANDIDATE_TARGET_WY_DIAG),
+    }
+    if ABLATION_CASE not in TARGET_SELECTOR_ABLATIONS:
+        raise ValueError(f"Unknown ABLATION_CASE={ABLATION_CASE!r}; choose one of {sorted(TARGET_SELECTOR_ABLATIONS)}.")
+    target_geometry.update(TARGET_SELECTOR_ABLATIONS[ABLATION_CASE])
+
     target_overrides = dict(FINAL_GART_TARGET_OVERRIDES)
     target_overrides.update(
         {
@@ -61,10 +92,7 @@ def _configured_overrides() -> tuple[dict, dict]:
             "dy_s_max_abs": DY_S_MAX_ABS,
             "d_rate_scale": D_RATE_SCALE,
             "alpha_d": ALPHA_D,
-            "input_headroom_frac": INPUT_HEADROOM_FRAC,
-            "primary_tol_rel": PRIMARY_TOL_REL,
-            "W_u_smooth_diag": list(W_U_SMOOTH_DIAG),
-            "Wy_diag": list(TARGET_WY_DIAG),
+            **target_geometry,
         }
     )
     mpc_overrides = {
@@ -97,6 +125,8 @@ def run_configured_study() -> dict:
         "case_name": CASE_NAME,
         "rho_lyap": float(RHO_LYAP),
         "lyap_eps": float(LYAP_EPS),
+        "target_selector_ablation_case": ABLATION_CASE,
+        "target_selector_ablation_options": TARGET_SELECTOR_ABLATIONS,
         "resource_limits": guard.limits.__dict__.copy(),
         "target_overrides": target_overrides,
         "mpc_overrides": mpc_overrides,
