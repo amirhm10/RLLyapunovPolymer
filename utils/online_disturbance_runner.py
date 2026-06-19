@@ -521,6 +521,8 @@ def noisy_teacher_buffer_warmup_overrides(
         "handoff_behavior_noise": "gaussian",
         "handoff_exploration_std_start": 0.0,
         "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
+        "handoff_exploration_space": "input_dev",
+        "full_rl_exploration_space": "input_dev",
     }
 
 
@@ -553,6 +555,8 @@ def noisy_teacher_critic_warmup_overrides(
         "handoff_behavior_noise": "gaussian",
         "handoff_exploration_std_start": 0.0,
         "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
+        "handoff_exploration_space": "input_dev",
+        "full_rl_exploration_space": "input_dev",
     }
 
 

@@ -529,6 +529,7 @@ def make_safety_filter_step_records(lyap_info_storage):
             "resolved_behavior_exploration_space": info.get("resolved_behavior_exploration_space"),
             "behavior_exploration_sigma": info.get("behavior_exploration_sigma"),
             "teacher_input_exploration_sigma": info.get("teacher_input_exploration_sigma"),
+            "policy_input_exploration_sigma": info.get("policy_input_exploration_sigma"),
             "training_update_mode": info.get("training_update_mode"),
             "critic_td_update_active": bool(info.get("critic_td_update_active", False)),
             "actor_bc_update_active": bool(info.get("actor_bc_update_active", False)),
@@ -945,6 +946,26 @@ def build_safety_filter_run_bundle(
             "teacher_input_exploration_applied",
             n_u,
         ),
+        "policy_action_nominal_pre_exploration_store": _stack_vectors(
+            lyap_info_storage,
+            "policy_action_nominal_pre_exploration",
+            n_u,
+        ),
+        "policy_u_dev_pre_exploration_store": _stack_vectors(
+            lyap_info_storage,
+            "policy_u_dev_pre_exploration",
+            n_u,
+        ),
+        "policy_input_exploration_requested_store": _stack_vectors(
+            lyap_info_storage,
+            "policy_input_exploration_requested",
+            n_u,
+        ),
+        "policy_input_exploration_applied_store": _stack_vectors(
+            lyap_info_storage,
+            "policy_input_exploration_applied",
+            n_u,
+        ),
         "policy_action_pre_handoff_store": _stack_vectors(lyap_info_storage, "policy_action_pre_handoff", n_u),
         "policy_u_dev_pre_handoff_store": _stack_vectors(lyap_info_storage, "policy_u_dev_pre_handoff", n_u),
         "u_target_dev_store": _stack_vectors(lyap_info_storage, "u_s", n_u),
@@ -1272,6 +1293,10 @@ def build_safety_filter_run_bundle(
         "handoff_alpha": np.array([info.get("handoff_alpha", np.nan) for info in lyap_info_storage], dtype=float),
         "teacher_input_exploration_sigma": np.array(
             [info.get("teacher_input_exploration_sigma", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "policy_input_exploration_sigma": np.array(
+            [info.get("policy_input_exploration_sigma", np.nan) for info in lyap_info_storage],
             dtype=float,
         ),
         "bc_teacher_gap_inf": np.array([info.get("bc_teacher_gap_inf", np.nan) for info in lyap_info_storage], dtype=float),

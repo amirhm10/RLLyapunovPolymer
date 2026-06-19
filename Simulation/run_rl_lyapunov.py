@@ -1239,6 +1239,66 @@ def _apply_teacher_behavior_action(
     return np.clip(teacher_action, -1.0, 1.0), debug
 
 
+def _apply_policy_behavior_action(
+    agent,
+    rl_state,
+    u_min,
+    u_max,
+    phase_state,
+    sigma_override,
+):
+    behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none")).strip().lower()
+    exploration_space = str(phase_state.get("behavior_exploration_space", "action")).strip().lower()
+    debug = {"behavior_exploration_space": exploration_space}
+
+    if behavior_noise_mode == "gaussian" and exploration_space == "input_dev":
+        nominal_action = agent.take_behavior_action(
+            rl_state,
+            behavior_noise_mode="none",
+            advance_step=True,
+        )
+        if sigma_override is None and hasattr(agent, "expl_sched"):
+            sigma = float(agent.expl_sched.value(agent.steps))
+        else:
+            sigma = float(max(0.0, 0.0 if sigma_override is None else sigma_override))
+
+        if hasattr(agent, "_behavior_noise_mode"):
+            agent._behavior_noise_mode = "gaussian"
+        if hasattr(agent, "_parameter_noise_last_resampled"):
+            agent._parameter_noise_last_resampled = False
+        if hasattr(agent, "_parameter_noise_active"):
+            agent._parameter_noise_active = False
+        if hasattr(agent, "_expl_sigma"):
+            agent._expl_sigma = sigma
+
+        u_min = np.asarray(u_min, float).reshape(-1)
+        u_max = np.asarray(u_max, float).reshape(-1)
+        nominal_action = np.asarray(nominal_action, float).reshape(-1)
+        nominal_u_dev = np.clip(map_to_bounds(nominal_action, u_min, u_max), u_min, u_max)
+        requested = np.zeros_like(nominal_u_dev)
+        if sigma > 0.0:
+            requested = np.random.randn(*nominal_u_dev.shape) * sigma
+        noisy_u_dev = np.clip(nominal_u_dev + requested, u_min, u_max)
+        applied = noisy_u_dev - nominal_u_dev
+        debug.update(
+            {
+                "policy_action_nominal_pre_exploration": nominal_action.copy(),
+                "policy_u_dev_pre_exploration": nominal_u_dev.copy(),
+                "policy_input_exploration_requested": requested.copy(),
+                "policy_input_exploration_applied": applied.copy(),
+                "policy_input_exploration_sigma": float(sigma),
+            }
+        )
+        return inv_map_from_bounds(noisy_u_dev, u_min, u_max).astype(np.float32), debug
+
+    action = agent.take_behavior_action(
+        rl_state,
+        behavior_noise_mode=behavior_noise_mode,
+        sigma_override=sigma_override,
+    )
+    return action, debug
+
+
 def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if phase_cfg is None:
         training_update_mode = "no_learning_test" if test else ("buffer_only" if step_idx < warm_start_idx else "td3_full")
@@ -1484,6 +1544,26 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
         if behavior_debug.get("teacher_input_exploration_sigma") is not None:
             info["teacher_input_exploration_sigma"] = float(
                 behavior_debug.get("teacher_input_exploration_sigma")
+            )
+        if behavior_debug.get("policy_action_nominal_pre_exploration") is not None:
+            info["policy_action_nominal_pre_exploration"] = np.asarray(
+                behavior_debug.get("policy_action_nominal_pre_exploration"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_u_dev_pre_exploration") is not None:
+            info["policy_u_dev_pre_exploration"] = np.asarray(
+                behavior_debug.get("policy_u_dev_pre_exploration"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_input_exploration_requested") is not None:
+            info["policy_input_exploration_requested"] = np.asarray(
+                behavior_debug.get("policy_input_exploration_requested"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_input_exploration_applied") is not None:
+            info["policy_input_exploration_applied"] = np.asarray(
+                behavior_debug.get("policy_input_exploration_applied"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("policy_input_exploration_sigma") is not None:
+            info["policy_input_exploration_sigma"] = float(
+                behavior_debug.get("policy_input_exploration_sigma")
             )
         if behavior_debug.get("policy_action_pre_handoff") is not None:
             info["policy_action_pre_handoff"] = np.asarray(
@@ -1976,6 +2056,7 @@ def run_rl_train(
         teacher_action = None
         teacher_u_dev = None
         teacher_behavior_noise_debug = {}
+        policy_behavior_noise_debug = {}
         demo_action = None
 
         if (
@@ -2099,10 +2180,13 @@ def run_rl_train(
                 agent._parameter_noise_last_resampled = False
                 action = agent.act_eval(rl_state)
             else:
-                action = agent.take_behavior_action(
+                action, policy_behavior_noise_debug = _apply_policy_behavior_action(
+                    agent,
                     rl_state,
-                    behavior_noise_mode=phase_state["behavior_noise_mode"],
-                    sigma_override=sigma_override,
+                    u_min,
+                    u_max,
+                    phase_state,
+                    sigma_override,
                 )
 
         policy_action_pre_handoff = np.asarray(action, float).reshape(-1).copy()
@@ -2118,6 +2202,7 @@ def run_rl_train(
         action = np.clip(action, -1.0, 1.0)
         behavior_debug = agent.get_behavior_noise_diagnostics() if hasattr(agent, "get_behavior_noise_diagnostics") else {}
         behavior_debug.update(teacher_behavior_noise_debug)
+        behavior_debug.update(policy_behavior_noise_debug)
         behavior_debug["behavior_exploration_sigma"] = 0.0 if sigma_override is None else float(sigma_override)
         behavior_debug["parameter_noise_active"] = bool(
             phase_state.get("behavior_noise_mode") == "parameter" and (not test)
@@ -2134,6 +2219,14 @@ def run_rl_train(
             behavior_debug["teacher_action_pre_filter"] = np.asarray(teacher_action, float).reshape(-1).copy()
         if teacher_u_dev is not None:
             behavior_debug["teacher_u_dev_pre_filter"] = np.asarray(teacher_u_dev, float).reshape(-1).copy()
+        if policy_behavior_noise_debug.get("policy_action_nominal_pre_exploration") is not None:
+            behavior_debug["policy_action_nominal_pre_exploration"] = np.asarray(
+                policy_behavior_noise_debug.get("policy_action_nominal_pre_exploration"), float
+            ).reshape(-1).copy()
+        if policy_behavior_noise_debug.get("policy_u_dev_pre_exploration") is not None:
+            behavior_debug["policy_u_dev_pre_exploration"] = np.asarray(
+                policy_behavior_noise_debug.get("policy_u_dev_pre_exploration"), float
+            ).reshape(-1).copy()
         if phase_state.get("handoff_active", False):
             behavior_debug["policy_action_pre_handoff"] = policy_action_pre_handoff.copy()
             if policy_u_dev_pre_handoff is not None:
