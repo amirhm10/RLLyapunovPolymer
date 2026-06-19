@@ -792,6 +792,25 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             )
         return mode
 
+    def _normalize_exploration_space(name, default):
+        space = str(cfg.get(name, default)).strip().lower()
+        aliases = {
+            "action": "action",
+            "actor": "action",
+            "normalized_action": "action",
+            "td3_action": "action",
+            "input": "input_dev",
+            "input_dev": "input_dev",
+            "u_dev": "input_dev",
+            "scaled_input": "input_dev",
+            "scaled_input_dev": "input_dev",
+        }
+        if space not in aliases:
+            raise ValueError(
+                f"training_phase_config['{name}'] must be 'action' or 'input_dev'."
+            )
+        return aliases[space]
+
     warmup_behavior_noise = _normalize_behavior_noise("warmup_behavior_noise", "gaussian")
     bc_behavior_noise = _normalize_behavior_noise("bc_behavior_noise", "gaussian")
     handoff_behavior_noise = _normalize_behavior_noise(
@@ -799,6 +818,10 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         cfg.get("full_rl_behavior_noise", "gaussian"),
     )
     full_rl_behavior_noise = _normalize_behavior_noise("full_rl_behavior_noise", "gaussian")
+    warmup_exploration_space = _normalize_exploration_space("warmup_exploration_space", "action")
+    bc_exploration_space = _normalize_exploration_space("bc_exploration_space", "action")
+    handoff_exploration_space = _normalize_exploration_space("handoff_exploration_space", "action")
+    full_rl_exploration_space = _normalize_exploration_space("full_rl_exploration_space", "action")
 
     if warmup_behavior_source in _TEACHER_CONTROLLER_SOURCES and warmup_behavior_noise == "parameter":
         raise ValueError(
@@ -889,9 +912,13 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "bc_behavior_source": bc_behavior_source,
         "warmup_behavior_source": warmup_behavior_source,
         "warmup_behavior_noise": warmup_behavior_noise,
+        "warmup_exploration_space": warmup_exploration_space,
         "bc_behavior_noise": bc_behavior_noise,
+        "bc_exploration_space": bc_exploration_space,
         "handoff_behavior_noise": handoff_behavior_noise,
+        "handoff_exploration_space": handoff_exploration_space,
         "full_rl_behavior_noise": full_rl_behavior_noise,
+        "full_rl_exploration_space": full_rl_exploration_space,
         "parameter_noise_resample_scope": parameter_noise_resample_scope,
         "parameter_noise_initial_std": float(cfg.get("parameter_noise_initial_std", 0.01)),
         "parameter_noise_min_std": float(cfg.get("parameter_noise_min_std", 0.002)),
@@ -1146,6 +1173,72 @@ def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
     raise ValueError("training_phase_config['full_rl_exploration_decay_mode'] must be 'agent_schedule', 'linear', or 'exp'.")
 
 
+def _apply_teacher_behavior_action(
+    agent,
+    teacher_action,
+    teacher_u_dev,
+    u_min,
+    u_max,
+    phase_state,
+    sigma_override,
+):
+    behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none")).strip().lower()
+    exploration_space = str(phase_state.get("behavior_exploration_space", "action")).strip().lower()
+    debug = {"behavior_exploration_space": exploration_space}
+
+    if behavior_noise_mode == "gaussian":
+        if exploration_space == "input_dev":
+            if hasattr(agent, "steps"):
+                agent.steps += 1
+            if sigma_override is None and hasattr(agent, "expl_sched"):
+                sigma = float(agent.expl_sched.value(agent.steps))
+            else:
+                sigma = float(max(0.0, 0.0 if sigma_override is None else sigma_override))
+
+            if hasattr(agent, "_behavior_noise_mode"):
+                agent._behavior_noise_mode = "gaussian"
+            if hasattr(agent, "_parameter_noise_last_resampled"):
+                agent._parameter_noise_last_resampled = False
+            if hasattr(agent, "_parameter_noise_active"):
+                agent._parameter_noise_active = False
+            if hasattr(agent, "_expl_sigma"):
+                agent._expl_sigma = sigma
+
+            teacher_u_dev = np.asarray(teacher_u_dev, float).reshape(-1)
+            u_min = np.asarray(u_min, float).reshape(-1)
+            u_max = np.asarray(u_max, float).reshape(-1)
+            requested = np.zeros_like(teacher_u_dev)
+            if sigma > 0.0:
+                requested = np.random.randn(*teacher_u_dev.shape) * sigma
+            noisy_u_dev = np.clip(teacher_u_dev + requested, u_min, u_max)
+            applied = noisy_u_dev - teacher_u_dev
+            debug.update(
+                {
+                    "teacher_input_exploration_requested": requested.copy(),
+                    "teacher_input_exploration_applied": applied.copy(),
+                    "teacher_input_exploration_sigma": float(sigma),
+                }
+            )
+            return inv_map_from_bounds(noisy_u_dev, u_min, u_max).astype(np.float32), debug
+
+        action = agent.apply_exploration(
+            teacher_action,
+            sigma_override=sigma_override,
+            advance_step=True,
+        )
+        return action, debug
+
+    if hasattr(agent, "_behavior_noise_mode"):
+        agent._behavior_noise_mode = behavior_noise_mode
+    if hasattr(agent, "_parameter_noise_last_resampled"):
+        agent._parameter_noise_last_resampled = False
+    if hasattr(agent, "_parameter_noise_active"):
+        agent._parameter_noise_active = False
+    if hasattr(agent, "_expl_sigma"):
+        agent._expl_sigma = 0.0
+    return np.clip(teacher_action, -1.0, 1.0), debug
+
+
 def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
     if phase_cfg is None:
         training_update_mode = "no_learning_test" if test else ("buffer_only" if step_idx < warm_start_idx else "td3_full")
@@ -1154,6 +1247,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
             "policy_phase": "full_rl",
             "behavior_policy_source": "policy_eval" if test else "policy_explore",
             "behavior_noise_mode": behavior_noise_mode,
+            "behavior_exploration_space": "action",
             "use_teacher_behavior": False,
             "explore_behavior": behavior_noise_mode != "none",
             "push_demo": False,
@@ -1169,6 +1263,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         teacher_behavior_source = str(phase_cfg["warmup_behavior_source"])
         use_teacher_behavior = teacher_behavior_source in _TEACHER_CONTROLLER_SOURCES
         behavior_noise_mode = "none" if test else str(phase_cfg.get("warmup_behavior_noise", "gaussian"))
+        behavior_exploration_space = str(phase_cfg.get("warmup_exploration_space", "action"))
         training_update_mode = "no_learning_test" if test else "buffer_only"
     elif step_idx < int(phase_cfg["bc_end_step"]):
         policy_phase = "behavior_clone_teacher"
@@ -1180,6 +1275,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         )
         use_teacher_behavior = bc_behavior_source in _TEACHER_CONTROLLER_SOURCES
         behavior_noise_mode = "none" if test else str(phase_cfg.get("bc_behavior_noise", "gaussian"))
+        behavior_exploration_space = str(phase_cfg.get("bc_exploration_space", "action"))
         training_update_mode = "no_learning_test" if test else str(
             phase_cfg.get("bc_update_mode", "critic_td_plus_actor_bc")
         )
@@ -1204,6 +1300,12 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
             phase_cfg.get(
                 "handoff_behavior_noise" if handoff_active else "full_rl_behavior_noise",
                 "gaussian",
+            )
+        )
+        behavior_exploration_space = str(
+            phase_cfg.get(
+                "handoff_exploration_space" if handoff_active else "full_rl_exploration_space",
+                "action",
             )
         )
         training_update_mode = "no_learning_test" if test else str(
@@ -1307,6 +1409,7 @@ def _resolve_training_phase_state(step_idx, test, warm_start_idx, phase_cfg):
         "policy_phase": policy_phase,
         "behavior_policy_source": behavior_policy_source,
         "behavior_noise_mode": behavior_noise_mode,
+        "behavior_exploration_space": behavior_exploration_space,
         "bc_behavior_source": str(phase_cfg.get("bc_behavior_source", "direct_lyapunov_mpc")),
         "teacher_behavior_source": teacher_behavior_source,
         "use_teacher_behavior": bool(use_teacher_behavior),
@@ -1338,6 +1441,7 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["policy_phase"] = str(phase_state.get("policy_phase"))
     info["behavior_policy_source"] = str(phase_state.get("behavior_policy_source"))
     info["behavior_noise_mode"] = str(phase_state.get("behavior_noise_mode", "none"))
+    info["behavior_exploration_space"] = str(phase_state.get("behavior_exploration_space", "action"))
     info["training_update_mode"] = str(phase_state.get("training_update_mode"))
     info["critic_td_update_active"] = bool(phase_state.get("run_critic_only_update", False))
     info["actor_bc_update_active"] = bool(phase_state.get("run_actor_bc_update", False))
@@ -1350,6 +1454,9 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     info["handoff_progress"] = float(phase_state.get("handoff_progress", 0.0))
     if behavior_debug is not None:
         info["behavior_exploration_sigma"] = float(behavior_debug.get("behavior_exploration_sigma", 0.0))
+        info["resolved_behavior_exploration_space"] = str(
+            behavior_debug.get("behavior_exploration_space", info["behavior_exploration_space"])
+        )
         info["parameter_noise_active"] = bool(behavior_debug.get("parameter_noise_active", False))
         info["parameter_noise_std"] = float(behavior_debug.get("parameter_noise_std", 0.0))
         info["parameter_noise_resampled_this_step"] = bool(
@@ -1366,6 +1473,18 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
             info["teacher_u_dev_pre_filter"] = np.asarray(
                 behavior_debug.get("teacher_u_dev_pre_filter"), float
             ).reshape(-1).copy()
+        if behavior_debug.get("teacher_input_exploration_requested") is not None:
+            info["teacher_input_exploration_requested"] = np.asarray(
+                behavior_debug.get("teacher_input_exploration_requested"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("teacher_input_exploration_applied") is not None:
+            info["teacher_input_exploration_applied"] = np.asarray(
+                behavior_debug.get("teacher_input_exploration_applied"), float
+            ).reshape(-1).copy()
+        if behavior_debug.get("teacher_input_exploration_sigma") is not None:
+            info["teacher_input_exploration_sigma"] = float(
+                behavior_debug.get("teacher_input_exploration_sigma")
+            )
         if behavior_debug.get("policy_action_pre_handoff") is not None:
             info["policy_action_pre_handoff"] = np.asarray(
                 behavior_debug.get("policy_action_pre_handoff"), float
@@ -1856,6 +1975,7 @@ def run_rl_train(
         gart_lmpc_teacher_info = None
         teacher_action = None
         teacher_u_dev = None
+        teacher_behavior_noise_debug = {}
         demo_action = None
 
         if (
@@ -1918,21 +2038,19 @@ def run_rl_train(
             if teacher_controller == "gart_lmpc":
                 gart_lmpc_teacher_info = dict(teacher_step_info)
 
+            teacher_u_dev = np.clip(np.asarray(teacher_u_dev, float).reshape(-1), u_min, u_max)
             teacher_action = inv_map_from_bounds(teacher_u_dev, u_min, u_max).astype(np.float32)
             demo_action = teacher_action.copy()
-            teacher_u_dev = np.clip(np.asarray(teacher_u_dev, float).reshape(-1), u_min, u_max)
             if phase_state.get("use_teacher_behavior", False):
-                if phase_state["behavior_noise_mode"] == "gaussian":
-                    action = agent.apply_exploration(
-                        teacher_action,
-                        sigma_override=sigma_override,
-                        advance_step=True,
-                    )
-                else:
-                    agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
-                    agent._parameter_noise_last_resampled = False
-                    agent._expl_sigma = 0.0
-                    action = np.clip(teacher_action, -1.0, 1.0)
+                action, teacher_behavior_noise_debug = _apply_teacher_behavior_action(
+                    agent,
+                    teacher_action,
+                    teacher_u_dev,
+                    u_min,
+                    u_max,
+                    phase_state,
+                    sigma_override,
+                )
             else:
                 action = None
         elif needs_teacher_action and teacher_controller == "offset_free_mpc":
@@ -1961,17 +2079,15 @@ def run_rl_train(
             demo_action = teacher_action.copy()
             offset_free_teacher_info = teacher_info
             if phase_state.get("use_teacher_behavior", False):
-                if phase_state["behavior_noise_mode"] == "gaussian":
-                    action = agent.apply_exploration(
-                        teacher_action,
-                        sigma_override=sigma_override,
-                        advance_step=True,
-                    )
-                else:
-                    agent._behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none"))
-                    agent._parameter_noise_last_resampled = False
-                    agent._expl_sigma = 0.0
-                    action = np.clip(teacher_action, -1.0, 1.0)
+                action, teacher_behavior_noise_debug = _apply_teacher_behavior_action(
+                    agent,
+                    teacher_action,
+                    teacher_u_dev,
+                    u_min,
+                    u_max,
+                    phase_state,
+                    sigma_override,
+                )
             else:
                 action = None
         else:
@@ -2001,6 +2117,7 @@ def run_rl_train(
         action = np.asarray(action, float).reshape(-1)
         action = np.clip(action, -1.0, 1.0)
         behavior_debug = agent.get_behavior_noise_diagnostics() if hasattr(agent, "get_behavior_noise_diagnostics") else {}
+        behavior_debug.update(teacher_behavior_noise_debug)
         behavior_debug["behavior_exploration_sigma"] = 0.0 if sigma_override is None else float(sigma_override)
         behavior_debug["parameter_noise_active"] = bool(
             phase_state.get("behavior_noise_mode") == "parameter" and (not test)

@@ -23,10 +23,10 @@ SAVE_PLOTS = True
 # predictable folder under results/OnlineTD3_ColdStart_SafetyGate/.
 TIMESTAMP = None
 
-# GART fallback gate: the cold-start actor receives GART target information.
-# Unsafe actor proposals are rejected and replaced by the GART-LMPC fallback,
-# without the Section 16 projection QCQP.
-RL_OBSERVATION_MODE = "gart"
+# GART fallback gate with the same standard TD3 observation used by the other
+# active online runners. Unsafe actor proposals are rejected and replaced by the
+# GART-LMPC fallback, without the Section 16 projection QCQP.
+RL_OBSERVATION_MODE = "standard"
 PROJECTION_BACKEND = "direct_accept_or_fallback"
 
 RHO_LYAP = GART_FINAL_RHO_LYAP
