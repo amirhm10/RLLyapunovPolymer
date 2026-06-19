@@ -42,8 +42,11 @@ PREDICT_HORIZON = 9
 CONTROL_HORIZON = 3
 Q_MPC = np.array([5.0, 1.0], dtype=float)
 R_MPC = np.array([1.0, 1.0], dtype=float)
-Q_REWARD = np.diag(Q_MPC)
-R_REWARD = np.diag(R_MPC)
+# Keep these separate from Q_MPC/R_MPC: they label TD3 replay rewards only.
+Q_REWARD_DIAG = np.array([12.0, 6.0], dtype=float)
+R_REWARD_DIAG = np.array([1.0, 1.0], dtype=float)
+Q_REWARD = np.diag(Q_REWARD_DIAG)
+R_REWARD = np.diag(R_REWARD_DIAG)
 
 PRETRAIN_SETPOINT_Y_PHYS = DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS.copy()
 COMPARISON_SETPOINT_Y_PHYS = DEFAULT_DIRECT_SETPOINT_Y_PHYS.copy()
@@ -649,6 +652,8 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
             "control_horizon": CONTROL_HORIZON,
             "Q_mpc": Q_MPC,
             "R_mpc": R_MPC,
+            "Q_reward_diag": Q_REWARD_DIAG,
+            "R_reward_diag": R_REWARD_DIAG,
             "Q_reward": Q_REWARD,
             "R_reward": R_REWARD,
         },
@@ -950,7 +955,10 @@ def run_pretrained_of_mpc_comparison(config: ComparisonRunConfig) -> dict[str, A
         data_max=system_data["data_max"],
         inputs_number=dimensions.inputs_number,
     )
-    reward_config, reward_fn = make_reward_fn_mpc_quadratic(Q_diag=Q_MPC, R_diag=R_MPC)
+    reward_config, reward_fn = make_reward_fn_mpc_quadratic(
+        Q_diag=Q_REWARD_DIAG,
+        R_diag=R_REWARD_DIAG,
+    )
 
     agent_path = resolve_pretrained_checkpoint(config.agent_path)
     records: list[dict[str, Any]] = []
