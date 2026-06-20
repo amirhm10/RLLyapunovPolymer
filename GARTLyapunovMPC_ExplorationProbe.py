@@ -27,7 +27,7 @@ MODE = "disturb"  # "disturb" or "nominal"
 N_TESTS = 2
 SET_POINTS_LEN = 400
 
-RHO_LYAP = GART_FINAL_RHO_LYAP
+RHO_LYAP = 0.99
 LYAP_EPS = GART_FINAL_LYAP_EPS
 
 DX_S_MAX_ABS = 0.05
@@ -38,11 +38,11 @@ ALPHA_D = 0.05
 INPUT_HEADROOM_FRAC = 0.05
 PRIMARY_TOL_REL = 1.0e-4
 W_U_SMOOTH_DIAG = [2.0, 2.0]
-TARGET_WY_DIAG = [1.0, 1.0]
+TARGET_WY_DIAG = [2.0, 1.0]
 
 # Scaled-deviation input excitation applied after the LMPC solve and before
 # plant simulation/observer update. The nominal solver action is still logged.
-INPUT_EXPLORATION_STD = [0.005, 0.005]
+INPUT_EXPLORATION_STD = [0.05, 0.05]
 INPUT_EXPLORATION_SEED = 20260617
 
 TIMESTAMP = None
