@@ -406,6 +406,65 @@ $$
 
 The first term is the controller-to-target tracking error. The second term is the target displacement error caused by reachability, input headroom, target-motion limits, and certification constraints. The final artifacts therefore report both the plant tracking error and the target mismatch, since good contraction around $y_s$ does not by itself imply exact tracking of an unreachable raw setpoint.
 
+## 9.1 Riccati Lyapunov Matrix Design And Conditioning Check
+
+Before the contraction-admissible target check is trusted, the workflow verifies that the Lyapunov matrix used in the certificate is well defined and numerically usable. The output-disturbance model is augmented for offset-free prediction, but the Riccati equation is solved only on the physical plant-state block. This avoids attempting to stabilize the uncontrollable disturbance integrators with the terminal feedback law.
+
+Let the physical-state block of the augmented model be denoted by $(A_x,B_x,C_x)$. The terminal design first forms
+
+$$
+Q_x=C_x^\top Q_y C_x+q_x I,
+\qquad
+R_x=S_u,
+$$
+
+where $q_x>0$ is a small regularization used to make weakly observed state directions positive in the quadratic form. The Lyapunov matrix is then the stabilizing solution of the discrete algebraic Riccati equation
+
+$$
+P_x
+=
+A_x^\top P_x A_x
+-
+A_x^\top P_x B_x
+\left(R_x+B_x^\top P_x B_x\right)^{-1}
+B_x^\top P_x A_x
++
+Q_x .
+$$
+
+The associated local feedback is
+
+$$
+K_x
+=
+-
+\left(R_x+B_x^\top P_x B_x\right)^{-1}
+B_x^\top P_x A_x .
+$$
+
+The numerical audit records the following diagnostics:
+
+- $P_x=P_x^\top$ to numerical precision.
+- $\lambda_{\min}(P_x)>0$.
+- $\kappa_2(P_x)$ is finite and not excessively large for the scaled coordinates.
+- the Riccati residual is small.
+- the closed-loop spectral radius $\rho(A_x+B_xK_x)$ is less than one.
+- the physical pair $(A_x,B_x)$ has full controllability rank for the saved linear model.
+
+For the current saved Polymer CSTR model with $Q_y=\operatorname{diag}(5,1)$ and $S_u=\operatorname{diag}(1,1)$, this audit gives
+
+$$
+\lambda_{\min}(P_x)=4.10\times 10^{-5},
+\qquad
+\lambda_{\max}(P_x)=5.01,
+\qquad
+\kappa_2(P_x)=1.22\times 10^5,
+$$
+
+with a relative Riccati residual of $9.65\times 10^{-14}$ and closed-loop spectral radius $0.946$. The pair $(A_x,B_x)$ has controllability rank $7/7$. Therefore $P_x$ is positive definite and numerically suitable for the current GART-LMPC certificate.
+
+This check also separates method design from tuning. Since the Riccati audit passes, the current method should be retained. Performance changes should first be made through the target-selection and controller weights, target-motion limits, governor settings, and exploration scale. The Riccati construction itself should be changed only if this audit fails, if the scaled-coordinate representation changes, or if a different terminal-certificate theory is intentionally introduced.
+
 ## 10. Contraction-Admissible Target Check
 
 A target can satisfy the steady-state equations and input-headroom constraints but still be unsuitable for immediate Lyapunov contraction from the current state estimate. This can occur when the target is too far from the current observer state, when the feasible input range cannot produce the required decrease, or when the target lies in a region where the local stabilizing move has insufficient authority.
@@ -1320,7 +1379,15 @@ This table collects the notation introduced so far. It will be extended as the w
 | $J_1^\star$ | Optimal Stage 1 primary target mismatch | Solved online | Defines the Stage 2 near-optimal shell |
 | $\varepsilon_{\mathrm{abs}}$ | Absolute primary-shell tolerance | $10^{-8}$ | Stage 2 may only move inside this shell |
 | $\varepsilon_{\mathrm{rel}}$ | Relative primary-shell tolerance | $10^{-6}$ | Scales with $\max(1,J_1^\star)$ |
-| $P_x$ | Terminal Lyapunov matrix | $7\times7$ matrix | Diagonal approximately $[0.00512,\ 0.02054,\ 0.02025,\ 0.01558,\ 5.0,\ 5.0,\ 5.0]$ |
+| $P_x$ | Terminal Lyapunov matrix | $7\times7$ matrix | Riccati solution on the physical state block |
+| $Q_x$ | Riccati state penalty | $C_x^\top Q_y C_x+q_x I$ | Uses controller tracking weights, not the Stage 2 input tie-breaker |
+| $q_x$ | Riccati regularization | $10^{-10}$ | Keeps weakly observed directions positive |
+| $K_x$ | Local Riccati feedback | Computed from $P_x$ | Used for terminal ingredients and input tightening |
+| $\lambda_{\min}(P_x)$ | Smallest eigenvalue of $P_x$ | $4.10{\times}10^{-5}$ | Confirms positive definiteness for the saved model |
+| $\lambda_{\max}(P_x)$ | Largest eigenvalue of $P_x$ | $5.01$ | Used in moving-target bounds |
+| $\kappa_2(P_x)$ | Condition number of $P_x$ | $1.22{\times}10^5$ | Acceptable for the current scaled-coordinate certificate |
+| $r_{\mathrm{DARE}}$ | Relative Riccati residual | $9.65{\times}10^{-14}$ | Confirms the DARE solve is numerically consistent |
+| $\rho(A_x+B_xK_x)$ | Local closed-loop spectral radius | $0.946$ | Less than one for the saved physical model |
 | $e_k$ | Target-centered state error used by the controller | $\hat x_k-x_{s,k}$ in implementation | Argument of the Lyapunov function |
 | $V(e)$ | Quadratic Lyapunov function | $e^\top P_x e$ | Used for target probe and hard LMPC contraction |
 | $V_k$ | Current target-centered Lyapunov value | Computed online | $e_k^\top P_x e_k$ |
@@ -1328,8 +1395,6 @@ This table collects the notation introduced so far. It will be extended as the w
 | $\mu$ | Moving-target proof tuning parameter | Analysis choice | Must satisfy $(1+\mu)\rho<1$ |
 | $\bar\rho$ | Effective moving-target contraction factor | $(1+\mu)\rho$ | Must be less than 1 |
 | $w$ | Practical-stability residual bound | Analysis expression | Depends on $\epsilon$, $P_x$, $n_x$, and $d_{x_s}$ |
-| $\lambda_{\max}(P_x)$ | Largest eigenvalue of $P_x$ | Computed from terminal matrix | Used in moving-target bound |
-| $\lambda_{\min}(P_x)$ | Smallest eigenvalue of $P_x$ | Computed from terminal matrix | Converts Lyapunov value to a state-error norm bound |
 | $\varepsilon_{\mathrm{est},k}$ | Output-estimation/model residual | Analysis residual | Accounts for estimator and plant-model mismatch |
 | $\rho$ | Hard Lyapunov contraction factor | $0.98$ | Reported experiment setting |
 | $\epsilon$ | Practical contraction tolerance | $10^{-3}$ | Reported experiment setting |
