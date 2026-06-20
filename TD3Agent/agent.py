@@ -553,6 +553,10 @@ class TD3Agent(nn.Module):
             log_interval: int = 1,
             mode: str = "mpc",
             sched_kind: str = "cosine",
+            checkpoint_dir: Optional[str] = None,
+            checkpoint_prefix: str = "td3_pretrain",
+            checkpoint_interval_epochs: int = 0,
+            include_checkpoint_optim: bool = False,
     ) -> dict:
         """
         Two-stage pretraining:
@@ -573,7 +577,12 @@ class TD3Agent(nn.Module):
             "critic_lrs": [],
             "actor_bc_samples": [],
             "critic_samples": [],
+            "checkpoints": [],
+            "last_phase": None,
+            "last_actor_epoch": 0,
+            "last_critic_epoch": 0,
         }
+        self.last_pretraining_history = history
 
         if data_loader is None and len(self.buffer) < self.batch_size:
             raise RuntimeError("Buffer is less than the batch size")
@@ -584,6 +593,33 @@ class TD3Agent(nn.Module):
             if sched_kind == "step":
                 return optim.lr_scheduler.StepLR(opt, step_size=max(1, epochs // 3), gamma=0.5)
             return None
+
+        checkpoint_interval_epochs_int = max(0, int(checkpoint_interval_epochs or 0))
+
+        def maybe_save_checkpoint(phase: str, epoch: int, final_epoch: int) -> None:
+            if checkpoint_dir is None:
+                return
+            is_final = epoch == final_epoch
+            is_interval = (
+                checkpoint_interval_epochs_int > 0
+                and epoch > 0
+                and epoch % checkpoint_interval_epochs_int == 0
+            )
+            if not (is_final or is_interval):
+                return
+            path = self.save(
+                checkpoint_dir,
+                prefix=f"{checkpoint_prefix}_{phase}_ep{int(epoch):04d}",
+                include_optim=include_checkpoint_optim,
+            )
+            history["checkpoints"].append(
+                {
+                    "phase": phase,
+                    "epoch": int(epoch),
+                    "path": path,
+                    "include_optim": bool(include_checkpoint_optim),
+                }
+            )
 
         # -------------------------
         # Stage 1: actor BC only
@@ -641,9 +677,12 @@ class TD3Agent(nn.Module):
             history["actor_bc_losses"].append(float(epoch_bc_loss))
             history["actor_bc_lrs"].append(lr_a)
             history["actor_bc_samples"].append(int(n_sum))
+            history["last_phase"] = "actor_bc"
+            history["last_actor_epoch"] = int(ep)
 
             if log_interval and (ep == 1 or ep % log_interval == 0):
                 print(f"[pretrain][actor_bc] ep={ep} loss={epoch_bc_loss:.4e} lr={lr_a:.2e}")
+            maybe_save_checkpoint("actor_bc", ep, num_actor_epochs)
 
         # -------------------------
         # Stage 2: critic TD with frozen actor
@@ -732,9 +771,12 @@ class TD3Agent(nn.Module):
             history["critic_losses"].append(float(epoch_critic_loss))
             history["critic_lrs"].append(lr_c)
             history["critic_samples"].append(int(n_sum))
+            history["last_phase"] = "critic_td"
+            history["last_critic_epoch"] = int(ep)
 
             if log_interval and (ep == 1 or ep % log_interval == 0):
                 print(f"[pretrain][critic_td] ep={ep} loss={epoch_critic_loss:.4e} lr={lr_c:.2e}")
+            maybe_save_checkpoint("critic_td", ep, num_critic_epochs)
 
         hard_update(self.actor_target, self.actor)
         hard_update(self.critic_target, self.critic)

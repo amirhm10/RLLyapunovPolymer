@@ -281,7 +281,7 @@ def filling_the_buffer(
         u = np.random.uniform(low=u_min, high=u_max, size=(curr_chunk_size, B.shape[1]))
         u_scaled = apply_min_max_pm1(u, u_min, u_max)
 
-        results = Parallel(n_jobs=-1, backend="loky")(
+        results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
             delayed(optimize_sample)(
                 i + total_done,
                 MPC_obj,
@@ -359,7 +359,7 @@ def add_steady_state_samples(
         u = np.random.uniform(low=0.0, high=1e-8, size=(curr_chunk_size, B.shape[1]))
         u_scaled = apply_min_max_pm1(u, u_min, u_max)
 
-        results = Parallel(n_jobs=-1, backend="loky")(
+        results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
             delayed(optimize_sample)(
                 i + total_done,
                 MPC_obj,

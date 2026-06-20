@@ -15,6 +15,7 @@ DEFAULT_CHUNK_SIZE = 100_000
 DEFAULT_ACTOR_EPOCHS = 1000
 DEFAULT_CRITIC_EPOCHS = 500
 DEFAULT_PRETRAIN_BATCH_SIZE = 8192
+DEFAULT_CHECKPOINT_INTERVAL_EPOCHS = 25
 
 DEFAULT_ACTOR_LAYER_SIZES = [256, 256, 256]
 DEFAULT_CRITIC_LAYER_SIZES = [256, 256, 256]
@@ -75,6 +76,12 @@ def parse_args() -> argparse.Namespace:
         help="DataLoader batch size for actor cloning and critic warm-up.",
     )
     parser.add_argument(
+        "--checkpoint-interval-epochs",
+        type=int,
+        default=DEFAULT_CHECKPOINT_INTERVAL_EPOCHS,
+        help="Save partial pretraining checkpoints every N actor/critic epochs. Use 0 to disable periodic saves.",
+    )
+    parser.add_argument(
         "--actor-layers",
         type=parse_layer_sizes,
         default=",".join(str(value) for value in DEFAULT_ACTOR_LAYER_SIZES),
@@ -112,6 +119,7 @@ def main() -> None:
         pretrain_batch_size=int(args.pretrain_batch_size),
         actor_layer_sizes=tuple(args.actor_layers),
         critic_layer_sizes=tuple(args.critic_layers),
+        checkpoint_interval_epochs=int(args.checkpoint_interval_epochs),
         seed=int(args.seed),
         device_requested=str(args.device),
         output_root=str(args.output_root),
@@ -124,11 +132,16 @@ def main() -> None:
     print(f"Actor epochs: {config.actor_epochs}")
     print(f"Critic epochs: {config.critic_epochs}")
     print(f"Pretrain batch size: {config.pretrain_batch_size}")
+    print(f"Checkpoint interval epochs: {config.checkpoint_interval_epochs}")
     print(f"Actor layers: {list(config.actor_layer_sizes)}")
     print(f"Critic layers: {list(config.critic_layer_sizes)}")
 
     result = run_of_mpc_pretraining(config)
-    print("OF-MPC TD3 pretraining complete.")
+    status = result.get("summary", {}).get("status", "completed")
+    if status == "completed":
+        print("OF-MPC TD3 pretraining complete.")
+    else:
+        print(f"OF-MPC TD3 pretraining {status}.")
     print(f"Run directory: {result['run_dir']}")
     print(f"Checkpoint: {result['checkpoint_path']}")
     print(f"Config: {result['config_path']}")

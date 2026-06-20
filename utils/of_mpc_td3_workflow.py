@@ -111,6 +111,7 @@ class PretrainingRunConfig:
     pretrain_batch_size: int
     actor_layer_sizes: tuple[int, ...]
     critic_layer_sizes: tuple[int, ...]
+    checkpoint_interval_epochs: int = 25
     seed: int = 123
     device_requested: str = "auto"
     output_root: str = os.path.join("results", "PretrainOFMPC")
@@ -144,6 +145,8 @@ def validate_pretraining_config(config: PretrainingRunConfig) -> None:
         raise ValueError("At least one actor or critic pretraining epoch is required.")
     if config.pretrain_batch_size <= 0:
         raise ValueError("pretrain_batch_size must be positive.")
+    if config.checkpoint_interval_epochs < 0:
+        raise ValueError("checkpoint_interval_epochs must be nonnegative.")
     validate_layer_sizes(config.actor_layer_sizes, "actor_layer_sizes")
     validate_layer_sizes(config.critic_layer_sizes, "critic_layer_sizes")
 
@@ -611,32 +614,6 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
         pin_memory=(device.type == "cuda"),
     )
 
-    train_start = time.perf_counter()
-    pretraining_history = agent.pretrain_from_buffer(
-        num_actor_epochs=config.actor_epochs,
-        num_critic_epochs=config.critic_epochs,
-        data_loader=data_loader,
-        use_target_noise_critic=True,
-        log_interval=1,
-        mode="mpc",
-    )
-    train_seconds = float(time.perf_counter() - train_start)
-
-    loss_paths = save_loss_artifacts(
-        run_dir,
-        agent,
-        expected_actor_epochs=config.actor_epochs,
-        expected_critic_epochs=config.critic_epochs,
-        pretraining_history=pretraining_history,
-    )
-    checkpoint_path = Path(
-        agent.save(
-            str(run_dir),
-            prefix="of_mpc_pretrained_td3",
-            include_optim=False,
-        )
-    )
-
     full_config = {
         "run_timestamp": run_timestamp,
         "method": "td3_pretraining_from_offset_free_mpc",
@@ -680,35 +657,115 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     config_path = run_dir / "config.json"
     write_json(config_path, full_config)
 
-    elapsed_seconds = float(time.perf_counter() - wall_start)
-    summary = {
-        "status": "completed",
-        "run_timestamp": run_timestamp,
-        "elapsed_seconds": elapsed_seconds,
-        "buffer_generation_seconds": buffer_seconds,
-        "pretraining_seconds": train_seconds,
-        "buffer_size": buffer_size,
-        "mpc_samples": int(config.mpc_samples),
-        "steady_samples": int(config.steady_samples),
-        "state_dim": int(dimensions.state_dim),
-        "action_dim": int(dimensions.action_dim),
-        "checkpoint_path": relative_to_repo(checkpoint_path),
-        "config_path": relative_to_repo(config_path),
-        **loss_paths,
-        "reward_stats": array_stats(agent.buffer.rewards[:buffer_size]),
-        "action_stats": array_stats(agent.buffer.actions[:buffer_size]),
-        "state_stats": array_stats(agent.buffer.states[:buffer_size]),
-    }
-    summary_path = run_dir / "summary.json"
-    write_json(summary_path, summary)
+    def finish_run(
+        status: str,
+        checkpoint_path: Path,
+        train_seconds: float,
+        loss_paths: dict[str, Any],
+        *,
+        interrupted_at: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        elapsed_seconds = float(time.perf_counter() - wall_start)
+        summary = {
+            "status": status,
+            "run_timestamp": run_timestamp,
+            "elapsed_seconds": elapsed_seconds,
+            "buffer_generation_seconds": buffer_seconds,
+            "pretraining_seconds": train_seconds,
+            "buffer_size": buffer_size,
+            "mpc_samples": int(config.mpc_samples),
+            "steady_samples": int(config.steady_samples),
+            "state_dim": int(dimensions.state_dim),
+            "action_dim": int(dimensions.action_dim),
+            "checkpoint_path": relative_to_repo(checkpoint_path),
+            "config_path": relative_to_repo(config_path),
+            **loss_paths,
+            "reward_stats": array_stats(agent.buffer.rewards[:buffer_size]),
+            "action_stats": array_stats(agent.buffer.actions[:buffer_size]),
+            "state_stats": array_stats(agent.buffer.states[:buffer_size]),
+        }
+        if interrupted_at is not None:
+            summary["interrupted_at"] = interrupted_at
+        summary_path = run_dir / "summary.json"
+        write_json(summary_path, summary)
 
-    return {
-        "run_dir": run_dir,
-        "checkpoint_path": checkpoint_path,
-        "config_path": config_path,
-        "summary_path": summary_path,
-        "summary": summary,
-    }
+        return {
+            "run_dir": run_dir,
+            "checkpoint_path": checkpoint_path,
+            "config_path": config_path,
+            "summary_path": summary_path,
+            "summary": summary,
+        }
+
+    train_start = time.perf_counter()
+    try:
+        pretraining_history = agent.pretrain_from_buffer(
+            num_actor_epochs=config.actor_epochs,
+            num_critic_epochs=config.critic_epochs,
+            data_loader=data_loader,
+            use_target_noise_critic=True,
+            log_interval=1,
+            mode="mpc",
+            checkpoint_dir=str(run_dir),
+            checkpoint_prefix="of_mpc_pretrained_td3_partial",
+            checkpoint_interval_epochs=config.checkpoint_interval_epochs,
+            include_checkpoint_optim=False,
+        )
+    except KeyboardInterrupt:
+        train_seconds = float(time.perf_counter() - train_start)
+        pretraining_history = getattr(agent, "last_pretraining_history", None)
+        try:
+            agent.unfreeze_actor()
+        except Exception:
+            pass
+        checkpoint_path = Path(
+            agent.save(
+                str(run_dir),
+                prefix="of_mpc_pretrained_td3_interrupted",
+                include_optim=False,
+            )
+        )
+        loss_paths = save_loss_artifacts(
+            run_dir,
+            agent,
+            expected_actor_epochs=None,
+            expected_critic_epochs=None,
+            pretraining_history=pretraining_history,
+        )
+        interrupted_at = {}
+        if isinstance(pretraining_history, dict):
+            interrupted_at = {
+                "last_phase": pretraining_history.get("last_phase"),
+                "last_actor_epoch": pretraining_history.get("last_actor_epoch", 0),
+                "last_critic_epoch": pretraining_history.get("last_critic_epoch", 0),
+            }
+        print("OF-MPC TD3 pretraining interrupted. Partial checkpoint and summary were saved.")
+        return finish_run(
+            "interrupted",
+            checkpoint_path,
+            train_seconds,
+            loss_paths,
+            interrupted_at=interrupted_at,
+        )
+
+    train_seconds = float(time.perf_counter() - train_start)
+
+    loss_paths = save_loss_artifacts(
+        run_dir,
+        agent,
+        expected_actor_epochs=config.actor_epochs,
+        expected_critic_epochs=config.critic_epochs,
+        pretraining_history=pretraining_history,
+    )
+    checkpoint_path = Path(
+        agent.save(
+            str(run_dir),
+            prefix="of_mpc_pretrained_td3",
+            include_optim=False,
+        )
+    )
+
+    return finish_run("completed", checkpoint_path, train_seconds, loss_paths)
 
 
 def latest_pretrained_checkpoint() -> Path | None:
