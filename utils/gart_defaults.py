@@ -56,7 +56,7 @@ GART_FINAL_TARGET_OVERRIDES: dict[str, Any] = {
     "d_rate_scale": 0.25,
     "alpha_d": 0.05,
     "W_u_smooth_diag": [2.0, 2.0],
-    "Wy_diag": [1.0, 1.0],
+    "Wy_diag": [2.0, 1.0],
     "adaptive_rate_enabled": False,
 }
 

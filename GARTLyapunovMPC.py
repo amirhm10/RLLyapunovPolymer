@@ -48,7 +48,7 @@ ALPHA_D = 0.05
 INPUT_HEADROOM_FRAC = 0.05
 PRIMARY_TOL_REL = 1.0e-4
 W_U_SMOOTH_DIAG = [2.0, 2.0]
-TARGET_WY_DIAG = [1.0, 1.0]
+TARGET_WY_DIAG = [2.0, 1.0]
 
 # Set to None for an automatic timestamp, or use a fixed string to rerun into a
 # predictable folder.
