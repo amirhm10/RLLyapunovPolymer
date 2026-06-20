@@ -903,6 +903,7 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "full_rl_exploration_decay_mode": str(
             cfg.get("full_rl_exploration_decay_mode", cfg.get("exploration_decay_mode", "agent_schedule"))
         ).strip().lower(),
+        "global_exploration_schedule": bool(cfg.get("global_exploration_schedule", False)),
         "exploration_std_start": float(cfg.get("exploration_std_start", 0.02)),
         "exploration_std_end": float(cfg.get("exploration_std_end", 0.0)),
         "exploration_decay_scope": decay_scope,
@@ -1124,6 +1125,9 @@ def _phase_exploration_sigma(phase_cfg, step_idx, phase_state=None, agent=None):
     behavior_noise_mode = str(phase_state.get("behavior_noise_mode", "none")).strip().lower()
     if behavior_noise_mode != "gaussian":
         return None
+
+    if bool(phase_cfg.get("global_exploration_schedule", False)):
+        return _legacy_exploration_sigma(phase_cfg, step_idx, agent=agent)
 
     policy_phase = str(phase_state.get("policy_phase", "")).strip().lower()
     if policy_phase == "warmup_buffer_only":

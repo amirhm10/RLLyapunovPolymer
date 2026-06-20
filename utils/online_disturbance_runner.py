@@ -137,13 +137,13 @@ COLD_START_SMOOTHING_STD = 0.1
 NOISE_CLIP = 0.01
 PRETRAINED_EXPLORATION_STD_START = 0.05
 COLD_START_EXPLORATION_STD_START = 0.1
-FULL_RL_EXPLORATION_STD_END = 0.02
+GLOBAL_EXPLORATION_STD_END = 0.005
 PRETRAINED_BC_EXPLORATION_STD = 0.05
-COLD_START_BC_EXPLORATION_STD = 0.05
-PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.0
-PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.05
-COLD_START_HANDOFF_EXPLORATION_STD_START = 0.0
-COLD_START_HANDOFF_EXPLORATION_STD_END = 0.05
+COLD_START_BC_EXPLORATION_STD = 0.1
+PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.05
+PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.005
+COLD_START_HANDOFF_EXPLORATION_STD_START = 0.1
+COLD_START_HANDOFF_EXPLORATION_STD_END = 0.005
 DEFAULT_RESET_PRETRAINED_CRITIC = True
 
 WARMUP_EPISODES = 0
@@ -520,7 +520,7 @@ def noisy_teacher_buffer_warmup_overrides(
         "handoff_update_mode": "td3_full",
         "handoff_actor_bc_updates_per_step": 0,
         "handoff_behavior_noise": "gaussian",
-        "handoff_exploration_std_start": 0.0,
+        "handoff_exploration_std_start": noise_std,
         "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
         "handoff_exploration_space": "input_dev",
         "full_rl_exploration_space": "input_dev",
@@ -554,7 +554,7 @@ def noisy_teacher_critic_warmup_overrides(
         "handoff_update_mode": "td3_full",
         "handoff_actor_bc_updates_per_step": 0,
         "handoff_behavior_noise": "gaussian",
-        "handoff_exploration_std_start": 0.0,
+        "handoff_exploration_std_start": noise_std,
         "handoff_exploration_std_end": _handoff_noise_std_end(pretrained),
         "handoff_exploration_space": "input_dev",
         "full_rl_exploration_space": "input_dev",
@@ -623,8 +623,12 @@ def _training_phase_config(
         "handoff_exploration_std_end": handoff_exploration_std_end,
         "handoff_noise_policy_side_only": True,
         "full_rl_exploration_std_start": exploration_std,
-        "full_rl_exploration_std_end": FULL_RL_EXPLORATION_STD_END,
+        "full_rl_exploration_std_end": GLOBAL_EXPLORATION_STD_END,
         "full_rl_exploration_decay_mode": "linear",
+        "global_exploration_schedule": True,
+        "exploration_decay_mode": "linear",
+        "exploration_std_start": exploration_std,
+        "exploration_std_end": GLOBAL_EXPLORATION_STD_END,
         "bc_teacher_policy": teacher_source,
         "bc_behavior_source": teacher_source,
         "handoff_episodes": handoff_episodes,
