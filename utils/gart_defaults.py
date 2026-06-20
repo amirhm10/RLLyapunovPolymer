@@ -11,7 +11,7 @@ from Lyapunov.gart_target import CertifiedDisturbanceConfig, GARTTargetConfig, G
 from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
 
 
-GART_FINAL_RHO_LYAP = 0.98
+GART_FINAL_RHO_LYAP = 0.99
 GART_FINAL_LYAP_EPS = 1.0e-3
 GART_FINAL_SLACK_PENALTY = 1.0e6
 GART_FINAL_MPC_OBJECTIVE = "raw"
