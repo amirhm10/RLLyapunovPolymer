@@ -135,14 +135,15 @@ STD_DECAY_MODE = "exp"
 PRETRAINED_SMOOTHING_STD = 0.01
 COLD_START_SMOOTHING_STD = 0.1
 NOISE_CLIP = 0.01
-PRETRAINED_EXPLORATION_STD_START = 0.02
+PRETRAINED_EXPLORATION_STD_START = 0.05
 COLD_START_EXPLORATION_STD_START = 0.1
-PRETRAINED_BC_EXPLORATION_STD = 0.002
-COLD_START_BC_EXPLORATION_STD = 0.005
+FULL_RL_EXPLORATION_STD_END = 0.02
+PRETRAINED_BC_EXPLORATION_STD = 0.05
+COLD_START_BC_EXPLORATION_STD = 0.05
 PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.0
-PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.005
+PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.05
 COLD_START_HANDOFF_EXPLORATION_STD_START = 0.0
-COLD_START_HANDOFF_EXPLORATION_STD_END = 0.01
+COLD_START_HANDOFF_EXPLORATION_STD_END = 0.05
 DEFAULT_RESET_PRETRAINED_CRITIC = True
 
 WARMUP_EPISODES = 0
@@ -622,7 +623,7 @@ def _training_phase_config(
         "handoff_exploration_std_end": handoff_exploration_std_end,
         "handoff_noise_policy_side_only": True,
         "full_rl_exploration_std_start": exploration_std,
-        "full_rl_exploration_std_end": 0.005,
+        "full_rl_exploration_std_end": FULL_RL_EXPLORATION_STD_END,
         "full_rl_exploration_decay_mode": "linear",
         "bc_teacher_policy": teacher_source,
         "bc_behavior_source": teacher_source,
