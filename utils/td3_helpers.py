@@ -398,14 +398,32 @@ def add_steady_state_samples(
 
 class ReplayDataset(Dataset):
     def __init__(self, s, a, r, ns, d=None):
-        self.s = s
-        self.a = a
-        self.r = r
-        self.ns = ns
-        self.d = d
+        self.s = np.ascontiguousarray(np.asarray(s, dtype=np.float32))
+        self.a = np.ascontiguousarray(np.asarray(a, dtype=np.float32))
+        self.r = np.ascontiguousarray(np.asarray(r, dtype=np.float32).reshape(-1))
+        self.ns = np.ascontiguousarray(np.asarray(ns, dtype=np.float32))
+        self.d = None if d is None else np.ascontiguousarray(
+            np.asarray(d, dtype=np.float32).reshape(-1)
+        )
+
+        n_samples = int(self.s.shape[0])
+        if (
+            self.a.shape[0] != n_samples
+            or self.r.shape[0] != n_samples
+            or self.ns.shape[0] != n_samples
+        ):
+            raise ValueError(
+                "ReplayDataset arrays must have matching first dimensions: "
+                f"s={self.s.shape}, a={self.a.shape}, r={self.r.shape}, ns={self.ns.shape}."
+            )
+        if self.d is not None and self.d.shape[0] != n_samples:
+            raise ValueError(
+                "ReplayDataset done array must match the state count: "
+                f"s={self.s.shape}, d={self.d.shape}."
+            )
 
     def __len__(self):
-        return self.s.shape[0]
+        return int(self.s.shape[0])
 
     def __getitem__(self, i):
         if self.d is None:
