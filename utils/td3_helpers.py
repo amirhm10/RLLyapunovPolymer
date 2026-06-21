@@ -243,6 +243,15 @@ def optimize_sample(i, MPC_obj, y_sp, u, x0_model, IC_opt, bnds, cons):
     return sol.x[:MPC_obj.B.shape[1]]
 
 
+def _shutdown_loky_executor():
+    try:
+        from joblib.externals.loky import get_reusable_executor
+
+        get_reusable_executor().shutdown(wait=True)
+    except Exception:
+        pass
+
+
 def filling_the_buffer(
     min_max_dict,
     A, B, C,
@@ -269,51 +278,54 @@ def filling_the_buffer(
         chunk_sizes.append(remaining_samples)
 
     total_done = 0
-    for chunk_idx, curr_chunk_size in enumerate(chunk_sizes):
-        print(f"Processing chunk {chunk_idx + 1}/{len(chunk_sizes)} (size={curr_chunk_size})")
+    try:
+        for chunk_idx, curr_chunk_size in enumerate(chunk_sizes):
+            print(f"Processing chunk {chunk_idx + 1}/{len(chunk_sizes)} (size={curr_chunk_size})")
 
-        x_d_states = np.random.uniform(low=x_min, high=x_max, size=(curr_chunk_size, A.shape[0]))
-        x_d_states_scaled = apply_min_max_pm1(x_d_states, x_min, x_max)
+            x_d_states = np.random.uniform(low=x_min, high=x_max, size=(curr_chunk_size, A.shape[0]))
+            x_d_states_scaled = apply_min_max_pm1(x_d_states, x_min, x_max)
 
-        y_sp = np.random.uniform(low=y_sp_min, high=y_sp_max, size=(curr_chunk_size, C.shape[0]))
-        y_sp_scaled = apply_min_max_pm1(y_sp, y_sp_min, y_sp_max)
+            y_sp = np.random.uniform(low=y_sp_min, high=y_sp_max, size=(curr_chunk_size, C.shape[0]))
+            y_sp_scaled = apply_min_max_pm1(y_sp, y_sp_min, y_sp_max)
 
-        u = np.random.uniform(low=u_min, high=u_max, size=(curr_chunk_size, B.shape[1]))
-        u_scaled = apply_min_max_pm1(u, u_min, u_max)
+            u = np.random.uniform(low=u_min, high=u_max, size=(curr_chunk_size, B.shape[1]))
+            u_scaled = apply_min_max_pm1(u, u_min, u_max)
 
-        results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
-            delayed(optimize_sample)(
-                i + total_done,
-                MPC_obj,
-                y_sp[i, :],
-                u[i, :],
-                x_d_states[i, :],
-                IC_opt,
-                bnds,
-                cons,
+            results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
+                delayed(optimize_sample)(
+                    i + total_done,
+                    MPC_obj,
+                    y_sp[i, :],
+                    u[i, :],
+                    x_d_states[i, :],
+                    IC_opt,
+                    bnds,
+                    cons,
+                )
+                for i in range(curr_chunk_size)
             )
-            for i in range(curr_chunk_size)
-        )
-        u_mpc = np.array(results)
+            u_mpc = np.array(results)
 
-        next_x_d_states = np.dot(A, x_d_states.T) + np.dot(B, u_mpc.T)
-        y_pred = np.dot(C, next_x_d_states)
+            next_x_d_states = np.dot(A, x_d_states.T) + np.dot(B, u_mpc.T)
+            y_pred = np.dot(C, next_x_d_states)
 
-        next_x_d_states_scaled = apply_min_max_pm1(next_x_d_states.T, x_min, x_max)
-        u_mpc_scaled = apply_min_max_pm1(u_mpc, u_min, u_max)
+            next_x_d_states_scaled = apply_min_max_pm1(next_x_d_states.T, x_min, x_max)
+            u_mpc_scaled = apply_min_max_pm1(u_mpc, u_min, u_max)
 
-        rewards = np.zeros(curr_chunk_size)
-        for k in range(curr_chunk_size):
-            dy = y_pred[:, k] - y_sp[k, :]
-            du = u[k, :] - u_mpc[k, :]
-            rewards[k] = -1.0 * (dy.T @ Q_penalty @ dy + du.T @ R_penalty @ du)
+            rewards = np.zeros(curr_chunk_size)
+            for k in range(curr_chunk_size):
+                dy = y_pred[:, k] - y_sp[k, :]
+                du = u[k, :] - u_mpc[k, :]
+                rewards[k] = -1.0 * (dy.T @ Q_penalty @ dy + du.T @ R_penalty @ du)
 
-        actions = u_mpc_scaled.copy()
-        states = np.hstack((x_d_states_scaled, y_sp_scaled, u_scaled))
-        next_states = np.hstack((next_x_d_states_scaled, y_sp_scaled, u_mpc_scaled))
+            actions = u_mpc_scaled.copy()
+            states = np.hstack((x_d_states_scaled, y_sp_scaled, u_scaled))
+            next_states = np.hstack((next_x_d_states_scaled, y_sp_scaled, u_mpc_scaled))
 
-        agent.buffer.pretrain_add(states, actions, rewards, next_states)
-        total_done += curr_chunk_size
+            agent.buffer.pretrain_add(states, actions, rewards, next_states)
+            total_done += curr_chunk_size
+    finally:
+        _shutdown_loky_executor()
 
     print("Replay buffer has been filled with generated samples.")
 
@@ -347,51 +359,54 @@ def add_steady_state_samples(
         chunk_sizes.append(remaining_samples)
 
     total_done = 0
-    for chunk_idx, curr_chunk_size in enumerate(chunk_sizes):
-        print(f"Processing chunk {chunk_idx + 1}/{len(chunk_sizes)} (size={curr_chunk_size})")
+    try:
+        for chunk_idx, curr_chunk_size in enumerate(chunk_sizes):
+            print(f"Processing chunk {chunk_idx + 1}/{len(chunk_sizes)} (size={curr_chunk_size})")
 
-        x_d_states = np.random.normal(mu, sigma, size=(curr_chunk_size, A.shape[0]))
-        x_d_states_scaled = apply_min_max_pm1(x_d_states, x_min, x_max)
+            x_d_states = np.random.normal(mu, sigma, size=(curr_chunk_size, A.shape[0]))
+            x_d_states_scaled = apply_min_max_pm1(x_d_states, x_min, x_max)
 
-        y_sp = np.zeros((curr_chunk_size, C.shape[0]))
-        y_sp_scaled = apply_min_max_pm1(y_sp, y_sp_min, y_sp_max)
+            y_sp = np.zeros((curr_chunk_size, C.shape[0]))
+            y_sp_scaled = apply_min_max_pm1(y_sp, y_sp_min, y_sp_max)
 
-        u = np.random.uniform(low=0.0, high=1e-8, size=(curr_chunk_size, B.shape[1]))
-        u_scaled = apply_min_max_pm1(u, u_min, u_max)
+            u = np.random.uniform(low=0.0, high=1e-8, size=(curr_chunk_size, B.shape[1]))
+            u_scaled = apply_min_max_pm1(u, u_min, u_max)
 
-        results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
-            delayed(optimize_sample)(
-                i + total_done,
-                MPC_obj,
-                y_sp[i, :],
-                u[i, :],
-                x_d_states[i, :],
-                IC_opt,
-                bnds,
-                cons,
+            results = Parallel(n_jobs=-1, backend="loky", max_nbytes=None)(
+                delayed(optimize_sample)(
+                    i + total_done,
+                    MPC_obj,
+                    y_sp[i, :],
+                    u[i, :],
+                    x_d_states[i, :],
+                    IC_opt,
+                    bnds,
+                    cons,
+                )
+                for i in range(curr_chunk_size)
             )
-            for i in range(curr_chunk_size)
-        )
-        u_mpc = np.array(results)
+            u_mpc = np.array(results)
 
-        next_x_d_states = np.dot(A, x_d_states.T) + np.dot(B, u_mpc.T)
-        y_pred = np.dot(C, next_x_d_states)
+            next_x_d_states = np.dot(A, x_d_states.T) + np.dot(B, u_mpc.T)
+            y_pred = np.dot(C, next_x_d_states)
 
-        next_x_d_states_scaled = apply_min_max_pm1(next_x_d_states.T, x_min, x_max)
-        u_mpc_scaled = apply_min_max_pm1(u_mpc, u_min, u_max)
+            next_x_d_states_scaled = apply_min_max_pm1(next_x_d_states.T, x_min, x_max)
+            u_mpc_scaled = apply_min_max_pm1(u_mpc, u_min, u_max)
 
-        rewards = np.zeros(curr_chunk_size)
-        for k in range(curr_chunk_size):
-            dy = y_pred[:, k] - y_sp[k, :]
-            du = u[k, :] - u_mpc[k, :]
-            rewards[k] = -1.0 * (dy.T @ Q_penalty @ dy + du.T @ R_penalty @ du)
+            rewards = np.zeros(curr_chunk_size)
+            for k in range(curr_chunk_size):
+                dy = y_pred[:, k] - y_sp[k, :]
+                du = u[k, :] - u_mpc[k, :]
+                rewards[k] = -1.0 * (dy.T @ Q_penalty @ dy + du.T @ R_penalty @ du)
 
-        actions = u_mpc_scaled.copy()
-        states = np.hstack((x_d_states_scaled, y_sp_scaled, u_scaled))
-        next_states = np.hstack((next_x_d_states_scaled, y_sp_scaled, u_mpc_scaled))
+            actions = u_mpc_scaled.copy()
+            states = np.hstack((x_d_states_scaled, y_sp_scaled, u_scaled))
+            next_states = np.hstack((next_x_d_states_scaled, y_sp_scaled, u_mpc_scaled))
 
-        agent.buffer.pretrain_add(states, actions, rewards, next_states)
-        total_done += curr_chunk_size
+            agent.buffer.pretrain_add(states, actions, rewards, next_states)
+            total_done += curr_chunk_size
+    finally:
+        _shutdown_loky_executor()
 
     print("Replay buffer has been filled up with the steady_state values.")
 
