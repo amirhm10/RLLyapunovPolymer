@@ -1538,6 +1538,13 @@ def run_offset_free_mpc_disturbance(
     set_points_len: int = DIRECT_DISTURBANCE_SETPOINT_LEN,
     seed: int = DIRECT_DISTURBANCE_SEED,
     save_plots: bool = True,
+    timestamp: str | None = None,
+    output_root: str | Path | None = None,
+    study_name: str = "OffsetFreeMPCDisturbance",
+    case_name: str = "offset_free_mpc_disturbance",
+    setpoint_profile=None,
+    disturbance_profile=None,
+    profile_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     episodes = int(episodes)
     set_points_len = int(set_points_len)
@@ -1548,9 +1555,7 @@ def run_offset_free_mpc_disturbance(
 
     set_seed(int(seed))
     context = build_disturbance_context()
-    study_name = "OffsetFreeMPCDisturbance"
-    case_name = "offset_free_mpc_disturbance"
-    study_root = _study_root(study_name)
+    study_root = _study_root(study_name, timestamp, output_root=output_root)
     case_config = {
         **_base_direct_config(study_name, episodes, set_points_len, seed),
         "case_name": case_name,
@@ -1560,6 +1565,9 @@ def run_offset_free_mpc_disturbance(
         "target_config": dict(context.target_config),
         "diagnostic_lmpc_enabled": True,
         "reward_config": dict(context.reward_config),
+        "explicit_setpoint_profile_enabled": setpoint_profile is not None,
+        "explicit_disturbance_profile_enabled": disturbance_profile is not None,
+        "profile_metadata": _jsonable(profile_metadata),
     }
 
     print(f"Running {study_name} into {study_root}")
@@ -1597,6 +1605,8 @@ def run_offset_free_mpc_disturbance(
         reset_system_on_entry=True,
         solver_options={"warm_start": True},
         force_final_test=FORCE_FINAL_TEST,
+        setpoint_profile=setpoint_profile,
+        disturbance_profile=disturbance_profile,
     )
     timing = _timing_metadata(
         timer_start,

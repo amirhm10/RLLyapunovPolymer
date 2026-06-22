@@ -1628,6 +1628,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
     reset_system_on_entry=True,
     solver_options=None,
     force_final_test=True,
+    setpoint_profile=None,
     disturbance_profile=None,
 ):
     target_mode = _as_mode(target_mode, ("unbounded", "bounded", "governed_reference"), "target_mode")
@@ -1670,6 +1671,7 @@ def run_direct_output_disturbance_lyapunov_mpc(
         qs_change,
         ha_change,
         force_final_test=force_final_test,
+        setpoint_profile=setpoint_profile,
         disturbance_profile=disturbance_profile,
     )
 
@@ -1900,6 +1902,7 @@ def run_offset_free_mpc_with_direct_diagnostics(
     reset_system_on_entry=True,
     solver_options=None,
     force_final_test=True,
+    setpoint_profile=None,
     disturbance_profile=None,
 ):
     """Run offset-free MPC while recording direct Lyapunov diagnostics only."""
@@ -1942,6 +1945,7 @@ def run_offset_free_mpc_with_direct_diagnostics(
         qs_change,
         ha_change,
         force_final_test=force_final_test,
+        setpoint_profile=setpoint_profile,
         disturbance_profile=disturbance_profile,
     )
 
