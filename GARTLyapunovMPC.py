@@ -23,7 +23,7 @@ from utils.path_helpers import repo_path
 # DirectLyapunovMPC.py. Change these values here for day-to-day experiments.
 
 MODE = "disturb"  # "disturb" or "nominal"
-N_TESTS = 5
+N_TESTS = 2
 SET_POINTS_LEN = 400
 
 # First-step Lyapunov contraction settings used by both the GART target
