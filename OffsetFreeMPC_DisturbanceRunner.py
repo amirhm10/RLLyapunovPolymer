@@ -17,8 +17,9 @@ from utils.two_phase_profiles import (
 # This runs only the Phase-2 setpoint schedule and disturbance ramp so you can
 # quickly check whether plain OF-MPC can handle the continuation scenario.
 
-EPISODES = 2
-SET_POINTS_LEN = 400
+PHASE2_STEPS = 10000
+PHASE1_SETPOINT_HOLD_STEPS = 400
+REPORTING_WINDOW_STEPS = 400
 SEED = 123
 SAVE_PLOTS = True
 
@@ -28,7 +29,7 @@ CASE_NAME = "offset_free_mpc_phase2_single_setpoint"
 TIMESTAMP = None
 
 PHASE2_SETPOINTS_Y_PHYS = (
-    (3.35, 323.5),
+    (3.3, 323.),
 )
 
 NOMINAL_QI = 108.0
@@ -48,8 +49,9 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
     context = build_disturbance_context()
     spec = TwoPhaseExperimentSpec(
         phase1_episodes=1,
-        phase2_episodes=int(EPISODES),
-        set_points_len=int(SET_POINTS_LEN),
+        phase2_steps=int(PHASE2_STEPS),
+        set_points_len=int(PHASE1_SETPOINT_HOLD_STEPS),
+        reporting_window_steps=int(REPORTING_WINDOW_STEPS),
         phase2_setpoints_y_phys=np.asarray(PHASE2_SETPOINTS_Y_PHYS, dtype=float),
         nominal_qi=float(NOMINAL_QI),
         nominal_qs=float(NOMINAL_QS),
@@ -75,10 +77,20 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
         name: np.asarray(values, dtype=float)[start:stop].copy()
         for name, values in profile["disturbance_profile"].items()
     }
+    scenario_len = int(np.asarray(context.y_sp_scenario).shape[0])
+    if REPORTING_WINDOW_STEPS % scenario_len != 0:
+        raise ValueError(
+            "REPORTING_WINDOW_STEPS must be divisible by the rollout setpoint-scenario count; "
+            f"got {REPORTING_WINDOW_STEPS} and {scenario_len}."
+        )
+    rollout_n_tests = int((stop - start) // REPORTING_WINDOW_STEPS)
+    rollout_set_points_len = int(REPORTING_WINDOW_STEPS // scenario_len)
     metadata = {
         "probe": "phase2_only_feasibility",
-        "used_episodes": int(EPISODES),
-        "used_set_points_len": int(SET_POINTS_LEN),
+        "phase2_steps": int(PHASE2_STEPS),
+        "reporting_window_steps": int(REPORTING_WINDOW_STEPS),
+        "rollout_n_tests": int(rollout_n_tests),
+        "rollout_set_points_len": int(rollout_set_points_len),
         "setpoints_y_phys": np.asarray(PHASE2_SETPOINTS_Y_PHYS, dtype=float).tolist(),
         "n_profile_steps": int(stop - start),
         "disturbance_start": {name: float(values[0]) for name, values in disturbance_profile.items()},
@@ -91,8 +103,10 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
 def run_configured_study() -> dict:
     setpoint_profile, disturbance_profile, metadata = _phase2_probe_profiles()
     config = {
-        "episodes": int(EPISODES),
-        "set_points_len": int(SET_POINTS_LEN),
+        "phase2_steps": int(PHASE2_STEPS),
+        "reporting_window_steps": int(REPORTING_WINDOW_STEPS),
+        "rollout_n_tests": int(metadata["rollout_n_tests"]),
+        "rollout_set_points_len": int(metadata["rollout_set_points_len"]),
         "seed": int(SEED),
         "save_plots": bool(SAVE_PLOTS),
         "output_root": str(OUTPUT_ROOT),
@@ -106,8 +120,8 @@ def run_configured_study() -> dict:
     print("Offset-free MPC Phase-2 feasibility configuration:")
     pprint(config)
     return run_offset_free_mpc_disturbance(
-        episodes=EPISODES,
-        set_points_len=SET_POINTS_LEN,
+        episodes=int(metadata["rollout_n_tests"]),
+        set_points_len=int(metadata["rollout_set_points_len"]),
         seed=SEED,
         save_plots=SAVE_PLOTS,
         timestamp=TIMESTAMP,

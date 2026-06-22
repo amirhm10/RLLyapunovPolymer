@@ -18,9 +18,10 @@ SEEDS: tuple[int, ...] | None = PAPER_SEEDS
 N_SEEDS = len(PAPER_SEEDS)
 SEED_START = 0
 
-PHASE1_EPISODES = 200
-PHASE2_EPISODES = 50
-SET_POINTS_LEN = 400
+PHASE1_EPISODES = 150
+PHASE2_STEPS = 10000
+PHASE1_SETPOINT_HOLD_STEPS = 400
+REPORTING_WINDOW_STEPS = 400
 
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 TIMESTAMP = None
@@ -61,7 +62,7 @@ PHASE1_SETPOINTS_Y_PHYS = (
     (3.4, 321.0),
 )
 PHASE2_SETPOINTS_Y_PHYS = (
-    (3.35, 323.5),
+    (3.3, 323.0),
 )
 
 NOMINAL_QI = 108.0
@@ -111,8 +112,9 @@ def _build_args() -> Namespace:
         lyap_tol=LYAP_TOL,
         training_phase_overrides=_training_phase_overrides(),
         phase1_episodes=int(PHASE1_EPISODES),
-        phase2_episodes=int(PHASE2_EPISODES),
-        set_points_len=int(SET_POINTS_LEN),
+        phase2_steps=int(PHASE2_STEPS),
+        set_points_len=int(PHASE1_SETPOINT_HOLD_STEPS),
+        reporting_window_steps=int(REPORTING_WINDOW_STEPS),
         phase1_setpoints_y_phys=PHASE1_SETPOINTS_Y_PHYS,
         phase2_setpoints_y_phys=PHASE2_SETPOINTS_Y_PHYS,
         nominal_qi=float(NOMINAL_QI),

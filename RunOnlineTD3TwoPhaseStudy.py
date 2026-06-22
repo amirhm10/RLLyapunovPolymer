@@ -131,13 +131,24 @@ def _profile_context():
 
 def build_profiles_for_study(spec: TwoPhaseExperimentSpec) -> dict[str, Any]:
     context = _profile_context()
-    return build_two_phase_profiles(
+    profile = build_two_phase_profiles(
         spec=spec,
         data_min=context.system_data["data_min"],
         data_max=context.system_data["data_max"],
         steady_outputs=context.setup.steady_states["y_ss"],
         n_inputs=context.dimensions.inputs_number,
     )
+    reporting_window_steps = int(profile["reporting_window_steps"])
+    scenario_len = int(np.asarray(context.y_sp_scenario).shape[0])
+    if reporting_window_steps % scenario_len != 0:
+        raise ValueError(
+            "reporting_window_steps must be divisible by the rollout setpoint-scenario count; "
+            f"got reporting_window_steps={reporting_window_steps} and scenario_len={scenario_len}."
+        )
+    profile["rollout_n_tests"] = int(profile["total_reporting_windows"])
+    profile["rollout_set_points_len"] = int(reporting_window_steps // scenario_len)
+    profile["rollout_time_in_sub_episodes"] = int(reporting_window_steps)
+    return profile
 
 
 def _expected_exploration_sigma(*, method: str, step_idx: int, profile: dict[str, Any]) -> float:
@@ -151,16 +162,22 @@ def _expected_exploration_sigma(*, method: str, step_idx: int, profile: dict[str
 
 
 def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperimentSpec) -> dict[str, Any]:
-    episode_len = episode_len_from_spec(spec)
-    phase1_steps = int(spec.phase1_episodes) * episode_len
-    total_steps = int(spec.phase1_episodes + spec.phase2_episodes) * episode_len
+    phase1_episode_len = episode_len_from_spec(spec)
+    phase1_steps = int(spec.phase1_episodes) * phase1_episode_len
+    total_steps = int(profile["total_steps"])
     y_phys = np.asarray(profile["setpoint_profile_phys"], dtype=float)
     disturbance = profile["disturbance_profile"]
     checks = {
         "total_steps": int(total_steps),
-        "episode_len": int(episode_len),
+        "phase1_episode_len": int(phase1_episode_len),
+        "reporting_window_steps": int(profile["reporting_window_steps"]),
+        "total_reporting_windows": int(profile["total_reporting_windows"]),
+        "rollout_n_tests": int(profile["rollout_n_tests"]),
+        "rollout_set_points_len": int(profile["rollout_set_points_len"]),
         "phase1_steps": int(phase1_steps),
-        "setpoint_switch_episode": int(spec.phase1_episodes) + 1,
+        "phase1_learning_episodes": int(spec.phase1_episodes),
+        "setpoint_switch_report_window": int(profile["phase1_reporting_windows"]) + 1,
+        "setpoint_switch_step": int(phase1_steps),
         "pretrained_exploration_sigma_at_phase1_end": _expected_exploration_sigma(
             method="ofmpc_pretrained_safety_gate",
             step_idx=phase1_steps - 1,
@@ -188,6 +205,8 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
         raise AssertionError(f"setpoint profile length={y_phys.shape[0]} != expected {total_steps}")
     if phase1_steps < y_phys.shape[0] and np.allclose(y_phys[phase1_steps - 1], y_phys[phase1_steps]):
         raise AssertionError("setpoint did not switch at the first Phase-2 step.")
+    if total_steps % int(profile["reporting_window_steps"]) != 0:
+        raise AssertionError("total_steps is not divisible by reporting_window_steps.")
     expected_d0 = np.array([spec.nominal_qi, spec.nominal_qs, spec.nominal_ha], dtype=float)
     expected_d1 = np.array(
         [
@@ -267,8 +286,8 @@ def _run_td3_method(
     })
     return run_online_td3_disturbance_preset(
         method,
-        episodes=int(profile["total_episodes"]),
-        set_points_len=int(profile["spec"].set_points_len),
+        episodes=int(profile["rollout_n_tests"]),
+        set_points_len=int(profile["rollout_set_points_len"]),
         seed=int(seed),
         save_plots=bool(save_plots),
         agent_path=agent_path if pretrained else None,
@@ -304,8 +323,8 @@ def _run_gart_method(
         ctx,
         method_root,
         mode="disturb",
-        n_tests=int(profile["total_episodes"]),
-        set_points_len=int(profile["spec"].set_points_len),
+        n_tests=int(profile["rollout_n_tests"]),
+        set_points_len=int(profile["rollout_set_points_len"]),
         setpoint_profile=profile["setpoint_profile_scaled_dev"],
         disturbance_profile=profile["disturbance_profile"],
         profile_metadata=profile,
@@ -449,12 +468,15 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
 
     spec_kwargs = {
         "phase1_episodes": int(args.phase1_episodes),
-        "phase2_episodes": int(args.phase2_episodes),
+        "phase2_steps": int(args.phase2_steps),
         "set_points_len": int(args.set_points_len),
+        "reporting_window_steps": int(args.reporting_window_steps),
     }
     for name in (
         "phase1_setpoints_y_phys",
         "phase2_setpoints_y_phys",
+        "phase2_steps",
+        "reporting_window_steps",
         "nominal_qi",
         "nominal_qs",
         "nominal_ha",
@@ -600,9 +622,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-save-plots", dest="save_plots", action="store_false")
     parser.add_argument("--export-profile", choices=("compact", "debug"), default=EXPORT_PROFILE)
     parser.add_argument("--agent-path", default=None)
-    parser.add_argument("--phase1-episodes", type=int, default=200)
-    parser.add_argument("--phase2-episodes", type=int, default=50)
-    parser.add_argument("--set-points-len", type=int, default=400)
+    parser.add_argument("--phase1-episodes", type=int, default=150)
+    parser.add_argument("--phase2-steps", type=int, default=10000)
+    parser.add_argument("--set-points-len", type=int, default=400, help="Phase-1 hold time per setpoint.")
+    parser.add_argument("--reporting-window-steps", type=int, default=400)
     return parser
 
 
@@ -611,10 +634,12 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     args = parser.parse_args(argv)
     if args.n_seeds <= 0:
         raise ValueError("--n-seeds must be positive.")
-    if args.phase1_episodes <= 0 or args.phase2_episodes <= 0:
-        raise ValueError("Both phase episode counts must be positive.")
+    if args.phase1_episodes <= 0 or args.phase2_steps <= 0:
+        raise ValueError("phase1_episodes and phase2_steps must be positive.")
     if args.set_points_len <= 0:
         raise ValueError("--set-points-len must be positive.")
+    if args.reporting_window_steps <= 0:
+        raise ValueError("--reporting-window-steps must be positive.")
     return run_two_phase_study(args)
 
 
