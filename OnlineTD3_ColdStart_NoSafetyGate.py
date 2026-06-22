@@ -19,7 +19,12 @@ SAVE_PLOTS = True
 TIMESTAMP = None
 
 RL_OBSERVATION_MODE = "standard"
-PROJECTION_BACKEND = "no_diagnostic"
+# Keep the would-have-activated GART gate diagnostic enabled by default so
+# no-gate and safety-gate runs can be compared on the same activation count.
+# Set FAST_NO_DIAGNOSTIC=True only for quick learning checks where that metric
+# is not needed.
+FAST_NO_DIAGNOSTIC = False
+PROJECTION_BACKEND = "no_diagnostic" if FAST_NO_DIAGNOSTIC else "mpc_only_diagnostic"
 
 RHO_LYAP = GART_FINAL_RHO_LYAP
 LYAP_EPS = GART_FINAL_LYAP_EPS
@@ -51,6 +56,7 @@ def run_configured_study() -> dict:
         "save_plots": bool(SAVE_PLOTS),
         "timestamp": TIMESTAMP,
         "rl_observation_mode": RL_OBSERVATION_MODE,
+        "fast_no_diagnostic": bool(FAST_NO_DIAGNOSTIC),
         "projection_backend": PROJECTION_BACKEND,
         "rho_lyap": float(RHO_LYAP),
         "lyap_eps": float(LYAP_EPS),
