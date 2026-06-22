@@ -11,7 +11,7 @@ from utils.of_mpc_td3_workflow import (
 
 DEFAULT_MPC_SAMPLES = 2_000_000
 DEFAULT_STEADY_SAMPLES = 100_000
-DEFAULT_CHUNK_SIZE = 100_000
+DEFAULT_CHUNK_SIZE = 10_000
 DEFAULT_ACTOR_EPOCHS = 1000
 DEFAULT_CRITIC_EPOCHS = 500
 DEFAULT_PRETRAIN_BATCH_SIZE = 8192
@@ -140,6 +140,8 @@ def main() -> None:
     status = result.get("summary", {}).get("status", "completed")
     if status == "completed":
         print("OF-MPC TD3 pretraining complete.")
+    elif str(status).startswith("interrupted"):
+        print("OF-MPC TD3 pretraining interrupted.")
     else:
         print(f"OF-MPC TD3 pretraining {status}.")
     print(f"Run directory: {result['run_dir']}")

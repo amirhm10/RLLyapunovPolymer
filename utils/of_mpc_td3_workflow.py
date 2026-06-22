@@ -424,6 +424,23 @@ def array_stats(array: np.ndarray) -> dict[str, Any]:
     }
 
 
+def save_partial_replay_buffer(run_dir: Path, agent: TD3Agent, buffer_size: int) -> str | None:
+    buffer_size = int(buffer_size)
+    if buffer_size <= 0:
+        return None
+
+    path = run_dir / "of_mpc_replay_partial.npz"
+    np.savez_compressed(
+        path,
+        states=agent.buffer.states[:buffer_size],
+        actions=agent.buffer.actions[:buffer_size],
+        rewards=agent.buffer.rewards[:buffer_size],
+        next_states=agent.buffer.next_states[:buffer_size],
+        dones=agent.buffer.dones[:buffer_size],
+    )
+    return relative_to_repo(path)
+
+
 def loss_series_stats(values: list[float]) -> dict[str, Any]:
     if not values:
         return {"count": 0}
@@ -563,57 +580,6 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     )
     of_mpc = make_of_mpc_components(system_data)
 
-    buffer_start = time.perf_counter()
-    if config.mpc_samples > 0:
-        filling_the_buffer(
-            system_data["min_max_dict"],
-            system_data["A_aug"],
-            system_data["B_aug"],
-            system_data["C_aug"],
-            of_mpc.mpc_obj,
-            config.mpc_samples,
-            Q_REWARD,
-            R_REWARD,
-            agent,
-            of_mpc.ic_opt,
-            of_mpc.bnds,
-            of_mpc.cons,
-            chunk_size=config.chunk_size,
-        )
-    if config.steady_samples > 0:
-        add_steady_state_samples(
-            system_data["min_max_dict"],
-            system_data["A_aug"],
-            system_data["B_aug"],
-            system_data["C_aug"],
-            of_mpc.mpc_obj,
-            config.steady_samples,
-            Q_REWARD,
-            R_REWARD,
-            agent,
-            of_mpc.ic_opt,
-            of_mpc.bnds,
-            of_mpc.cons,
-            chunk_size=config.chunk_size,
-        )
-    buffer_seconds = float(time.perf_counter() - buffer_start)
-
-    buffer_size = len(agent.buffer)
-    dataset = ReplayDataset(
-        agent.buffer.states[:buffer_size],
-        agent.buffer.actions[:buffer_size],
-        agent.buffer.rewards[:buffer_size],
-        agent.buffer.next_states[:buffer_size],
-        agent.buffer.dones[:buffer_size],
-    )
-    data_loader = DataLoader(
-        dataset,
-        batch_size=min(config.pretrain_batch_size, buffer_size),
-        shuffle=True,
-        drop_last=False,
-        pin_memory=(device.type == "cuda"),
-    )
-
     full_config = {
         "run_timestamp": run_timestamp,
         "method": "td3_pretraining_from_offset_free_mpc",
@@ -656,6 +622,104 @@ def run_of_mpc_pretraining(config: PretrainingRunConfig) -> dict[str, Any]:
     }
     config_path = run_dir / "config.json"
     write_json(config_path, full_config)
+
+    buffer_start = time.perf_counter()
+    try:
+        if config.mpc_samples > 0:
+            filling_the_buffer(
+                system_data["min_max_dict"],
+                system_data["A_aug"],
+                system_data["B_aug"],
+                system_data["C_aug"],
+                of_mpc.mpc_obj,
+                config.mpc_samples,
+                Q_REWARD,
+                R_REWARD,
+                agent,
+                of_mpc.ic_opt,
+                of_mpc.bnds,
+                of_mpc.cons,
+                chunk_size=config.chunk_size,
+            )
+        if config.steady_samples > 0:
+            add_steady_state_samples(
+                system_data["min_max_dict"],
+                system_data["A_aug"],
+                system_data["B_aug"],
+                system_data["C_aug"],
+                of_mpc.mpc_obj,
+                config.steady_samples,
+                Q_REWARD,
+                R_REWARD,
+                agent,
+                of_mpc.ic_opt,
+                of_mpc.bnds,
+                of_mpc.cons,
+                chunk_size=config.chunk_size,
+            )
+    except KeyboardInterrupt:
+        buffer_seconds = float(time.perf_counter() - buffer_start)
+        buffer_size = len(agent.buffer)
+        completed_mpc_samples = min(buffer_size, int(config.mpc_samples))
+        completed_steady_samples = max(0, buffer_size - int(config.mpc_samples))
+        partial_replay_path = save_partial_replay_buffer(run_dir, agent, buffer_size)
+        summary = {
+            "status": "interrupted_buffer_generation",
+            "run_timestamp": run_timestamp,
+            "elapsed_seconds": float(time.perf_counter() - wall_start),
+            "buffer_generation_seconds": buffer_seconds,
+            "pretraining_seconds": 0.0,
+            "buffer_size": int(buffer_size),
+            "mpc_samples": int(config.mpc_samples),
+            "steady_samples": int(config.steady_samples),
+            "completed_mpc_samples": int(completed_mpc_samples),
+            "completed_steady_samples": int(completed_steady_samples),
+            "state_dim": int(dimensions.state_dim),
+            "action_dim": int(dimensions.action_dim),
+            "checkpoint_path": None,
+            "config_path": relative_to_repo(config_path),
+            "partial_replay_path": partial_replay_path,
+            "loss_logging_ok": False,
+            "interrupted_at": {
+                "last_phase": "buffer_generation",
+                "completed_samples": int(buffer_size),
+                "chunk_size": int(config.chunk_size),
+            },
+            "reward_stats": array_stats(agent.buffer.rewards[:buffer_size]),
+            "action_stats": array_stats(agent.buffer.actions[:buffer_size]),
+            "state_stats": array_stats(agent.buffer.states[:buffer_size]),
+        }
+        summary_path = run_dir / "summary.json"
+        write_json(summary_path, summary)
+        print("OF-MPC TD3 pretraining interrupted during buffer generation.")
+        if partial_replay_path is None:
+            print("No full replay-buffer chunks had completed before the interrupt.")
+        else:
+            print(f"Partial replay buffer saved to: {partial_replay_path}")
+        return {
+            "run_dir": run_dir,
+            "checkpoint_path": None,
+            "config_path": config_path,
+            "summary_path": summary_path,
+            "summary": summary,
+        }
+    buffer_seconds = float(time.perf_counter() - buffer_start)
+
+    buffer_size = len(agent.buffer)
+    dataset = ReplayDataset(
+        agent.buffer.states[:buffer_size],
+        agent.buffer.actions[:buffer_size],
+        agent.buffer.rewards[:buffer_size],
+        agent.buffer.next_states[:buffer_size],
+        agent.buffer.dones[:buffer_size],
+    )
+    data_loader = DataLoader(
+        dataset,
+        batch_size=min(config.pretrain_batch_size, buffer_size),
+        shuffle=True,
+        drop_last=False,
+        pin_memory=(device.type == "cuda"),
+    )
 
     def finish_run(
         status: str,
