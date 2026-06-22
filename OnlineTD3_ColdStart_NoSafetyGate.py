@@ -4,7 +4,10 @@ from pprint import pprint
 
 from utils.gart_defaults import GART_FINAL_LYAP_EPS, GART_FINAL_RHO_LYAP
 from utils.direct_lyapunov_study import DIRECT_DISTURBANCE_N_TESTS
-from utils.online_disturbance_runner import run_online_td3_disturbance_preset
+from utils.online_disturbance_runner import (
+    default_noisy_teacher_critic_warmup_overrides,
+    run_online_td3_disturbance_preset,
+)
 
 # Cold-start online TD3 without active safety intervention.
 #
@@ -19,12 +22,7 @@ SAVE_PLOTS = True
 TIMESTAMP = None
 
 RL_OBSERVATION_MODE = "standard"
-# Keep the would-have-activated GART gate diagnostic enabled by default so
-# no-gate and safety-gate runs can be compared on the same activation count.
-# Set FAST_NO_DIAGNOSTIC=True only for quick learning checks where that metric
-# is not needed.
-FAST_NO_DIAGNOSTIC = False
-PROJECTION_BACKEND = "no_diagnostic" if FAST_NO_DIAGNOSTIC else "mpc_only_diagnostic"
+PROJECTION_BACKEND = "mpc_only_diagnostic"
 
 RHO_LYAP = GART_FINAL_RHO_LYAP
 LYAP_EPS = GART_FINAL_LYAP_EPS
@@ -34,17 +32,10 @@ REWARD_FALLBACK_PENALTY_ENABLED = False
 GAMMA_FALLBACK = 0.0
 FALLBACK_EVENT_PENALTY = 0.0
 
-TRAINING_PHASE_OVERRIDES = {
-    "warmup_buffer_only_episodes": 0,
-    "warmup_behavior_source": "policy",
-    "behavior_clone_teacher_episodes": 0,
-    "bc_teacher_policy": "policy",
-    "bc_behavior_source": "policy",
-    "bc_behavior_noise": "none",
-    "handoff_episodes": 0,
-    "handoff_behavior_noise": "none",
-    "full_rl_exploration_space": "input_dev",
-}
+TRAINING_PHASE_OVERRIDES = default_noisy_teacher_critic_warmup_overrides(
+    teacher_source="gart_lmpc",
+    pretrained=False,
+)
 
 
 def run_configured_study() -> dict:
@@ -56,7 +47,6 @@ def run_configured_study() -> dict:
         "save_plots": bool(SAVE_PLOTS),
         "timestamp": TIMESTAMP,
         "rl_observation_mode": RL_OBSERVATION_MODE,
-        "fast_no_diagnostic": bool(FAST_NO_DIAGNOSTIC),
         "projection_backend": PROJECTION_BACKEND,
         "rho_lyap": float(RHO_LYAP),
         "lyap_eps": float(LYAP_EPS),
