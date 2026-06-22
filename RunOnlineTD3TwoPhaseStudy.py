@@ -4,7 +4,9 @@ import argparse
 import csv
 import gc
 import json
+import sys
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from pprint import pprint
@@ -497,6 +499,7 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                 pprint(record)
             except Exception as exc:
                 elapsed = time.perf_counter() - tic
+                traceback_text = traceback.format_exc()
                 record = _method_record(
                     seed=int(seed),
                     method=method,
@@ -506,8 +509,17 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                     elapsed_seconds=elapsed,
                     error=repr(exc),
                 )
+                record["traceback"] = traceback_text
                 _write_json(method_root / "method_manifest.json", record)
-                _write_json(method_root / "error.json", {"error": repr(exc), "method": method, "seed": int(seed)})
+                _write_json(
+                    method_root / "error.json",
+                    {
+                        "error": repr(exc),
+                        "traceback": traceback_text,
+                        "method": method,
+                        "seed": int(seed),
+                    },
+                )
                 print(f"[two-phase] FAILED seed={seed} method={method}: {exc!r}")
             finally:
                 _cleanup_after_method()
@@ -551,6 +563,43 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     if args.set_points_len <= 0:
         raise ValueError("--set-points-len must be positive.")
     return run_two_phase_study(args)
+
+
+def _has_cli_option(argv: list[str], option: str) -> bool:
+    return any(token == option or token.startswith(f"{option}=") for token in argv)
+
+
+def _strip_cli_option(argv: list[str], option: str) -> list[str]:
+    cleaned: list[str] = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == option:
+            skip_next = True
+            continue
+        if token.startswith(f"{option}="):
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
+def main_for_methods(methods: tuple[str, ...] | list[str], argv: list[str] | None = None) -> dict[str, Any]:
+    method_tuple = tuple(str(method).strip() for method in methods if str(method).strip())
+    if not method_tuple:
+        raise ValueError("At least one method is required.")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _strip_cli_option(argv, "--methods")
+    if not _has_cli_option(argv, "--timestamp"):
+        suffix = "_".join(method_tuple)
+        argv.extend(["--timestamp", f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{suffix}"])
+    argv.extend(["--methods", ",".join(method_tuple)])
+    return main(argv)
+
+
+def main_for_method(method: str, argv: list[str] | None = None) -> dict[str, Any]:
+    return main_for_methods((method,), argv=argv)
 
 
 if __name__ == "__main__":
