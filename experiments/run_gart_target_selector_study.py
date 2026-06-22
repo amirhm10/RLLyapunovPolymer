@@ -62,6 +62,8 @@ SLACK_PENALTY = GART_FINAL_SLACK_PENALTY
 QY_DIAG = np.array([5.0, 1.0], dtype=float)
 SU_DIAG = np.array([1.0, 1.0], dtype=float)
 RDU_DIAG = np.array([1.0, 1.0], dtype=float)
+QY_REWARD_DIAG = np.array([12.0, 6.0], dtype=float)
+RDU_REWARD_DIAG = np.array([1.0, 1.0], dtype=float)
 
 
 FINAL_GART_CASE_NAME = "gartlmpc"
@@ -219,20 +221,24 @@ def _build_context(
         data_min=data_min,
         data_max=data_max,
         n_inputs=n_inputs,
-        k_rel=np.array([0.003, 0.0003], dtype=float),
-        band_floor_phys=np.array([0.006, 0.07], dtype=float),
-        Q_diag=QY_DIAG,
-        R_diag=RDU_DIAG,
-        tau_frac=0.7,
-        gamma_out=0.5,
-        gamma_in=0.5,
-        beta=7.0,
+        k_rel=np.array([0.0015, 0.00015], dtype=float),
+        band_floor_phys=np.array([0.003, 0.035], dtype=float),
+        Q_diag=QY_REWARD_DIAG,
+        R_diag=RDU_REWARD_DIAG,
+        tau_frac=0.5,
+        gamma_out=1.0,
+        gamma_in=3.0,
+        beta=1.0,
         gate="geom",
-        lam_in=1.0,
-        bonus_kind="exp",
-        bonus_k=12.0,
-        bonus_p=0.6,
-        bonus_c=20.0,
+        lam_in=3.0,
+        bonus_kind="quadratic",
+        gamma_fallback=0.0,
+        fallback_event_penalty=0.0,
+        R_fallback_diag=RDU_REWARD_DIAG,
+        maintenance_band_scale=0.5,
+        maintenance_move_weight=0.0,
+        jitter_weight=0.0,
+        dwell_bonus=0.0,
     )
     discovered = discover_gart_case_values(
         system_data,
@@ -639,6 +645,7 @@ def run_gart_closed_loop_case(
             print(
                 "Sub_Episode:", sub_changes[step_idx],
                 "| avg. reward:", avg_rewards[-1],
+                "| avg. reward_no_penalty:", avg_rewards[-1],
                 "| target_mode:", "gart",
                 "| lyapunov_mode:", lyapunov_mode,
                 "| plant_mode:", mode,
@@ -845,6 +852,11 @@ def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dic
         "rho_lyap": RHO_LYAP,
         "lyap_eps": LYAP_EPS,
         "slack_penalty": SLACK_PENALTY,
+        "Qy_reward_diag": QY_REWARD_DIAG.copy(),
+        "Rdu_reward_diag": RDU_REWARD_DIAG.copy(),
+        "reward_fallback_penalty_enabled": False,
+        "gamma_fallback": 0.0,
+        "fallback_event_penalty": 0.0,
         "setpoint_y_phys": DIRECT_TWO_SETPOINT_Y_PHYS.tolist(),
         "input_exploration_enabled": payload.get("input_exploration_enabled", False),
         "input_exploration_std": payload.get("input_exploration_std"),
