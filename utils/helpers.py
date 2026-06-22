@@ -31,15 +31,40 @@ def generate_setpoints_training_rl_gradually(y_sp_scenario, n_tests, set_points_
                                              qi_change, qs_change, ha_change,
                                              *,
                                              force_final_test=True,
+                                             setpoint_profile=None,
                                              disturbance_profile=None):
-    # For each scenario, create a block of size (set_points_len, n_outputs)
-    blocks = [np.full((set_points_len, y_sp_scenario.shape[1]), scenario)
-              for scenario in y_sp_scenario]
+    y_sp_scenario = np.asarray(y_sp_scenario, dtype=float)
+    if y_sp_scenario.ndim != 2:
+        raise ValueError("y_sp_scenario must be a 2-D array")
 
-    # Concatenate the blocks to form one cycle
-    cycle = np.concatenate(blocks, axis=0)
-    # Repeat the cycle 'repetitions' times
-    y_sp = np.concatenate([cycle] * n_tests, axis=0)
+    time_in_sub_episodes = set_points_len * len(y_sp_scenario)
+
+    if setpoint_profile is None:
+        # For each scenario, create a block of size (set_points_len, n_outputs)
+        blocks = [np.full((set_points_len, y_sp_scenario.shape[1]), scenario)
+                  for scenario in y_sp_scenario]
+
+        # Concatenate the blocks to form one cycle
+        cycle = np.concatenate(blocks, axis=0)
+        # Repeat the cycle 'repetitions' times
+        y_sp = np.concatenate([cycle] * n_tests, axis=0)
+    else:
+        y_sp = np.asarray(setpoint_profile, dtype=float)
+        if y_sp.ndim != 2:
+            raise ValueError("setpoint_profile must be a 2-D array")
+        if y_sp.shape[1] != y_sp_scenario.shape[1]:
+            raise ValueError(
+                "setpoint_profile output dimension must match y_sp_scenario; "
+                f"got {y_sp.shape[1]} and {y_sp_scenario.shape[1]}"
+            )
+        expected_len = int(n_tests) * int(time_in_sub_episodes)
+        if len(y_sp) != expected_len:
+            raise ValueError(
+                f"setpoint_profile length must equal n_tests * time_in_sub_episodes={expected_len}; "
+                f"got {len(y_sp)}"
+            )
+        if not np.all(np.isfinite(y_sp)):
+            raise ValueError("setpoint_profile contains non-finite values")
 
     # Test/train scenario. Repeat and slice so short patterns such as [False]
     # or [True] can define any number of episodes without changing callers.
@@ -50,8 +75,6 @@ def generate_setpoints_training_rl_gradually(y_sp_scenario, n_tests, set_points_
     test_cycle = test_cycle[:n_tests]
     if force_final_test:
         test_cycle[-1] = True
-
-    time_in_sub_episodes = set_points_len * len(y_sp_scenario)
 
     nFE = int(y_sp.shape[0])
     idxs_setpoints = np.arange(time_in_sub_episodes - 1, nFE, time_in_sub_episodes)

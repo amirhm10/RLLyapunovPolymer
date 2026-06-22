@@ -5,6 +5,7 @@ import json
 import os
 import pickle
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.polymer_td3_defaults import DEFAULT_U_MAX_PHYS, DEFAULT_U_MIN_PHYS
 from utils.scaling_helpers import apply_min_max, reverse_min_max
 from utils.td3_helpers import load_and_prepare_system_data
+from utils.two_phase_profiles import jsonable_two_phase_profile, profile_metadata_for_step
 from utils.lyapunov_utils import get_y_sp_step
 
 
@@ -256,7 +258,15 @@ def _build_context(
     }
 
 
-def _setpoint_schedule(ctx: dict[str, Any], *, n_tests: int, set_points_len: int, force_final_test: bool = True) -> tuple[Any, ...]:
+def _setpoint_schedule(
+    ctx: dict[str, Any],
+    *,
+    n_tests: int,
+    set_points_len: int,
+    force_final_test: bool = True,
+    setpoint_profile=None,
+    disturbance_profile=None,
+) -> tuple[Any, ...]:
     setup = ctx["setup"]
     test_cycle = direct_disturbance_test_cycle(int(n_tests))
     return generate_setpoints_training_rl_gradually(
@@ -272,6 +282,8 @@ def _setpoint_schedule(ctx: dict[str, Any], *, n_tests: int, set_points_len: int
         setup["qs_change"],
         setup["ha_change"],
         force_final_test=force_final_test,
+        setpoint_profile=setpoint_profile,
+        disturbance_profile=disturbance_profile,
     )
 
 
@@ -320,6 +332,9 @@ def run_gart_closed_loop_case(
     mpc_overrides: dict[str, Any] | None = None,
     input_exploration_std: Any | None = None,
     input_exploration_seed: int | None = None,
+    setpoint_profile=None,
+    disturbance_profile=None,
+    profile_metadata: dict[str, Any] | None = None,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     setup = ctx["setup"]
@@ -342,7 +357,11 @@ def run_gart_closed_loop_case(
     system.hA = setup["nominal_ha"]
 
     y_sp, nFE, sub_changes, time_in_sub_episodes, _, _, qi, qs, ha = _setpoint_schedule(
-        ctx, n_tests=n_tests, set_points_len=set_points_len
+        ctx,
+        n_tests=n_tests,
+        set_points_len=set_points_len,
+        setpoint_profile=setpoint_profile,
+        disturbance_profile=disturbance_profile,
     )
     ss_scaled_inputs = apply_min_max(setup["steady_states"]["ss_inputs"], data_min[:n_inputs], data_max[:n_inputs])
     y_ss_scaled = apply_min_max(setup["steady_states"]["y_ss"], data_min[n_inputs:], data_max[n_inputs:])
@@ -367,6 +386,7 @@ def run_gart_closed_loop_case(
     exploration_rng = np.random.default_rng(input_exploration_seed) if exploration_enabled else None
 
     for step_idx in range(int(nFE)):
+        step_wall_start = time.perf_counter()
         if guard is not None:
             guard.tick_closed_loop()
         x0_aug = xhatdhat[:, step_idx].copy()
@@ -378,6 +398,7 @@ def run_gart_closed_loop_case(
         innovation = y_prev_scaled - yhat_now
         if guard is not None:
             guard.tick_target()
+        target_wall_start = time.perf_counter()
         target_result, target_state = select_gart_target(
             lmpc_obj.A,
             lmpc_obj.B,
@@ -393,6 +414,7 @@ def run_gart_closed_loop_case(
             innovation=innovation,
             u_smooth_ref=u_prev_dev,
         )
+        target_wall_seconds = time.perf_counter() - target_wall_start
         r_cmd = None if target_result.r_cmd is None else np.asarray(target_result.r_cmd, dtype=float).reshape(n_outputs)
         y_s = None if target_result.y_s is None else np.asarray(target_result.y_s, dtype=float).reshape(n_outputs)
         d_s = None if target_result.d_cert is None else np.asarray(target_result.d_cert, dtype=float).reshape(n_outputs)
@@ -437,6 +459,7 @@ def run_gart_closed_loop_case(
         )
         target_info_storage.append(target_info)
 
+        controller_wall_start = time.perf_counter()
         u_dev_apply, IC_opt, step_info = solve_gart_lmpc_step(
             lmpc_obj,
             x0_aug,
@@ -449,6 +472,7 @@ def run_gart_closed_loop_case(
             ctx["u_dev_max"],
             mpc_config,
         )
+        controller_wall_seconds = time.perf_counter() - controller_wall_start
         if guard is not None:
             guard.tick_solver()
 
@@ -512,7 +536,9 @@ def run_gart_closed_loop_case(
             system.Qi = qi[step_idx]
 
         _set_system_input_phys(system, setup["steady_states"], u_phys)
+        plant_wall_start = time.perf_counter()
         system.step()
+        plant_wall_seconds = time.perf_counter() - plant_wall_start
 
         y_phys = _system_io_phys(system, setup["steady_states"])[1]
         y_mpc[step_idx + 1, :] = y_phys
@@ -535,6 +561,9 @@ def run_gart_closed_loop_case(
         step_info.update(
             {
                 "step": step_idx,
+                **profile_metadata_for_step(profile_metadata, step_idx),
+                "episode": int(step_idx // int(time_in_sub_episodes)) + 1,
+                "step_in_episode": int(step_idx % int(time_in_sub_episodes)),
                 "case_name": case_name,
                 "target_mode": "gart",
                 "plant_mode": mode,
@@ -581,6 +610,17 @@ def run_gart_closed_loop_case(
                 "reward_base": float(reward),
                 "reward_no_penalty": float(reward),
                 "reward_augmented": float(reward),
+                "y_sp_scaled_0": float(y_sp_k[0]),
+                "y_sp_scaled_1": float(y_sp_k[1]) if y_sp_k.size > 1 else None,
+                "y_sp_phys_0": float(y_sp_phys[0]),
+                "y_sp_phys_1": float(y_sp_phys[1]) if y_sp_phys.size > 1 else None,
+                "qi": float(qi[step_idx]),
+                "qs": float(qs[step_idx]),
+                "ha": float(ha[step_idx]),
+                "controller_wall_seconds": float(controller_wall_seconds),
+                "target_wall_seconds": float(target_wall_seconds),
+                "plant_step_wall_seconds": float(plant_wall_seconds),
+                "step_wall_seconds": float(time.perf_counter() - step_wall_start),
                 "delta_y": delta_y.copy(),
                 "y_minus_y_sp": delta_y.copy(),
                 "y_minus_y_s": None if target_result.y_s is None else y_current_scaled - target_result.y_s,
@@ -645,6 +685,7 @@ def run_gart_closed_loop_case(
         "input_exploration_enabled": exploration_enabled,
         "input_exploration_std": exploration_std.copy(),
         "input_exploration_seed": input_exploration_seed,
+        "profile_metadata": profile_metadata,
         "u_dev_min": ctx["u_dev_min"].copy(),
         "u_dev_max": ctx["u_dev_max"].copy(),
         "delta_t": float(setup["delta_t"]),
@@ -780,7 +821,17 @@ def _save_case_payload(case_dir: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _display_path(path: Path) -> str:
+    path = Path(path)
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    profile_metadata = payload.get("profile_metadata")
+    profile_json = None if profile_metadata is None else jsonable_two_phase_profile(profile_metadata)
     config = {
         "case_name": case_name,
         "controller_mode": payload.get("method", "gart_lmpc" if payload.get("target_mode") == "gart" else "direct_lyapunov_mpc"),
@@ -798,6 +849,7 @@ def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dic
         "input_exploration_enabled": payload.get("input_exploration_enabled", False),
         "input_exploration_std": payload.get("input_exploration_std"),
         "input_exploration_seed": payload.get("input_exploration_seed"),
+        "two_phase_profile": profile_json,
     }
     if payload.get("target_config") is not None:
         config["target_config"] = payload.get("target_config")
@@ -814,11 +866,30 @@ def _build_direct_style_bundle(case_name: str, payload: dict[str, Any], ctx: dic
             "reward_config": ctx["reward_config"],
             "min_max_dict": ctx["system_data"].get("min_max_dict", {}),
             "gart_discovered": ctx.get("discovered", {}),
+            "profile_metadata": profile_json,
+            "phase_windows": (
+                None
+                if profile_metadata is None
+                else list(profile_metadata.get("phase_windows", []))
+            ),
+            "phase_plot_boundaries": (
+                None
+                if profile_metadata is None
+                else list(profile_metadata.get("phase_boundary_steps", []))
+            ),
         },
     )
 
 
-def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def _save_case_direct_artifacts(
+    case_dir: Path,
+    case_name: str,
+    payload: dict[str, Any],
+    ctx: dict[str, Any],
+    *,
+    save_plots: bool = True,
+    export_profile: str = "compact",
+) -> tuple[dict[str, Any] | None, str | None]:
     try:
         bundle = _build_direct_style_bundle(case_name, payload, ctx)
         with (case_dir / "direct_style_bundle.pickle").open("wb") as f:
@@ -827,7 +898,8 @@ def _save_case_direct_artifacts(case_dir: Path, case_name: str, payload: dict[st
             bundle,
             directory=case_dir,
             prefix_name="direct_style",
-            save_plots=True,
+            save_plots=save_plots,
+            export_profile=export_profile,
             timestamp_subdir=False,
         )
         return bundle, debug_dir
@@ -847,6 +919,12 @@ def run_closed_loop(
     mpc_overrides: dict[str, Any] | None = None,
     input_exploration_std: Any | None = None,
     input_exploration_seed: int | None = None,
+    setpoint_profile=None,
+    disturbance_profile=None,
+    profile_metadata: dict[str, Any] | None = None,
+    save_plots: bool = True,
+    export_profile: str = "compact",
+    save_raw_payload: bool = True,
     guard: ResourceGuard | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -870,11 +948,23 @@ def run_closed_loop(
         mpc_overrides=effective_mpc_overrides,
         input_exploration_std=input_exploration_std,
         input_exploration_seed=input_exploration_seed,
+        setpoint_profile=setpoint_profile,
+        disturbance_profile=disturbance_profile,
+        profile_metadata=profile_metadata,
         guard=guard,
     )
     case_dir = output_dir / case_name
-    _save_case_payload(case_dir, payload)
-    bundle, debug_dir = _save_case_direct_artifacts(case_dir, case_name, payload, ctx)
+    case_dir.mkdir(parents=True, exist_ok=True)
+    if save_raw_payload:
+        _save_case_payload(case_dir, payload)
+    bundle, debug_dir = _save_case_direct_artifacts(
+        case_dir,
+        case_name,
+        payload,
+        ctx,
+        save_plots=save_plots,
+        export_profile=export_profile,
+    )
     gart_metrics = _controller_metrics(payload, ctx, case_name=case_name)
     if bundle is None:
         record = gart_metrics
@@ -885,9 +975,9 @@ def run_closed_loop(
     records: list[dict[str, Any]] = [record]
     artifacts: dict[str, Any] = {
         case_name: {
-            "case_dir": str(case_dir.relative_to(REPO_ROOT)),
-            "direct_style_debug_dir": None if debug_dir is None else str(Path(debug_dir).relative_to(REPO_ROOT)),
-            "tracking_plot_dir": None if debug_dir is None else str((Path(debug_dir) / "plots").relative_to(REPO_ROOT)),
+            "case_dir": _display_path(case_dir),
+            "direct_style_debug_dir": None if debug_dir is None else _display_path(Path(debug_dir)),
+            "tracking_plot_dir": None if debug_dir is None else _display_path(Path(debug_dir) / "plots"),
         }
     }
     _write_csv(output_dir / "comparison.csv", records)
@@ -908,7 +998,8 @@ def run_closed_loop(
         "artifacts": artifacts,
     }
     _write_json(output_dir / "summary.json", summary)
-    _make_closed_loop_plots(output_dir / "plots", output_dir, records)
+    if save_plots:
+        _make_closed_loop_plots(output_dir / "plots", output_dir, records)
     return summary
 
 

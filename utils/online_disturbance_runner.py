@@ -90,6 +90,7 @@ from utils.gart_defaults import (
 from utils.path_helpers import repo_path, resolve_repo_path
 from utils.polymer_td3_defaults import DEFAULT_TD3_SETPOINT_SCALER_Y_PHYS
 from utils.scaling_helpers import apply_min_max
+from utils.two_phase_profiles import jsonable_two_phase_profile
 
 
 PLANT_MODE = "disturb"
@@ -308,9 +309,12 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _mirror_primary_debug_files(debug_dir: str | Path, study_root: Path) -> None:
+def _mirror_primary_debug_files(debug_dir: str | Path, study_root: Path, *, include_large: bool = False) -> None:
     debug_path = Path(debug_dir)
-    for filename in ("summary.json", "step_table.csv", "episode_table.csv", "arrays.npz"):
+    filenames = ["summary.json", "summary.csv", "episode_table.csv", "phase_table.csv"]
+    if include_large:
+        filenames.extend(["step_table.csv", "arrays.npz"])
+    for filename in filenames:
         _link_or_copy(debug_path / filename, study_root / filename)
 
 
@@ -366,6 +370,17 @@ def _write_direct_episode_table(debug_dir: str | Path, bundle: dict[str, Any]) -
 
 
 def _td3_online_hparams(agent: TD3Agent) -> dict[str, Any]:
+    try:
+        selected_device = str(next(agent.actor.parameters()).device)
+    except Exception:
+        selected_device = str(getattr(agent, "device", "unknown"))
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_device_name = None
+    if cuda_available:
+        try:
+            cuda_device_name = torch.cuda.get_device_name(0)
+        except Exception:
+            cuda_device_name = None
     return {
         "gamma": float(agent.gamma),
         "actor_lr": float(agent.actor_lr),
@@ -378,6 +393,10 @@ def _td3_online_hparams(agent: TD3Agent) -> dict[str, Any]:
         "max_action": float(agent.max_action),
         "actor_hidden": list(agent.actor_hidden),
         "critic_hidden": list(agent.critic_hidden),
+        "torch_version": torch.__version__,
+        "cuda_available": cuda_available,
+        "selected_device": selected_device,
+        "cuda_device_name": cuda_device_name,
     }
 
 
@@ -978,9 +997,20 @@ def _agent_for_preset(
     return agent, resolved_agent_path, checkpoint_arch, critic_reset_metadata
 
 
-def _study_root(study_name: str, timestamp: str | None = None) -> Path:
+def _study_root(
+    study_name: str,
+    timestamp: str | None = None,
+    *,
+    output_root: str | Path | None = None,
+    study_root_override: str | Path | None = None,
+) -> Path:
+    if study_root_override is not None:
+        root = resolve_repo_path(study_root_override)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if timestamp is None else str(timestamp)
-    root = repo_path("results", study_name, timestamp)
+    base = repo_path("results") if output_root is None else resolve_repo_path(output_root)
+    root = base / study_name / timestamp
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -1018,6 +1048,13 @@ def run_online_td3_disturbance_preset(
     lyap_tol: float | None = None,
     training_phase_overrides: dict[str, Any] | None = None,
     section16_projection_config: dict[str, Any] | None = None,
+    setpoint_profile=None,
+    disturbance_profile=None,
+    profile_metadata: dict[str, Any] | None = None,
+    output_root: str | Path | None = None,
+    study_root_override: str | Path | None = None,
+    export_profile: str = "compact",
+    mirror_large_artifacts: bool = False,
 ) -> dict[str, Any]:
     if preset_key not in ONLINE_TD3_PRESETS:
         known = ", ".join(sorted(ONLINE_TD3_PRESETS))
@@ -1058,7 +1095,12 @@ def run_online_td3_disturbance_preset(
         agent_path=agent_path,
         reset_pretrained_critic=bool(reset_pretrained_critic),
     )
-    study_root = _study_root(preset.study_name, timestamp=timestamp)
+    study_root = _study_root(
+        preset.study_name,
+        timestamp=timestamp,
+        output_root=output_root,
+        study_root_override=study_root_override,
+    )
     test_cycle = direct_disturbance_test_cycle(episodes)
     training_phase_config = _training_phase_config(
         teacher_source=preset.teacher_source,
@@ -1181,6 +1223,11 @@ def run_online_td3_disturbance_preset(
         "training_phase_config": dict(training_phase_config),
         "training_phase_overrides": _jsonable(training_phase_overrides),
         "section16_projection_config": _jsonable(section16_projection_config),
+        "explicit_setpoint_profile_enabled": setpoint_profile is not None,
+        "explicit_disturbance_profile_enabled": disturbance_profile is not None,
+        "two_phase_profile": None if profile_metadata is None else jsonable_two_phase_profile(profile_metadata),
+        "export_profile": str(export_profile),
+        "mirror_large_artifacts": bool(mirror_large_artifacts),
         "initial_agent_path": resolved_agent_path,
         "checkpoint_architecture": checkpoint_arch,
         "online_td3_hparams": _td3_online_hparams(agent),
@@ -1234,6 +1281,9 @@ def run_online_td3_disturbance_preset(
         disturbance_after_step=DISTURBANCE_AFTER_STEP,
         training_phase_config=training_phase_config,
         force_final_test=FORCE_FINAL_TEST,
+        setpoint_profile=setpoint_profile,
+        disturbance_profile=disturbance_profile,
+        profile_metadata=profile_metadata,
         rl_observation_mode=rl_observation_mode,
         gart_section16_config=section16_projection_config,
     )
@@ -1250,11 +1300,18 @@ def run_online_td3_disturbance_preset(
         data_max=context.system_data["data_max"],
         extra={
             "delta_t": context.setup.delta_t,
-            "phase_plot_boundaries": _phase_plot_boundaries(
+            "phase_plot_boundaries": (
+                None
+                if profile_metadata is None
+                else list(profile_metadata.get("phase_boundary_steps", []))
+            )
+            or _phase_plot_boundaries(
                 episodes,
                 set_points_len,
                 training_phase_config=training_phase_config,
             ),
+            "phase_windows": None if profile_metadata is None else list(profile_metadata.get("phase_windows", [])),
+            "profile_metadata": None if profile_metadata is None else jsonable_two_phase_profile(profile_metadata),
             "start_plot_idx": 10,
             "agent_path": resolved_agent_path,
             "reward_config": reward_config,
@@ -1270,6 +1327,7 @@ def run_online_td3_disturbance_preset(
         directory=study_root,
         prefix_name=preset.study_name,
         save_plots=save_plots,
+        export_profile=export_profile,
     )
     trained_agent_path = agent.save(debug_dir, prefix="trained_agent", include_optim=False)
     bundle["extra"]["trained_agent_path"] = trained_agent_path
@@ -1284,7 +1342,7 @@ def run_online_td3_disturbance_preset(
         os.fspath(study_root),
         save_plots=save_plots,
     )
-    _mirror_primary_debug_files(debug_dir, study_root)
+    _mirror_primary_debug_files(debug_dir, study_root, include_large=bool(mirror_large_artifacts))
     _write_json(study_root / "record.json", record)
     run_summary = {
         "study_name": preset.study_name,
@@ -1297,6 +1355,8 @@ def run_online_td3_disturbance_preset(
         "comparison_artifacts": comparison_artifacts,
         "record_json": os.fspath(study_root / "record.json"),
         "trained_agent_path": trained_agent_path,
+        "export_profile": str(export_profile),
+        "mirror_large_artifacts": bool(mirror_large_artifacts),
         "config": case_config,
     }
     _write_json(study_root / "run_summary.json", run_summary)

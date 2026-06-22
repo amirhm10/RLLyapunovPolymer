@@ -165,6 +165,22 @@ _SAFETY_STEP_VECTOR_DETAIL_COLUMNS = {
 
 _SAFETY_COMPACT_STEP_COLUMNS = [
     "step",
+    "phase_id",
+    "phase_name",
+    "episode",
+    "episode_in_phase",
+    "step_in_episode",
+    "y_sp_scaled_0",
+    "y_sp_scaled_1",
+    "y_sp_phys_0",
+    "y_sp_phys_1",
+    "qi",
+    "qs",
+    "ha",
+    "controller_wall_seconds",
+    "plant_step_wall_seconds",
+    "td3_update_wall_seconds",
+    "step_wall_seconds",
     "source",
     "accepted",
     "verified",
@@ -186,6 +202,18 @@ _SAFETY_COMPACT_STEP_COLUMNS = [
     "fallback_penalty",
     "weighted_correction_gap",
     "reward_fallback_active",
+    "policy_phase",
+    "behavior_policy_source",
+    "behavior_noise_mode",
+    "behavior_exploration_space",
+    "resolved_behavior_exploration_space",
+    "behavior_exploration_sigma",
+    "teacher_input_exploration_sigma",
+    "policy_input_exploration_sigma",
+    "training_update_mode",
+    "critic_td_update_active",
+    "actor_bc_update_active",
+    "td3_full_update_active",
     "solver_status",
     "qcqp_attempted",
     "qcqp_solved",
@@ -489,6 +517,22 @@ def make_safety_filter_step_records(lyap_info_storage):
         row = {
             "step": int(step_idx),
             "step_idx": int(step_idx),
+            "phase_id": info.get("phase_id"),
+            "phase_name": info.get("phase_name"),
+            "episode": info.get("episode"),
+            "episode_in_phase": info.get("episode_in_phase"),
+            "step_in_episode": info.get("step_in_episode"),
+            "y_sp_scaled_0": info.get("y_sp_scaled_0"),
+            "y_sp_scaled_1": info.get("y_sp_scaled_1"),
+            "y_sp_phys_0": info.get("y_sp_phys_0"),
+            "y_sp_phys_1": info.get("y_sp_phys_1"),
+            "qi": info.get("qi"),
+            "qs": info.get("qs"),
+            "ha": info.get("ha"),
+            "controller_wall_seconds": info.get("controller_wall_seconds"),
+            "plant_step_wall_seconds": info.get("plant_step_wall_seconds"),
+            "td3_update_wall_seconds": info.get("td3_update_wall_seconds"),
+            "step_wall_seconds": info.get("step_wall_seconds"),
             "source": info.get("source"),
             "accepted": bool(info.get("accepted", False)),
             "verified": bool(info.get("verified", False)),
@@ -930,6 +974,29 @@ def build_safety_filter_run_bundle(
         "qs": qs.copy(),
         "ha": ha.copy(),
         "lyap_info_storage": lyap_info_storage,
+        "phase_id": np.array([info.get("phase_id", np.nan) for info in lyap_info_storage], dtype=float),
+        "episode": np.array([info.get("episode", np.nan) for info in lyap_info_storage], dtype=float),
+        "episode_in_phase": np.array([info.get("episode_in_phase", np.nan) for info in lyap_info_storage], dtype=float),
+        "step_in_episode": np.array([info.get("step_in_episode", np.nan) for info in lyap_info_storage], dtype=float),
+        "y_sp_phys_0": np.array([info.get("y_sp_phys_0", np.nan) for info in lyap_info_storage], dtype=float),
+        "y_sp_phys_1": np.array([info.get("y_sp_phys_1", np.nan) for info in lyap_info_storage], dtype=float),
+        "behavior_exploration_sigma": np.array(
+            [info.get("behavior_exploration_sigma", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "controller_wall_seconds": np.array(
+            [info.get("controller_wall_seconds", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "plant_step_wall_seconds": np.array(
+            [info.get("plant_step_wall_seconds", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "td3_update_wall_seconds": np.array(
+            [info.get("td3_update_wall_seconds", np.nan) for info in lyap_info_storage],
+            dtype=float,
+        ),
+        "step_wall_seconds": np.array([info.get("step_wall_seconds", np.nan) for info in lyap_info_storage], dtype=float),
         "u_safe_dev_store": u_safe_dev_store.copy(),
         "u_cand_dev_store": _stack_vectors(lyap_info_storage, "u_cand", n_u),
         "u_prev_dev_store": _stack_vectors(lyap_info_storage, "u_prev", n_u),
@@ -1513,6 +1580,8 @@ def make_safety_filter_episode_records(bundle):
     projection_active = np.asarray(bundle.get("projection_active_flags", []), dtype=float).reshape(-1)
     contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
     executed_action_gap_inf = np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float).reshape(-1)
+    phase_id = np.asarray(bundle.get("phase_id", []), dtype=float).reshape(-1)
+    episode_in_phase = np.asarray(bundle.get("episode_in_phase", []), dtype=float).reshape(-1)
     modes = list(bundle.get("correction_modes", []))
     n_episodes = int(np.ceil(n_steps / float(episode_len)))
 
@@ -1541,6 +1610,17 @@ def make_safety_filter_episode_records(bundle):
         )
         row = {
             "episode": int(episode_idx + 1),
+            "phase_id": None if phase_id.size <= start or not np.isfinite(phase_id[start]) else int(phase_id[start]),
+            "phase_name": (
+                None
+                if phase_id.size <= start or not np.isfinite(phase_id[start])
+                else ("phase1_learning" if int(phase_id[start]) == 1 else "phase2_continuation")
+            ),
+            "episode_in_phase": (
+                None
+                if episode_in_phase.size <= start or not np.isfinite(episode_in_phase[start])
+                else int(episode_in_phase[start])
+            ),
             "step_start": int(start),
             "step_stop_exclusive": int(stop),
             "n_steps": int(stop - start),
@@ -1585,6 +1665,145 @@ def make_safety_filter_episode_records(bundle):
             row[f"output{idx}_max_abs_error"] = float(value)
         records.append(row)
     return records
+
+
+def _default_phase_windows(bundle):
+    phase_id = np.asarray(bundle.get("phase_id", []), dtype=float).reshape(-1)
+    if phase_id.size == 0 or not np.any(np.isfinite(phase_id)):
+        return []
+    windows = []
+    for value in sorted({int(v) for v in phase_id[np.isfinite(phase_id)]}):
+        idx = np.where(phase_id == float(value))[0]
+        if idx.size == 0:
+            continue
+        windows.append(
+            {
+                "name": "phase1_learning" if value == 1 else "phase2_continuation",
+                "phase_id": value,
+                "step_start": int(idx[0]),
+                "step_end_exclusive": int(idx[-1] + 1),
+            }
+        )
+    return windows
+
+
+def _phase_window_records(bundle, windows):
+    n_steps = int(bundle.get("nFE", 0))
+    if n_steps <= 0:
+        return []
+
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
+    rewards = np.asarray(bundle["rewards"], dtype=float).reshape(-1)
+    reward_no_penalty = np.asarray(bundle.get("reward_no_penalty", bundle.get("reward_base", [])), dtype=float).reshape(-1)
+    fallback_penalty = np.asarray(bundle.get("fallback_penalty", []), dtype=float).reshape(-1)
+    diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
+    diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
+    actual_intervention = np.asarray(bundle.get("actual_intervention_flags", []), dtype=float).reshape(-1)
+    projection_active = np.asarray(bundle.get("projection_active_flags", []), dtype=float).reshape(-1)
+    executed_action_gap_inf = np.asarray(bundle.get("executed_action_gap_inf", []), dtype=float).reshape(-1)
+    contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
+    exploration_sigma = np.asarray(bundle.get("behavior_exploration_sigma", []), dtype=float).reshape(-1)
+    controller_wall = np.asarray(bundle.get("controller_wall_seconds", []), dtype=float).reshape(-1)
+    plant_wall = np.asarray(bundle.get("plant_step_wall_seconds", []), dtype=float).reshape(-1)
+    td3_wall = np.asarray(bundle.get("td3_update_wall_seconds", []), dtype=float).reshape(-1)
+    step_wall = np.asarray(bundle.get("step_wall_seconds", []), dtype=float).reshape(-1)
+    modes = list(bundle.get("correction_modes", []))
+    qi = np.asarray(bundle.get("qi", []), dtype=float).reshape(-1)
+    qs = np.asarray(bundle.get("qs", []), dtype=float).reshape(-1)
+    ha = np.asarray(bundle.get("ha", []), dtype=float).reshape(-1)
+
+    records = []
+    for window in windows:
+        start = max(0, int(window.get("step_start", 0)))
+        stop = min(n_steps, int(window.get("step_end_exclusive", n_steps)))
+        if stop <= start:
+            continue
+        err = y_post[start:stop, :] - y_sp_phys[start:stop, :]
+        rmse = np.sqrt(np.mean(err**2, axis=0)) if err.size else np.array([], dtype=float)
+        max_abs = np.max(np.abs(err), axis=0) if err.size else np.array([], dtype=float)
+        mode_slice = modes[start:stop]
+        projection_count = int(
+            max(
+                np.nansum(projection_active[start:stop] > 0.5) if projection_active.size else 0,
+                sum(mode == "gart_section16_projected" for mode in mode_slice),
+            )
+        )
+        fallback_count = int(
+            sum(
+                mode
+                in {
+                    "fallback_mpc_verified",
+                    "fallback_mpc_unverified",
+                    "target_fail_hold_prev",
+                    "solver_fail_hold_prev",
+                    "gart_target_not_usable_hold_prev",
+                    "gart_solver_fail_hold_prev",
+                }
+                for mode in mode_slice
+            )
+        )
+        row = {
+            "phase_window": str(window.get("name", "phase_window")),
+            "phase_id": window.get("phase_id"),
+            "episode_start": window.get("episode_start"),
+            "episode_end": window.get("episode_end"),
+            "step_start": int(start),
+            "step_stop_exclusive": int(stop),
+            "n_steps": int(stop - start),
+            "reward_mean": float(np.mean(rewards[start:stop])) if rewards.size else None,
+            "reward_sum": float(np.sum(rewards[start:stop])) if rewards.size else None,
+            "reward_no_penalty_mean": _safe_nanmean(reward_no_penalty[start:stop]),
+            "reward_no_penalty_sum": _safe_nansum(reward_no_penalty[start:stop]),
+            "fallback_penalty_sum": _safe_nansum(fallback_penalty[start:stop]),
+            "diagnostic_unsafe_count": int(np.nansum(diagnostic_unsafe[start:stop] > 0.5)),
+            "diagnostic_unsafe_rate": _safe_nanmean(diagnostic_unsafe[start:stop]),
+            "diagnostic_unstable_count": int(np.nansum(diagnostic_unstable[start:stop] > 0.5)),
+            "diagnostic_unstable_rate": _safe_nanmean(diagnostic_unstable[start:stop]),
+            "actual_intervention_count": int(np.nansum(actual_intervention[start:stop] > 0.5)),
+            "actual_intervention_rate": _safe_nanmean(actual_intervention[start:stop]),
+            "projection_count": projection_count,
+            "projection_rate": float(projection_count / max(stop - start, 1)),
+            "fallback_count": fallback_count,
+            "fallback_rate": float(fallback_count / max(stop - start, 1)),
+            "min_contraction_margin": _safe_nanmin(contraction_margin[start:stop]),
+            "max_executed_action_gap_inf": _safe_nanmax(executed_action_gap_inf[start:stop]),
+            "exploration_sigma_mean": _safe_nanmean(exploration_sigma[start:stop]),
+            "exploration_sigma_min": _safe_nanmin(exploration_sigma[start:stop]),
+            "exploration_sigma_max": _safe_nanmax(exploration_sigma[start:stop]),
+            "controller_wall_seconds_sum": _safe_nansum(controller_wall[start:stop]),
+            "controller_wall_seconds_mean": _safe_nanmean(controller_wall[start:stop]),
+            "plant_step_wall_seconds_sum": _safe_nansum(plant_wall[start:stop]),
+            "plant_step_wall_seconds_mean": _safe_nanmean(plant_wall[start:stop]),
+            "td3_update_wall_seconds_sum": _safe_nansum(td3_wall[start:stop]),
+            "td3_update_wall_seconds_mean": _safe_nanmean(td3_wall[start:stop]),
+            "step_wall_seconds_sum": _safe_nansum(step_wall[start:stop]),
+            "step_wall_seconds_mean": _safe_nanmean(step_wall[start:stop]),
+            "qi_start": None if qi.size <= start else float(qi[start]),
+            "qi_end": None if qi.size < stop else float(qi[stop - 1]),
+            "qs_start": None if qs.size <= start else float(qs[start]),
+            "qs_end": None if qs.size < stop else float(qs[stop - 1]),
+            "ha_start": None if ha.size <= start else float(ha[start]),
+            "ha_end": None if ha.size < stop else float(ha[stop - 1]),
+            "output_rmse_mean": _safe_nanmean(rmse),
+            "output_max_abs_error": _safe_nanmax(max_abs),
+        }
+        for idx, value in enumerate(rmse):
+            row[f"output{idx}_rmse"] = float(value)
+        for idx, value in enumerate(max_abs):
+            row[f"output{idx}_max_abs_error"] = float(value)
+        records.append(row)
+    return records
+
+
+def make_safety_filter_phase_records(bundle):
+    windows = []
+    extra = bundle.get("extra", {})
+    if isinstance(extra, dict):
+        windows = list(extra.get("phase_windows") or [])
+    if not windows:
+        windows = _default_phase_windows(bundle)
+    return _phase_window_records(bundle, windows)
 
 
 def make_safety_filter_comparison_record(case_name, bundle, debug_dir=None):
@@ -1695,6 +1914,20 @@ def _safety_npz_arrays(bundle, export_profile="debug"):
         "qi": bundle["qi"],
         "qs": bundle["qs"],
         "ha": bundle["ha"],
+        "phase_id": bundle.get("phase_id", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "episode": bundle.get("episode", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "episode_in_phase": bundle.get("episode_in_phase", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "step_in_episode": bundle.get("step_in_episode", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "y_sp_phys_0": bundle.get("y_sp_phys_0", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "y_sp_phys_1": bundle.get("y_sp_phys_1", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "behavior_exploration_sigma": bundle.get(
+            "behavior_exploration_sigma",
+            np.full(int(bundle.get("nFE", 0)), np.nan),
+        ),
+        "controller_wall_seconds": bundle.get("controller_wall_seconds", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "plant_step_wall_seconds": bundle.get("plant_step_wall_seconds", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "td3_update_wall_seconds": bundle.get("td3_update_wall_seconds", np.full(int(bundle.get("nFE", 0)), np.nan)),
+        "step_wall_seconds": bundle.get("step_wall_seconds", np.full(int(bundle.get("nFE", 0)), np.nan)),
         "u_safe_dev_store": bundle["u_safe_dev_store"],
         "u_cand_dev_store": bundle["u_cand_dev_store"],
         "behavior_action_pre_filter_store": bundle["behavior_action_pre_filter_store"],
@@ -2095,6 +2328,14 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
     short_path_mode = _should_use_short_safety_plot_paths(output_dir)
     use_short_names = bool(paper_style or short_path_mode)
     plot_path = lambda filename: _safety_plot_path(output_dir, filename, paper_style=use_short_names)
+    phase_boundaries = bundle.get("phase_plot_boundaries") or []
+
+    def _draw_phase_boundaries(ax):
+        for boundary in phase_boundaries:
+            try:
+                ax.axvline(float(boundary), color="0.25", linestyle="--", linewidth=1.0, alpha=0.7)
+            except Exception:
+                continue
 
     y_system = bundle["y_system"]
     u_applied_phys = bundle["u_applied_phys"]
@@ -3222,6 +3463,137 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
             plt.savefig(plot_path("fallback_solver_status_counts.png"), dpi=300, bbox_inches="tight")
             plt.close()
 
+    extra = bundle.get("extra", {})
+    phase_windows = list(extra.get("phase_windows") or []) if isinstance(extra, dict) else []
+    if phase_windows:
+        phase_dir = os.path.join(output_dir, "ph")
+        os.makedirs(phase_dir, exist_ok=True)
+        safety_active = _safety_active_flags_from_bundle(bundle)
+        diagnostic_safety = np.maximum(
+            np.asarray(bundle.get("diagnostic_unsafe_flags", np.zeros_like(safety_active)), dtype=float),
+            np.asarray(bundle.get("diagnostic_unstable_flags", np.zeros_like(safety_active)), dtype=float),
+        )
+        for window in phase_windows:
+            start = max(0, int(window.get("step_start", 0)))
+            stop = min(len(time_u), int(window.get("step_end_exclusive", len(time_u))))
+            if stop <= start:
+                continue
+            local_u = time_u[start:stop]
+            local_y = time_y[start : min(stop + 1, len(time_y))]
+            fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=False)
+
+            y_ax = axes[0]
+            y_slice_end = min(stop, y_sp_plot.shape[0])
+            for idx in range(min(n_y, y_sp_plot.shape[1])):
+                y_ax.plot(local_y, y_system[start : start + len(local_y), idx], linewidth=1.5, label=f"y{idx}")
+                if y_slice_end > start:
+                    y_ax.step(
+                        time_u[start:y_slice_end],
+                        y_sp_plot[start:y_slice_end, idx],
+                        where="post",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label=f"sp{idx}",
+                    )
+            y_ax.set_ylabel("outputs")
+            y_ax.grid(True, linestyle="--", alpha=0.35)
+            y_ax.legend(loc="best", ncol=2)
+
+            u_ax = axes[1]
+            for idx in range(u_applied_phys.shape[1]):
+                u_ax.step(local_u, u_applied_phys[start:stop, idx], where="post", linewidth=1.5, label=f"u{idx}")
+            u_ax.set_ylabel("inputs")
+            u_ax.grid(True, linestyle="--", alpha=0.35)
+            u_ax.legend(loc="best", ncol=2)
+
+            r_ax = axes[2]
+            r_ax.plot(local_u, rewards[start:stop], linewidth=1.4, label="reward")
+            if reward_no_penalty.size >= stop:
+                r_ax.plot(local_u, reward_no_penalty[start:stop], linewidth=1.2, linestyle="--", label="reward no penalty")
+            r_ax.set_ylabel("reward")
+            r_ax.grid(True, linestyle="--", alpha=0.35)
+            r_ax.legend(loc="best")
+
+            s_ax = axes[3]
+            s_ax.step(local_u, safety_active[start:stop], where="post", linewidth=1.5, label="actual safety")
+            s_ax.step(
+                local_u,
+                diagnostic_safety[start:stop],
+                where="post",
+                linewidth=1.3,
+                linestyle="--",
+                label="diagnostic would activate",
+            )
+            if projection_active.size >= stop:
+                s_ax.step(local_u, projection_active[start:stop], where="post", linewidth=1.2, linestyle=":", label="projection")
+            s_ax.set_ylim(-0.05, 1.05)
+            s_ax.set_yticks([0.0, 1.0])
+            s_ax.set_ylabel("safety")
+            s_ax.set_xlabel("step")
+            s_ax.grid(True, linestyle="--", alpha=0.35)
+            s_ax.legend(loc="best", ncol=2)
+
+            fig.suptitle(str(window.get("name", "phase_window")), fontsize=12)
+            plt.tight_layout()
+            short_names = {
+                "phase1_learning": "p1.png",
+                "phase2_immediate": "p2i.png",
+                "phase2_full": "p2f.png",
+                "phase2_final": "p2tail.png",
+            }
+            window_name = str(window.get("name", "phase_window")).lower()
+            filename = short_names.get(window_name)
+            if filename is None:
+                filename = re.sub(r"[^a-z0-9_]+", "_", window_name).strip("_")[:32] + ".png"
+            plt.savefig(os.path.join(phase_dir, filename), dpi=300, bbox_inches="tight")
+            plt.close(fig)
+
+    qi = np.asarray(bundle.get("qi", []), dtype=float).reshape(-1)
+    qs = np.asarray(bundle.get("qs", []), dtype=float).reshape(-1)
+    ha = np.asarray(bundle.get("ha", []), dtype=float).reshape(-1)
+    if qi.size and qs.size and ha.size:
+        plt.figure(figsize=(11, 5))
+        ax1 = plt.gca()
+        ax1.plot(time_u[: qi.size], qi, label="Qi", linewidth=1.6)
+        ax1.plot(time_u[: qs.size], qs, label="Qs", linewidth=1.6)
+        ax1.set_xlabel("step")
+        ax1.set_ylabel("flow")
+        ax1.grid(True, linestyle="--", alpha=0.35)
+        _draw_phase_boundaries(ax1)
+        ax2 = ax1.twinx()
+        ax2.plot(time_u[: ha.size], ha, label="hA", color="tab:red", linewidth=1.4, alpha=0.85)
+        ax2.set_ylabel("hA")
+        lines, labels = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines + lines2, labels + labels2, loc="best")
+        plt.tight_layout()
+        plt.savefig(plot_path("disturbance_profile.png"), dpi=300, bbox_inches="tight")
+        plt.close()
+
+    controller_wall = np.asarray(bundle.get("controller_wall_seconds", []), dtype=float).reshape(-1)
+    plant_wall = np.asarray(bundle.get("plant_step_wall_seconds", []), dtype=float).reshape(-1)
+    td3_wall = np.asarray(bundle.get("td3_update_wall_seconds", []), dtype=float).reshape(-1)
+    step_wall = np.asarray(bundle.get("step_wall_seconds", []), dtype=float).reshape(-1)
+    if any(arr.size and np.any(np.isfinite(arr)) for arr in (controller_wall, plant_wall, td3_wall, step_wall)):
+        plt.figure(figsize=(11, 5))
+        if controller_wall.size:
+            plt.plot(time_u[: controller_wall.size], controller_wall, label="controller", linewidth=1.2)
+        if plant_wall.size:
+            plt.plot(time_u[: plant_wall.size], plant_wall, label="plant", linewidth=1.2)
+        if td3_wall.size:
+            plt.plot(time_u[: td3_wall.size], td3_wall, label="td3 update", linewidth=1.2)
+        if step_wall.size:
+            plt.plot(time_u[: step_wall.size], step_wall, label="total step", linewidth=1.2, alpha=0.75)
+        ax = plt.gca()
+        _draw_phase_boundaries(ax)
+        plt.xlabel("step")
+        plt.ylabel("wall seconds")
+        plt.grid(True, linestyle="--", alpha=0.35)
+        plt.legend(loc="best")
+        plt.tight_layout()
+        plt.savefig(plot_path("timing_trace.png"), dpi=300, bbox_inches="tight")
+        plt.close()
+
 
 def plot_safety_filter_bundle(bundle, output_dir, paper_style=False):
     if not paper_style:
@@ -3421,6 +3793,9 @@ def save_safety_filter_debug_artifacts(
 
     episode_records = make_safety_filter_episode_records(bundle)
     _write_csv(os.path.join(out_dir, "episode_table.csv"), episode_records)
+
+    phase_records = make_safety_filter_phase_records(bundle)
+    _write_csv(os.path.join(out_dir, "phase_table.csv"), phase_records)
 
     _save_npz(os.path.join(out_dir, "arrays.npz"), bundle, export_profile=export_profile)
 

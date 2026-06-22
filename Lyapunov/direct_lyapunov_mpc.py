@@ -200,6 +200,22 @@ _DIRECT_STEP_VECTOR_DETAIL_COLUMNS = {
 
 _DIRECT_COMPACT_STEP_COLUMNS = [
     "step",
+    "phase_id",
+    "phase_name",
+    "episode",
+    "episode_in_phase",
+    "step_in_episode",
+    "y_sp_scaled_0",
+    "y_sp_scaled_1",
+    "y_sp_phys_0",
+    "y_sp_phys_1",
+    "qi",
+    "qs",
+    "ha",
+    "controller_wall_seconds",
+    "target_wall_seconds",
+    "plant_step_wall_seconds",
+    "step_wall_seconds",
     "success",
     "method",
     "diagnostic_candidate_accepted",
@@ -279,6 +295,17 @@ def _direct_npz_arrays(arrays: Dict[str, Any], export_profile: str = "debug") ->
         "u_applied_phys",
         "y_sp",
         "y_sp_steps",
+        "qi",
+        "qs",
+        "ha",
+        "phase_id",
+        "episode",
+        "episode_in_phase",
+        "step_in_episode",
+        "controller_wall_seconds",
+        "target_wall_seconds",
+        "plant_step_wall_seconds",
+        "step_wall_seconds",
         "rewards",
         "reward_base",
         "reward_no_penalty",
@@ -2192,6 +2219,22 @@ def make_direct_lyapunov_step_records(step_info_storage):
     for info in step_info_storage:
         row = {
             "step": int(info.get("step", len(records))),
+            "phase_id": info.get("phase_id"),
+            "phase_name": info.get("phase_name"),
+            "episode": info.get("episode"),
+            "episode_in_phase": info.get("episode_in_phase"),
+            "step_in_episode": info.get("step_in_episode"),
+            "y_sp_scaled_0": info.get("y_sp_scaled_0"),
+            "y_sp_scaled_1": info.get("y_sp_scaled_1"),
+            "y_sp_phys_0": info.get("y_sp_phys_0"),
+            "y_sp_phys_1": info.get("y_sp_phys_1"),
+            "qi": info.get("qi"),
+            "qs": info.get("qs"),
+            "ha": info.get("ha"),
+            "controller_wall_seconds": info.get("controller_wall_seconds"),
+            "target_wall_seconds": info.get("target_wall_seconds"),
+            "plant_step_wall_seconds": info.get("plant_step_wall_seconds"),
+            "step_wall_seconds": info.get("step_wall_seconds"),
             "success": bool(info.get("success", False)),
             "method": info.get("method"),
             "diagnostic_candidate_accepted": info.get("diagnostic_candidate_accepted"),
@@ -2435,6 +2478,14 @@ def _safe_nanmean(values: Any) -> Optional[float]:
     return float(np.mean(finite))
 
 
+def _safe_nansum(values: Any) -> Optional[float]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    return float(np.sum(finite))
+
+
 def _safe_nanmax(values: Any) -> Optional[float]:
     arr = np.asarray(values, dtype=float).reshape(-1)
     finite = arr[np.isfinite(arr)]
@@ -2511,6 +2562,170 @@ def direct_output_rmse_post_step(bundle) -> np.ndarray:
         return np.array([], dtype=float)
     err = y_post[:n_rows, :n_cols] - y_sp_phys[:n_rows, :n_cols]
     return np.sqrt(np.mean(err**2, axis=0))
+
+
+def make_direct_lyapunov_episode_records(bundle) -> List[Dict[str, Any]]:
+    episode_len = int(bundle.get("time_in_sub_episodes", 0))
+    n_steps = int(bundle.get("nFE", 0))
+    if episode_len <= 0 or n_steps <= 0:
+        return []
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
+    rewards = np.asarray(bundle.get("rewards", []), dtype=float).reshape(-1)
+    diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
+    diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
+    actual_intervention = np.asarray(bundle.get("actual_intervention_flags", []), dtype=float).reshape(-1)
+    contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
+    controller_wall = np.asarray(bundle.get("controller_wall_seconds", []), dtype=float).reshape(-1)
+    target_wall = np.asarray(bundle.get("target_wall_seconds", []), dtype=float).reshape(-1)
+    plant_wall = np.asarray(bundle.get("plant_step_wall_seconds", []), dtype=float).reshape(-1)
+    step_wall = np.asarray(bundle.get("step_wall_seconds", []), dtype=float).reshape(-1)
+    phase_id = np.asarray(bundle.get("phase_id", []), dtype=float).reshape(-1)
+    episode_in_phase = np.asarray(bundle.get("episode_in_phase", []), dtype=float).reshape(-1)
+    n_episodes = int(np.ceil(n_steps / float(episode_len)))
+    rows: List[Dict[str, Any]] = []
+    for episode_idx in range(n_episodes):
+        start = episode_idx * episode_len
+        stop = min((episode_idx + 1) * episode_len, n_steps)
+        if stop <= start:
+            continue
+        err = y_post[start:stop, :] - y_sp_phys[start:stop, :]
+        rmse = np.sqrt(np.mean(err**2, axis=0)) if err.size else np.array([], dtype=float)
+        row: Dict[str, Any] = {
+            "episode": int(episode_idx + 1),
+            "phase_id": None if phase_id.size <= start or not np.isfinite(phase_id[start]) else int(phase_id[start]),
+            "phase_name": (
+                None
+                if phase_id.size <= start or not np.isfinite(phase_id[start])
+                else ("phase1_learning" if int(phase_id[start]) == 1 else "phase2_continuation")
+            ),
+            "episode_in_phase": (
+                None
+                if episode_in_phase.size <= start or not np.isfinite(episode_in_phase[start])
+                else int(episode_in_phase[start])
+            ),
+            "step_start": int(start),
+            "step_stop_exclusive": int(stop),
+            "n_steps": int(stop - start),
+            "reward_mean": _safe_nanmean(rewards[start:stop]),
+            "reward_sum": _safe_nansum(rewards[start:stop]),
+            "diagnostic_unsafe_count": int(np.nansum(diagnostic_unsafe[start:stop] > 0.5)),
+            "diagnostic_unsafe_rate": _safe_nanmean(diagnostic_unsafe[start:stop]),
+            "diagnostic_unstable_count": int(np.nansum(diagnostic_unstable[start:stop] > 0.5)),
+            "diagnostic_unstable_rate": _safe_nanmean(diagnostic_unstable[start:stop]),
+            "actual_intervention_count": int(np.nansum(actual_intervention[start:stop] > 0.5)),
+            "actual_intervention_rate": _safe_nanmean(actual_intervention[start:stop]),
+            "min_contraction_margin": _safe_nanmin(contraction_margin[start:stop]),
+            "controller_wall_seconds_sum": _safe_nansum(controller_wall[start:stop]),
+            "target_wall_seconds_sum": _safe_nansum(target_wall[start:stop]),
+            "plant_step_wall_seconds_sum": _safe_nansum(plant_wall[start:stop]),
+            "step_wall_seconds_sum": _safe_nansum(step_wall[start:stop]),
+            "output_rmse_mean": _safe_nanmean(rmse),
+        }
+        for idx, value in enumerate(rmse):
+            row[f"output{idx}_rmse"] = float(value)
+        rows.append(row)
+    return rows
+
+
+def _default_direct_phase_windows(bundle) -> List[Dict[str, Any]]:
+    phase_id = np.asarray(bundle.get("phase_id", []), dtype=float).reshape(-1)
+    if phase_id.size == 0 or not np.any(np.isfinite(phase_id)):
+        return []
+    windows: List[Dict[str, Any]] = []
+    for value in sorted({int(v) for v in phase_id[np.isfinite(phase_id)]}):
+        idx = np.where(phase_id == float(value))[0]
+        if idx.size == 0:
+            continue
+        windows.append(
+            {
+                "name": "phase1_learning" if value == 1 else "phase2_continuation",
+                "phase_id": value,
+                "step_start": int(idx[0]),
+                "step_end_exclusive": int(idx[-1] + 1),
+            }
+        )
+    return windows
+
+
+def make_direct_lyapunov_phase_records(bundle) -> List[Dict[str, Any]]:
+    windows: List[Dict[str, Any]] = []
+    extra = bundle.get("extra", {})
+    if isinstance(extra, dict):
+        windows = list(extra.get("phase_windows") or [])
+    if not windows:
+        windows = _default_direct_phase_windows(bundle)
+    n_steps = int(bundle.get("nFE", 0))
+    if n_steps <= 0 or not windows:
+        return []
+
+    y_sp_phys = _physical_setpoint_steps(bundle)
+    y_post = np.asarray(bundle["y_system"], dtype=float)[1 : 1 + n_steps, :]
+    rewards = np.asarray(bundle.get("rewards", []), dtype=float).reshape(-1)
+    reward_no_penalty = np.asarray(bundle.get("reward_no_penalty", rewards), dtype=float).reshape(-1)
+    diagnostic_unsafe = np.asarray(bundle.get("diagnostic_unsafe_flags", []), dtype=float).reshape(-1)
+    diagnostic_unstable = np.asarray(bundle.get("diagnostic_unstable_flags", []), dtype=float).reshape(-1)
+    actual_intervention = np.asarray(bundle.get("actual_intervention_flags", []), dtype=float).reshape(-1)
+    contraction_margin = np.asarray(bundle.get("contraction_margin", []), dtype=float).reshape(-1)
+    controller_wall = np.asarray(bundle.get("controller_wall_seconds", []), dtype=float).reshape(-1)
+    target_wall = np.asarray(bundle.get("target_wall_seconds", []), dtype=float).reshape(-1)
+    plant_wall = np.asarray(bundle.get("plant_step_wall_seconds", []), dtype=float).reshape(-1)
+    step_wall = np.asarray(bundle.get("step_wall_seconds", []), dtype=float).reshape(-1)
+    qi = np.asarray(bundle.get("qi", []), dtype=float).reshape(-1)
+    qs = np.asarray(bundle.get("qs", []), dtype=float).reshape(-1)
+    ha = np.asarray(bundle.get("ha", []), dtype=float).reshape(-1)
+
+    records: List[Dict[str, Any]] = []
+    for window in windows:
+        start = max(0, int(window.get("step_start", 0)))
+        stop = min(n_steps, int(window.get("step_end_exclusive", n_steps)))
+        if stop <= start:
+            continue
+        err = y_post[start:stop, :] - y_sp_phys[start:stop, :]
+        rmse = np.sqrt(np.mean(err**2, axis=0)) if err.size else np.array([], dtype=float)
+        max_abs = np.max(np.abs(err), axis=0) if err.size else np.array([], dtype=float)
+        row: Dict[str, Any] = {
+            "phase_window": str(window.get("name", "phase_window")),
+            "phase_id": window.get("phase_id"),
+            "episode_start": window.get("episode_start"),
+            "episode_end": window.get("episode_end"),
+            "step_start": int(start),
+            "step_stop_exclusive": int(stop),
+            "n_steps": int(stop - start),
+            "reward_mean": _safe_nanmean(rewards[start:stop]),
+            "reward_sum": _safe_nansum(rewards[start:stop]),
+            "reward_no_penalty_mean": _safe_nanmean(reward_no_penalty[start:stop]),
+            "reward_no_penalty_sum": _safe_nansum(reward_no_penalty[start:stop]),
+            "diagnostic_unsafe_count": int(np.nansum(diagnostic_unsafe[start:stop] > 0.5)),
+            "diagnostic_unsafe_rate": _safe_nanmean(diagnostic_unsafe[start:stop]),
+            "diagnostic_unstable_count": int(np.nansum(diagnostic_unstable[start:stop] > 0.5)),
+            "diagnostic_unstable_rate": _safe_nanmean(diagnostic_unstable[start:stop]),
+            "actual_intervention_count": int(np.nansum(actual_intervention[start:stop] > 0.5)),
+            "actual_intervention_rate": _safe_nanmean(actual_intervention[start:stop]),
+            "min_contraction_margin": _safe_nanmin(contraction_margin[start:stop]),
+            "controller_wall_seconds_sum": _safe_nansum(controller_wall[start:stop]),
+            "controller_wall_seconds_mean": _safe_nanmean(controller_wall[start:stop]),
+            "target_wall_seconds_sum": _safe_nansum(target_wall[start:stop]),
+            "target_wall_seconds_mean": _safe_nanmean(target_wall[start:stop]),
+            "plant_step_wall_seconds_sum": _safe_nansum(plant_wall[start:stop]),
+            "plant_step_wall_seconds_mean": _safe_nanmean(plant_wall[start:stop]),
+            "step_wall_seconds_sum": _safe_nansum(step_wall[start:stop]),
+            "step_wall_seconds_mean": _safe_nanmean(step_wall[start:stop]),
+            "qi_start": None if qi.size <= start else float(qi[start]),
+            "qi_end": None if qi.size < stop else float(qi[stop - 1]),
+            "qs_start": None if qs.size <= start else float(qs[start]),
+            "qs_end": None if qs.size < stop else float(qs[stop - 1]),
+            "ha_start": None if ha.size <= start else float(ha[start]),
+            "ha_end": None if ha.size < stop else float(ha[stop - 1]),
+            "output_rmse_mean": _safe_nanmean(rmse),
+            "output_max_abs_error": _safe_nanmax(max_abs),
+        }
+        for idx, value in enumerate(rmse):
+            row[f"output{idx}_rmse"] = float(value)
+        for idx, value in enumerate(max_abs):
+            row[f"output{idx}_max_abs_error"] = float(value)
+        records.append(row)
+    return records
 
 
 def _count_bool_step_values(step_info_storage, key: str, expected: bool) -> int:
@@ -2977,6 +3192,20 @@ def build_direct_lyapunov_run_bundle(
         "qi": np.asarray(results["qi"], dtype=float).copy(),
         "qs": np.asarray(results["qs"], dtype=float).copy(),
         "ha": np.asarray(results["ha"], dtype=float).copy(),
+        "phase_id": np.array([info.get("phase_id", np.nan) for info in direct_info_storage], dtype=float),
+        "episode": np.array([info.get("episode", np.nan) for info in direct_info_storage], dtype=float),
+        "episode_in_phase": np.array([info.get("episode_in_phase", np.nan) for info in direct_info_storage], dtype=float),
+        "step_in_episode": np.array([info.get("step_in_episode", np.nan) for info in direct_info_storage], dtype=float),
+        "controller_wall_seconds": np.array(
+            [info.get("controller_wall_seconds", np.nan) for info in direct_info_storage],
+            dtype=float,
+        ),
+        "target_wall_seconds": np.array([info.get("target_wall_seconds", np.nan) for info in direct_info_storage], dtype=float),
+        "plant_step_wall_seconds": np.array(
+            [info.get("plant_step_wall_seconds", np.nan) for info in direct_info_storage],
+            dtype=float,
+        ),
+        "step_wall_seconds": np.array([info.get("step_wall_seconds", np.nan) for info in direct_info_storage], dtype=float),
         "direct_info_storage": direct_info_storage,
         "target_info_storage": list(results["target_info_storage"]),
         "target_mode": results.get("target_mode"),
@@ -3546,6 +3775,8 @@ def save_direct_lyapunov_debug_artifacts(
         export_profile=export_profile,
     )
     _write_csv(os.path.join(out_dir, "step_table.csv"), step_records)
+    _write_csv(os.path.join(out_dir, "episode_table.csv"), make_direct_lyapunov_episode_records(bundle))
+    _write_csv(os.path.join(out_dir, "phase_table.csv"), make_direct_lyapunov_phase_records(bundle))
     _save_npz(os.path.join(out_dir, "arrays.npz"), bundle, export_profile=export_profile)
 
     if save_plots:

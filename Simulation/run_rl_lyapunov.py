@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 
 from Lyapunov.direct_lyapunov_mpc import (
@@ -27,6 +29,7 @@ from Lyapunov.upstream_controllers import (
 from utils.gart_defaults import gart_rl_observation
 from utils.helpers import generate_setpoints_training_rl_gradually
 from utils.scaling_helpers import apply_min_max, apply_rl_scaled, reverse_min_max
+from utils.two_phase_profiles import profile_metadata_for_step
 
 
 def _system_io_phys(system, steady_states):
@@ -738,6 +741,9 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
             "training_phase_config['exploration_decay_mode'] must be "
             "'agent_schedule', 'linear', or 'exp'."
         )
+    exploration_decay_end_step = cfg.get("exploration_decay_end_step", cfg.get("exploration_decay_steps"))
+    if exploration_decay_end_step is not None:
+        exploration_decay_end_step = max(1, int(exploration_decay_end_step))
 
     def _normalize_bc_behavior_source(name, default):
         source = str(cfg.get(name, default)).strip().lower()
@@ -908,6 +914,7 @@ def _normalize_training_phase_config(training_phase_config, time_in_sub_episodes
         "exploration_std_end": float(cfg.get("exploration_std_end", 0.0)),
         "exploration_decay_scope": decay_scope,
         "exploration_decay_mode": exploration_decay_mode,
+        "exploration_decay_end_step": exploration_decay_end_step,
         "exploration_decay_rate": float(cfg.get("exploration_decay_rate", 0.99992)),
         "bc_teacher_policy": teacher_policy,
         "bc_behavior_source": bc_behavior_source,
@@ -1109,7 +1116,7 @@ def _legacy_exploration_sigma(phase_cfg, step_idx, agent=None):
         sigma = end + (start - end) * (decay_rate ** max(int(step_idx), 0))
         return float(max(0.0, sigma))
 
-    total_steps = max(1, int(phase_cfg["total_steps"]))
+    total_steps = max(1, int(phase_cfg.get("exploration_decay_end_step") or phase_cfg["total_steps"]))
     if total_steps <= 1:
         return end
     frac = min(max(float(step_idx) / float(total_steps - 1), 0.0), 1.0)
@@ -1591,6 +1598,45 @@ def _annotate_training_phase_info(info, phase_state, behavior_debug=None):
     return info
 
 
+def _annotate_profile_info(
+    info,
+    *,
+    profile_metadata,
+    step_idx,
+    y_sp_k,
+    y_sp_phys_k,
+    qi_value,
+    qs_value,
+    ha_value,
+    controller_wall_seconds=None,
+):
+    info["step"] = int(step_idx)
+    for key, value in profile_metadata_for_step(profile_metadata, step_idx).items():
+        info[key] = value
+    if "episode" not in info:
+        episode_len = None if profile_metadata is None else profile_metadata.get("episode_len")
+        if episode_len:
+            info["episode"] = int(step_idx // int(episode_len)) + 1
+            info["step_in_episode"] = int(step_idx % int(episode_len))
+    info["y_sp_scaled_0"] = float(np.asarray(y_sp_k, dtype=float).reshape(-1)[0])
+    y_sp_arr = np.asarray(y_sp_k, dtype=float).reshape(-1)
+    y_sp_phys_arr = np.asarray(y_sp_phys_k, dtype=float).reshape(-1)
+    if y_sp_arr.size > 1:
+        info["y_sp_scaled_1"] = float(y_sp_arr[1])
+    info["y_sp_phys_0"] = float(y_sp_phys_arr[0])
+    if y_sp_phys_arr.size > 1:
+        info["y_sp_phys_1"] = float(y_sp_phys_arr[1])
+    info["qi"] = float(qi_value)
+    info["qs"] = float(qs_value)
+    info["ha"] = float(ha_value)
+    if controller_wall_seconds is not None:
+        info["controller_wall_seconds"] = float(controller_wall_seconds)
+
+
+def _set_timing_info(info, key, start_time):
+    info[key] = float(time.perf_counter() - start_time)
+
+
 def _apply_agent_training_updates(agent, phase_state, rl_state, action_used, reward, next_state, done, demo_action=None):
     agent.push(rl_state, action_used, float(reward), next_state, float(done))
     if phase_state.get("push_demo", False):
@@ -1682,7 +1728,9 @@ def run_rl_train(
     performance_guard_config=None,
     residual_rl_config=None,
     force_final_test=True,
+    setpoint_profile=None,
     disturbance_profile=None,
+    profile_metadata=None,
     rl_observation_mode="standard",
     gart_section16_config=None,
 ):
@@ -1715,6 +1763,7 @@ def run_rl_train(
         qs_change,
         ha_change,
         force_final_test=force_final_test,
+        setpoint_profile=setpoint_profile,
         disturbance_profile=disturbance_profile,
     )
 
@@ -1988,7 +2037,39 @@ def run_rl_train(
         cached_direct_step_context = context
         return context
 
+    def _record_step_info(
+        info,
+        behavior_debug,
+        *,
+        step_idx,
+        y_sp_step,
+        y_sp_phys_step,
+        qi_step,
+        qs_step,
+        ha_step,
+        controller_start_time,
+    ):
+        _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
+        _annotate_profile_info(
+            info,
+            profile_metadata=profile_metadata,
+            step_idx=step_idx,
+            y_sp_k=y_sp_step,
+            y_sp_phys_k=y_sp_phys_step,
+            qi_value=qi_step,
+            qs_value=qs_step,
+            ha_value=ha_step,
+            controller_wall_seconds=time.perf_counter() - controller_start_time,
+        )
+        info.setdefault("plant_step_wall_seconds", 0.0)
+        info.setdefault("td3_update_wall_seconds", 0.0)
+        info.setdefault("step_wall_seconds", 0.0)
+        lyap_info_storage.append(info)
+        return info
+
     for k in range(nFE):
+        step_wall_start = time.perf_counter()
+        controller_wall_start = step_wall_start
         if k in test_train_dict:
             test = bool(test_train_dict[k])
 
@@ -2002,6 +2083,7 @@ def run_rl_train(
         yhat[:, k] = y_hat_k
 
         y_sp_k = np.asarray(y_sp[k, :], float).reshape(-1)
+        y_sp_phys_k = reverse_min_max(y_sp_k + ss_scaled_y, data_min[n_u:], data_max[n_u:])
         setpoint_changed = True if k == 0 else not np.array_equal(y_sp_k, np.asarray(y_sp[k - 1, :], float).reshape(-1))
         if (k + 1) < y_sp.shape[0]:
             y_sp_kp1 = np.asarray(y_sp[k + 1, :], float).reshape(-1)
@@ -2456,8 +2538,17 @@ def run_rl_train(
                 }
                 last_verified_safe_dev = u_dev_safe.copy()
 
-            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
-            lyap_info_storage.append(info)
+            _record_step_info(
+                info,
+                behavior_debug,
+                step_idx=k,
+                y_sp_step=y_sp_k,
+                y_sp_phys_step=y_sp_phys_k,
+                qi_step=qi[k],
+                qs_step=qs[k],
+                ha_step=ha[k],
+                controller_start_time=controller_wall_start,
+            )
 
             if use_lyap:
                 total_checked += 1
@@ -2482,7 +2573,9 @@ def run_rl_train(
                 system.Qi = qi[k]
 
             _set_system_input_phys(system, steady_states, u_plant)
+            plant_wall_start = time.perf_counter()
             system.step()
+            _set_timing_info(info, "plant_step_wall_seconds", plant_wall_start)
 
             if mode == "disturb" and disturbance_after_step:
                 system.hA = ha[k]
@@ -2538,6 +2631,7 @@ def run_rl_train(
             )
 
             done = 0.0
+            td3_update_wall_start = time.perf_counter()
             if not test:
                 _apply_agent_training_updates(
                     agent=agent,
@@ -2555,6 +2649,8 @@ def run_rl_train(
                     and len(param_noise_cycle_states) < 256
                 ):
                     param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
+            _set_timing_info(info, "td3_update_wall_seconds", td3_update_wall_start)
+            _set_timing_info(info, "step_wall_seconds", step_wall_start)
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
@@ -2825,8 +2921,17 @@ def run_rl_train(
                 "lyap_acceptance_mode": "diagnostic_only",
             }
 
-            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
-            lyap_info_storage.append(info)
+            _record_step_info(
+                info,
+                behavior_debug,
+                step_idx=k,
+                y_sp_step=y_sp_k,
+                y_sp_phys_step=y_sp_phys_k,
+                qi_step=qi[k],
+                qs_step=qs[k],
+                ha_step=ha[k],
+                controller_start_time=controller_wall_start,
+            )
             total_checked += 1
             checked_in_block += 1
             if info["diagnostic_unsafe"]:
@@ -2845,7 +2950,9 @@ def run_rl_train(
                 system.Qi = qi[k]
 
             _set_system_input_phys(system, steady_states, u_plant)
+            plant_wall_start = time.perf_counter()
             system.step()
+            _set_timing_info(info, "plant_step_wall_seconds", plant_wall_start)
 
             if mode == "disturb" and disturbance_after_step:
                 system.hA = ha[k]
@@ -2892,6 +2999,7 @@ def run_rl_train(
                 n_y=n_y,
             )
 
+            td3_update_wall_start = time.perf_counter()
             if not test:
                 _apply_agent_training_updates(
                     agent=agent,
@@ -2909,6 +3017,8 @@ def run_rl_train(
                     and len(param_noise_cycle_states) < 256
                 ):
                     param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
+            _set_timing_info(info, "td3_update_wall_seconds", td3_update_wall_start)
+            _set_timing_info(info, "step_wall_seconds", step_wall_start)
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
@@ -3463,8 +3573,17 @@ def run_rl_train(
             if info.get("verified", False):
                 last_verified_safe_dev = u_dev_safe.copy()
 
-            _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
-            lyap_info_storage.append(info)
+            _record_step_info(
+                info,
+                behavior_debug,
+                step_idx=k,
+                y_sp_step=y_sp_k,
+                y_sp_phys_step=y_sp_phys_k,
+                qi_step=qi[k],
+                qs_step=qs[k],
+                ha_step=ha[k],
+                controller_start_time=controller_wall_start,
+            )
 
             if use_lyap:
                 total_checked += 1
@@ -3488,7 +3607,9 @@ def run_rl_train(
                 system.Qi = qi[k]
 
             _set_system_input_phys(system, steady_states, u_plant)
+            plant_wall_start = time.perf_counter()
             system.step()
+            _set_timing_info(info, "plant_step_wall_seconds", plant_wall_start)
 
             if mode == "disturb" and disturbance_after_step:
                 system.hA = ha[k]
@@ -3540,6 +3661,7 @@ def run_rl_train(
             )
 
             done = 0.0
+            td3_update_wall_start = time.perf_counter()
             if not test:
                 _apply_agent_training_updates(
                     agent=agent,
@@ -3557,6 +3679,8 @@ def run_rl_train(
                     and len(param_noise_cycle_states) < 256
                 ):
                     param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
+            _set_timing_info(info, "td3_update_wall_seconds", td3_update_wall_start)
+            _set_timing_info(info, "step_wall_seconds", step_wall_start)
 
             if k in sub_changes:
                 start = max(0, k - time_in_sub_episodes + 1)
@@ -4000,8 +4124,17 @@ def run_rl_train(
             }
             last_verified_safe_dev = u_dev_safe.copy()
 
-        _annotate_training_phase_info(info, phase_state, behavior_debug=behavior_debug)
-        lyap_info_storage.append(info)
+        _record_step_info(
+            info,
+            behavior_debug,
+            step_idx=k,
+            y_sp_step=y_sp_k,
+            y_sp_phys_step=y_sp_phys_k,
+            qi_step=qi[k],
+            qs_step=qs[k],
+            ha_step=ha[k],
+            controller_start_time=controller_wall_start,
+        )
 
         if use_lyap:
             total_checked += 1
@@ -4028,7 +4161,9 @@ def run_rl_train(
             system.Qi = qi[k]
 
         _set_system_input_phys(system, steady_states, u_plant)
+        plant_wall_start = time.perf_counter()
         system.step()
+        _set_timing_info(info, "plant_step_wall_seconds", plant_wall_start)
 
         if mode == "disturb" and disturbance_after_step:
             system.hA = ha[k]
@@ -4084,6 +4219,7 @@ def run_rl_train(
         )
 
         done = 0.0
+        td3_update_wall_start = time.perf_counter()
         if not test:
             _apply_agent_training_updates(
                 agent=agent,
@@ -4101,6 +4237,8 @@ def run_rl_train(
                 and len(param_noise_cycle_states) < 256
             ):
                 param_noise_cycle_states.append(np.asarray(rl_state, float).reshape(-1).copy())
+        _set_timing_info(info, "td3_update_wall_seconds", td3_update_wall_start)
+        _set_timing_info(info, "step_wall_seconds", step_wall_start)
 
         if k in sub_changes:
             start = max(0, k - time_in_sub_episodes + 1)
