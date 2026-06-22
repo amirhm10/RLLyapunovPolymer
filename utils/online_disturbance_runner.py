@@ -132,9 +132,10 @@ STD_END = 0.005
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 
-PRETRAINED_SMOOTHING_STD = 0.01
+PRETRAINED_SMOOTHING_STD = 0.02
 COLD_START_SMOOTHING_STD = 0.1
-NOISE_CLIP = 0.01
+PRETRAINED_NOISE_CLIP = 0.04
+COLD_START_NOISE_CLIP = 0.2
 PRETRAINED_EXPLORATION_STD_START = 0.02
 COLD_START_EXPLORATION_STD_START = 0.1
 GLOBAL_EXPLORATION_STD_END = 0.005
@@ -891,6 +892,7 @@ def _make_td3_agent(
     actor_layers: tuple[int, ...],
     critic_layers: tuple[int, ...],
     smoothing_std: float,
+    noise_clip: float,
     set_points_len: int,
 ) -> TD3Agent:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -905,7 +907,7 @@ def _make_td3_agent(
         batch_size=BATCH_SIZE,
         policy_delay=POLICY_DELAY,
         target_policy_smoothing_noise_std=float(smoothing_std),
-        noise_clip=NOISE_CLIP,
+        noise_clip=float(noise_clip),
         max_action=MAX_ACTION,
         tau=TAU,
         std_start=STD_START,
@@ -929,6 +931,7 @@ def _agent_for_preset(
     checkpoint_arch = None
     resolved_agent_path: str | None = None
     smoothing_std = PRETRAINED_SMOOTHING_STD if preset.pretrain_source else COLD_START_SMOOTHING_STD
+    noise_clip = PRETRAINED_NOISE_CLIP if preset.pretrain_source else COLD_START_NOISE_CLIP
     actor_layers = DEFAULT_ACTOR_LAYER_SIZES
     critic_layers = DEFAULT_CRITIC_LAYER_SIZES
 
@@ -947,6 +950,7 @@ def _agent_for_preset(
         actor_layers=tuple(actor_layers),
         critic_layers=tuple(critic_layers),
         smoothing_std=smoothing_std,
+        noise_clip=noise_clip,
         set_points_len=set_points_len,
     )
     if resolved_agent_path is not None:
