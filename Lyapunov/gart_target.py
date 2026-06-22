@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import product
 from typing import Any, Iterable, Optional
 
 import numpy as np
@@ -262,77 +261,6 @@ def _solve_problem(problem: Any, variables: Iterable[Any], solver_pref: Any, *, 
         "solver": last_solver,
         "error": last_error,
         "objective_value": None if last_value is None else float(last_value),
-    }
-
-
-def _solve_box_qp_active_set(
-    H: np.ndarray,
-    f: np.ndarray,
-    lower: np.ndarray,
-    upper: np.ndarray,
-    *,
-    tol: float = 1.0e-10,
-) -> tuple[np.ndarray | None, dict[str, Any]]:
-    """Solve min 0.5*u'H*u + f'u over simple bounds by enumerating box faces."""
-    H = _as_float_array(H, "H", ndim=2)
-    H = 0.5 * (H + H.T)
-    f = _as_vector(f, "f")
-    lower = _as_vector(lower, "lower", f.size)
-    upper = _as_vector(upper, "upper", f.size)
-    if H.shape != (f.size, f.size):
-        raise ValueError(f"H must have shape {(f.size, f.size)}, got {H.shape}.")
-    if np.any(lower > upper):
-        return None, {"status": "invalid_bounds", "solver": "box_active_set"}
-
-    n_u = f.size
-    best_u: np.ndarray | None = None
-    best_objective = np.inf
-    best_face: tuple[int, ...] | None = None
-    faces_checked = 0
-    feasible_faces = 0
-
-    # status -1 fixes at lower, 0 leaves free, +1 fixes at upper.
-    for face in product((-1, 0, 1), repeat=n_u):
-        faces_checked += 1
-        face_arr = np.asarray(face, dtype=int)
-        free = face_arr == 0
-        fixed = ~free
-        u = np.zeros(n_u, dtype=float)
-        u[face_arr == -1] = lower[face_arr == -1]
-        u[face_arr == 1] = upper[face_arr == 1]
-        if np.any(free):
-            H_ff = H[np.ix_(free, free)]
-            rhs = -f[free]
-            if np.any(fixed):
-                rhs = rhs - H[np.ix_(free, fixed)] @ u[fixed]
-            try:
-                u_free = np.linalg.solve(H_ff, rhs)
-            except np.linalg.LinAlgError:
-                u_free = np.linalg.lstsq(H_ff, rhs, rcond=None)[0]
-            if np.any(u_free < lower[free] - tol) or np.any(u_free > upper[free] + tol):
-                continue
-            u[free] = np.minimum(np.maximum(u_free, lower[free]), upper[free])
-        feasible_faces += 1
-        objective = float(0.5 * u.T @ H @ u + f.T @ u)
-        if objective < best_objective:
-            best_objective = objective
-            best_u = u.copy()
-            best_face = face
-
-    if best_u is None:
-        return None, {
-            "status": "no_feasible_face",
-            "solver": "box_active_set",
-            "faces_checked": faces_checked,
-            "feasible_faces": feasible_faces,
-        }
-    return best_u, {
-        "status": "optimal",
-        "solver": "box_active_set",
-        "objective_value": best_objective,
-        "active_face": best_face,
-        "faces_checked": faces_checked,
-        "feasible_faces": feasible_faces,
     }
 
 
@@ -746,6 +674,17 @@ def contraction_probe(
     eps: float,
     solver_pref: Any = None,
 ) -> dict[str, Any]:
+    if not HAS_CVXPY:
+        return {
+            "probe_success": False,
+            "probe_margin_good": None,
+            "probe_margin": None,
+            "probe_min_value": None,
+            "probe_bound": None,
+            "probe_u": None,
+            "V_k": None,
+            "probe_status": "cvxpy_unavailable",
+        }
     A = _as_float_array(A, "A", ndim=2)
     B = _as_float_array(B, "B", ndim=2)
     P_x = _as_float_array(P_x, "P_x", ndim=2)
@@ -757,11 +696,11 @@ def contraction_probe(
     e_k = xhat - x_s
     V_k = float(e_k.T @ P_x @ e_k)
     V_bound = float(rho) * V_k + float(eps)
-    c = A @ xhat - x_s
-    H = 2.0 * (B.T @ P_x @ B)
-    f = 2.0 * (B.T @ P_x @ c)
-    u_star, solve_info = _solve_box_qp_active_set(H, f, u_min, u_max)
-    if u_star is None:
+    u_var = cp.Variable(B.shape[1])
+    e_next = A @ xhat + B @ u_var - x_s
+    problem = cp.Problem(cp.Minimize(cp.quad_form(e_next, cp.psd_wrap(P_x))), [u_var >= u_min, u_var <= u_max])
+    solve_info = _solve_problem(problem, [u_var], solver_pref)
+    if not solve_info["success"]:
         return {
             "probe_success": False,
             "probe_margin_good": None,
@@ -774,6 +713,7 @@ def contraction_probe(
             "probe_solver": solve_info.get("solver"),
             "probe_error": solve_info.get("error"),
         }
+    u_star = np.asarray(u_var.value, dtype=float).reshape(B.shape[1])
     e_next_value = A @ xhat + B @ u_star - x_s
     V_min = float(e_next_value.T @ P_x @ e_next_value)
     margin_good = float(V_bound - V_min)
@@ -787,7 +727,6 @@ def contraction_probe(
         "V_k": V_k,
         "probe_status": solve_info.get("status"),
         "probe_solver": solve_info.get("solver"),
-        "probe_active_face": solve_info.get("active_face"),
     }
 
 
