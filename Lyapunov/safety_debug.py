@@ -456,6 +456,32 @@ def _bundle_reward_no_penalty_array(bundle, rewards):
     return aligned
 
 
+def _select_phase2_reward_window(phase_windows, n_steps):
+    candidates = []
+    for window in phase_windows or []:
+        try:
+            start = max(0, int(window.get("step_start", 0)))
+            stop = min(int(n_steps), int(window.get("step_end_exclusive", n_steps)))
+        except Exception:
+            continue
+        if stop <= start:
+            continue
+        name = str(window.get("name", "")).lower()
+        phase_id = window.get("phase_id")
+        is_phase2 = "phase2" in name
+        try:
+            is_phase2 = is_phase2 or int(phase_id) == 2
+        except Exception:
+            pass
+        if is_phase2:
+            priority = 0 if name == "phase2_full" else 1
+            candidates.append((priority, -(stop - start), start, stop))
+    if not candidates:
+        return None
+    _, _, start, stop = sorted(candidates)[0]
+    return start, stop
+
+
 def _safety_active_flags_from_bundle(bundle, *, tol=1.0e-10):
     u_safe = np.asarray(bundle.get("u_safe_dev_store", []), dtype=float)
     u_cand = np.asarray(bundle.get("u_cand_dev_store", []), dtype=float)
@@ -3511,6 +3537,54 @@ def _plot_safety_filter_bundle_impl(bundle, output_dir, *, paper_style=False):
             np.asarray(bundle.get("diagnostic_unsafe_flags", np.zeros_like(safety_active)), dtype=float),
             np.asarray(bundle.get("diagnostic_unstable_flags", np.zeros_like(safety_active)), dtype=float),
         )
+        phase2_reward_window = _select_phase2_reward_window(phase_windows, len(time_u))
+        if phase2_reward_window is not None and reward_no_penalty.size:
+            start, stop = phase2_reward_window
+            stop = min(stop, reward_no_penalty.size, len(time_u))
+            if stop > start:
+                local_reward = reward_no_penalty[start:stop]
+                finite_reward = local_reward[np.isfinite(local_reward)]
+                if finite_reward.size:
+                    phase2_step = np.arange(stop - start)
+                    fig, ax = plt.subplots(figsize=(11, 5))
+                    ax.plot(
+                        phase2_step,
+                        local_reward,
+                        linewidth=0.9,
+                        alpha=0.35,
+                        color="tab:green",
+                        label="step reward_no_penalty",
+                    )
+                    for window_size, color in ((100, "tab:blue"), (400, "tab:purple")):
+                        rolling = _moving_average(local_reward, window_size)
+                        ax.plot(
+                            phase2_step,
+                            rolling,
+                            linewidth=2.0,
+                            color=color,
+                            label=f"{window_size}-step rolling mean",
+                        )
+                    phase2_mean = _safe_nanmean(local_reward)
+                    if phase2_mean is not None:
+                        ax.axhline(
+                            phase2_mean,
+                            color="0.25",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label="phase 2 mean",
+                        )
+                    ax.set_xlabel("phase 2 step")
+                    ax.set_ylabel("reward_no_penalty")
+                    ax.set_title("Phase 2 reward_no_penalty rolling trace")
+                    ax.grid(True, linestyle="--", alpha=0.35)
+                    ax.legend(loc="best")
+                    plt.tight_layout()
+                    plt.savefig(
+                        os.path.join(phase_dir, "phase2_reward_no_penalty_rolling.png"),
+                        dpi=300,
+                        bbox_inches="tight",
+                    )
+                    plt.close(fig)
         for window in phase_windows:
             start = max(0, int(window.get("step_start", 0)))
             stop = min(len(time_u), int(window.get("step_end_exclusive", len(time_u))))

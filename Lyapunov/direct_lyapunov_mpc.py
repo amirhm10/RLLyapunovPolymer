@@ -173,6 +173,32 @@ def _moving_average(values: Any, window: int) -> np.ndarray:
     return out
 
 
+def _select_phase2_reward_window(phase_windows: Iterable[Dict[str, Any]], n_steps: int) -> Optional[Tuple[int, int]]:
+    candidates: List[Tuple[int, int, int, int]] = []
+    for window in phase_windows or []:
+        try:
+            start = max(0, int(window.get("step_start", 0)))
+            stop = min(int(n_steps), int(window.get("step_end_exclusive", n_steps)))
+        except Exception:
+            continue
+        if stop <= start:
+            continue
+        name = str(window.get("name", "")).lower()
+        phase_id = window.get("phase_id")
+        is_phase2 = "phase2" in name
+        try:
+            is_phase2 = is_phase2 or int(phase_id) == 2
+        except Exception:
+            pass
+        if is_phase2:
+            priority = 0 if name == "phase2_full" else 1
+            candidates.append((priority, -(stop - start), start, stop))
+    if not candidates:
+        return None
+    _, _, start, stop = sorted(candidates)[0]
+    return start, stop
+
+
 _DIRECT_STEP_VECTOR_DETAIL_COLUMNS = {
     "target_u_ref",
     "target_u_ref_weight",
@@ -3523,6 +3549,7 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
     target_bounded_active_lower = np.asarray(bundle["target_bounded_active_lower_count"], dtype=float)
     target_bounded_active_upper = np.asarray(bundle["target_bounded_active_upper_count"], dtype=float)
     rewards = np.asarray(bundle.get("rewards", []), dtype=float)
+    reward_no_penalty = np.asarray(bundle.get("reward_no_penalty", rewards), dtype=float).reshape(-1)
     governor_active = np.asarray(bundle.get("governor_active_flags", []), dtype=float)
     governor_probe_margin = np.asarray(bundle.get("governor_probe_margin", []), dtype=float)
     command_move_inf = np.asarray(bundle.get("command_move_inf", []), dtype=float)
@@ -3770,6 +3797,62 @@ def plot_direct_lyapunov_bundle(bundle, output_dir, *, paper_style=False):
             plt.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
             plt.savefig(os.path.join(output_dir, "07_reward_summary.png"), dpi=300, bbox_inches="tight")
             plt.close(fig)
+
+        extra = bundle.get("extra", {})
+        phase_windows: List[Dict[str, Any]] = []
+        if isinstance(extra, dict):
+            phase_windows = list(extra.get("phase_windows") or [])
+        if not phase_windows:
+            phase_windows = _default_direct_phase_windows(bundle)
+        phase2_reward_window = _select_phase2_reward_window(phase_windows, nFE)
+        if phase2_reward_window is not None and reward_no_penalty.size:
+            start, stop = phase2_reward_window
+            stop = min(stop, reward_no_penalty.size, nFE)
+            if stop > start:
+                local_reward = reward_no_penalty[start:stop]
+                finite_reward = local_reward[np.isfinite(local_reward)]
+                if finite_reward.size:
+                    phase_dir = os.path.join(output_dir, "ph")
+                    os.makedirs(phase_dir, exist_ok=True)
+                    phase2_step = np.arange(stop - start)
+                    fig, ax = plt.subplots(figsize=(11, 5))
+                    ax.plot(
+                        phase2_step,
+                        local_reward,
+                        linewidth=0.9,
+                        alpha=0.35,
+                        color="tab:green",
+                        label="step reward_no_penalty",
+                    )
+                    for window_size, color in ((100, "tab:blue"), (400, "tab:purple")):
+                        ax.plot(
+                            phase2_step,
+                            _moving_average(local_reward, window_size),
+                            linewidth=2.0,
+                            color=color,
+                            label=f"{window_size}-step rolling mean",
+                        )
+                    phase2_mean = _safe_nanmean(local_reward)
+                    if phase2_mean is not None:
+                        ax.axhline(
+                            phase2_mean,
+                            color="0.25",
+                            linestyle="--",
+                            linewidth=1.2,
+                            label="phase 2 mean",
+                        )
+                    ax.set_xlabel("phase 2 step")
+                    ax.set_ylabel("reward_no_penalty")
+                    ax.set_title("Phase 2 reward_no_penalty rolling trace")
+                    ax.grid(True, linestyle="--", alpha=0.35)
+                    ax.legend(loc="best")
+                    plt.tight_layout()
+                    plt.savefig(
+                        os.path.join(phase_dir, "phase2_reward_no_penalty_rolling.png"),
+                        dpi=300,
+                        bbox_inches="tight",
+                    )
+                    plt.close(fig)
 
 
 def save_direct_lyapunov_debug_artifacts(
