@@ -24,12 +24,12 @@ SAVE_PLOTS = True
 
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 STUDY_NAME = "OffsetFreeMPC_Phase2Feasibility"
-CASE_NAME = "offset_free_mpc_phase2_feasibility"
+CASE_NAME = "offset_free_mpc_phase2_candidate3"
 TIMESTAMP = None
 
 PHASE2_SETPOINTS_Y_PHYS = (
-    (4.4, 321.5),
-    (3.3, 324.5),
+    (4.15, 323.0),
+    (3.35, 323.5),
 )
 
 NOMINAL_QI = 108.0
