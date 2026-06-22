@@ -18,8 +18,7 @@ PHASE1_SETPOINT_Y_PHYS = np.array(
 
 PHASE2_SETPOINT_Y_PHYS = np.array(
     [
-        [4.4, 321.5],
-        [3.3, 324.5],
+        [3.35, 323.5],
     ],
     dtype=float,
 )
@@ -54,8 +53,10 @@ def _validate_spec(spec: TwoPhaseExperimentSpec) -> None:
     p2 = np.asarray(spec.phase2_setpoints_y_phys, dtype=float)
     if p1.ndim != 2 or p2.ndim != 2:
         raise ValueError("phase setpoints must be 2-D arrays.")
-    if p1.shape != p2.shape:
-        raise ValueError(f"phase setpoint shapes must match, got {p1.shape} and {p2.shape}.")
+    if p1.shape[0] <= 0 or p2.shape[0] <= 0:
+        raise ValueError("each phase must define at least one setpoint.")
+    if p1.shape[1] != p2.shape[1]:
+        raise ValueError(f"phase setpoint output dimensions must match, got {p1.shape} and {p2.shape}.")
     if not np.all(np.isfinite(p1)) or not np.all(np.isfinite(p2)):
         raise ValueError("phase setpoints must contain finite values.")
 
@@ -65,10 +66,24 @@ def episode_len_from_spec(spec: TwoPhaseExperimentSpec) -> int:
     return int(spec.set_points_len) * int(np.asarray(spec.phase1_setpoints_y_phys).shape[0])
 
 
-def _repeated_setpoint_steps(setpoints_y_phys: np.ndarray, episodes: int, set_points_len: int) -> np.ndarray:
+def _phase_setpoint_steps(
+    setpoints_y_phys: np.ndarray,
+    episodes: int,
+    set_points_len: int,
+    episode_len: int,
+) -> np.ndarray:
     blocks = [np.repeat(row.reshape(1, -1), int(set_points_len), axis=0) for row in setpoints_y_phys]
     cycle = np.concatenate(blocks, axis=0)
-    return np.concatenate([cycle.copy() for _ in range(int(episodes))], axis=0)
+    if cycle.shape[0] == int(episode_len):
+        episode_cycle = cycle
+    elif len(setpoints_y_phys) == 1:
+        episode_cycle = np.repeat(setpoints_y_phys[0].reshape(1, -1), int(episode_len), axis=0)
+    else:
+        raise ValueError(
+            "phase setpoint cycle length must match episode_len unless the phase has one held setpoint; "
+            f"got cycle length {cycle.shape[0]} and episode_len {episode_len}."
+        )
+    return np.concatenate([episode_cycle.copy() for _ in range(int(episodes))], axis=0)
 
 
 def _phase_indices(spec: TwoPhaseExperimentSpec) -> dict[str, np.ndarray]:
@@ -138,17 +153,20 @@ def build_two_phase_profiles(
 ) -> dict[str, Any]:
     _validate_spec(spec)
     n_inputs = int(n_inputs)
+    episode_len = episode_len_from_spec(spec)
     y_phys = np.vstack(
         [
-            _repeated_setpoint_steps(
+            _phase_setpoint_steps(
                 np.asarray(spec.phase1_setpoints_y_phys, dtype=float),
                 int(spec.phase1_episodes),
                 int(spec.set_points_len),
+                episode_len,
             ),
-            _repeated_setpoint_steps(
+            _phase_setpoint_steps(
                 np.asarray(spec.phase2_setpoints_y_phys, dtype=float),
                 int(spec.phase2_episodes),
                 int(spec.set_points_len),
+                episode_len,
             ),
         ]
     )
@@ -158,7 +176,6 @@ def build_two_phase_profiles(
         data_max[n_inputs:],
     )
     idx = _phase_indices(spec)
-    episode_len = episode_len_from_spec(spec)
     phase1_steps = int(spec.phase1_episodes) * episode_len
     total_steps = y_phys.shape[0]
     phase_windows = [

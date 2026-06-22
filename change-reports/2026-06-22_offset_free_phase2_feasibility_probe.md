@@ -7,8 +7,8 @@ Add a short offset-free MPC runner that tests candidate Phase-2 continuation set
 ## Changes
 
 - Updated `OffsetFreeMPC_DisturbanceRunner.py` from a simple five-episode wrapper into an editable Phase-2 feasibility runner.
-- The runner now executes two episodes with the selected candidate-3 setpoints:
-  - setpoints `[[4.15, 323.0], [3.35, 323.5]]`
+- The runner now executes two episodes with the selected single Phase-2 robustness setpoint:
+  - setpoint `[[3.35, 323.5]]`
   - `set_points_len = 400`
   - total profile length `1600` plant steps
 - The disturbance ramp starts from the planned Phase-1-final values:
@@ -36,5 +36,12 @@ Add a short offset-free MPC runner that tests candidate Phase-2 continuation set
   - original `[[4.4, 321.5], [3.3, 324.5]]`: reward mean `-39.07`, mean output RMSE `0.803`, `Qc` hit the upper bound.
   - candidate 2 `[[4.25, 322.5], [3.35, 323.5]]`: reward mean `-18.60`, mean output RMSE `0.531`, but the second episode still reached the `Qc` upper bound.
   - candidate 3 `[[4.15, 323.0], [3.35, 323.5]]`: reward mean `-12.61`, mean output RMSE `0.427`, and `Qc` remained below the upper bound in both episodes.
+- Updated the Phase-2 robustness design to use only the held setpoint `[[3.35, 323.5]]`, so the continuation phase isolates robustness to the operating-profile/disturbance change instead of adding another setpoint-scheduling challenge.
+- Ran the two-episode single-setpoint OF-MPC probe:
+  - reward mean `-0.918`
+  - mean output RMSE `0.097`
+  - final episode errors approximately `[-0.009, 0.042]`
+  - `Qc` stayed between approximately `385` and `478`, so the previous upper-bound issue was removed.
+- Updated the shared two-phase profile builder so Phase 2 may define one held setpoint while Phase 1 keeps the two-setpoint learning schedule and the full experiment length remains `250 * 800 = 200000` steps.
 
-Candidate 3 is the current selected profile for the root feasibility runner.
+The single-setpoint profile is the current selected profile for the root feasibility runner and the two-phase online/GART runners.
