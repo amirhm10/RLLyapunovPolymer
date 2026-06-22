@@ -45,6 +45,7 @@ OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 STUDY_NAME = "OnlineTD3_TwoPhaseStudy"
 EXPORT_PROFILE = "compact"
 SAVE_PLOTS = True
+DETERMINISTIC_BASELINE_METHODS = {"gart_lmpc"}
 
 AGENT_PATH = Path("results") / "PretrainOFMPC" / "20260621_203346" / "of_mpc_pretrained_td3_20260622_030149.pkl"
 
@@ -112,6 +113,14 @@ def _resolve_methods(value: str | None) -> tuple[str, ...]:
     if unknown:
         raise ValueError(f"Unknown method(s): {unknown}. Known methods: {sorted(known)}")
     return tuple(methods)
+
+
+def _effective_seeds_for_methods(methods: tuple[str, ...], seeds: tuple[int, ...]) -> tuple[int, ...]:
+    if len(seeds) <= 1:
+        return seeds
+    if methods and all(method in DETERMINISTIC_BASELINE_METHODS for method in methods):
+        return (int(seeds[0]),)
+    return seeds
 
 
 def _pretrained_agent_path(agent_path: str | None) -> str:
@@ -460,7 +469,8 @@ def _plot_seed_comparison(seed_root: Path, rows: list[dict[str, Any]]) -> None:
 
 def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
     methods = _resolve_methods(args.methods)
-    seeds = _parse_seed_list(args.seeds, n_seeds=args.n_seeds, seed_start=args.seed_start)
+    requested_seeds = _parse_seed_list(args.seeds, n_seeds=args.n_seeds, seed_start=args.seed_start)
+    seeds = _effective_seeds_for_methods(methods, requested_seeds)
     output_root = Path(args.output_root).expanduser()
     timestamp = args.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
     study_root = output_root / STUDY_NAME / timestamp
@@ -510,6 +520,7 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
         "study_root": str(study_root),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "methods": list(methods),
+        "requested_seeds": list(requested_seeds),
         "seeds": list(seeds),
         "save_plots": bool(args.save_plots),
         "export_profile": str(args.export_profile),

@@ -11,10 +11,12 @@ from RunOnlineTD3TwoPhaseStudy import run_two_phase_study
 # GART-LMPC-only baseline using the same two-phase profile.
 METHOD = "gart_lmpc"
 
-# Paired paper seeds. Use SEEDS = None with N_SEEDS/SEED_START for quick sequential tests.
+# GART-LMPC is deterministic for a fixed profile, so run one reference seed by
+# default. TD3 runners keep the full paired paper seed list.
 PAPER_SEEDS = (42, 7, 19, 73, 101, 203, 307, 401, 557, 809)
-SEEDS: tuple[int, ...] | None = PAPER_SEEDS
-N_SEEDS = len(PAPER_SEEDS)
+REFERENCE_SEED = PAPER_SEEDS[0]
+SEEDS: tuple[int, ...] | None = (REFERENCE_SEED,)
+N_SEEDS = 1
 SEED_START = 0
 
 PHASE1_EPISODES = 150
