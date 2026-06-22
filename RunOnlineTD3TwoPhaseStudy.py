@@ -248,13 +248,15 @@ def _run_td3_method(
     export_profile: str,
     agent_path: str | None,
     reset_pretrained_critic: bool = True,
+    training_phase_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pretrained = method.startswith("ofmpc_pretrained")
-    overrides = {
+    overrides = dict(training_phase_overrides or {})
+    overrides.update({
         "exploration_decay_end_step": int(profile["phase1_steps"]),
         "exploration_decay_mode": "linear",
         "global_exploration_schedule": True,
-    }
+    })
     return run_online_td3_disturbance_preset(
         method,
         episodes=int(profile["total_episodes"]),
@@ -508,6 +510,7 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                         export_profile=str(args.export_profile),
                         agent_path=pretrained_agent_path,
                         reset_pretrained_critic=bool(getattr(args, "reset_pretrained_critic", True)),
+                        training_phase_overrides=getattr(args, "training_phase_overrides", None),
                     )
                 elapsed = time.perf_counter() - tic
                 record = _method_record(

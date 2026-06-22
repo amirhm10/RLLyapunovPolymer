@@ -38,10 +38,12 @@ CRITIC_LR = 5e-4
 
 TARGET_POLICY_SMOOTHING_NOISE_STD = 0.02
 TARGET_POLICY_NOISE_CLIP = 0.04
-EXPLORATION_STD_START = 0.02
+EXPLORATION_STD_START = 0.04
 EXPLORATION_STD_END = 0.005
-BC_EXPLORATION_STD = 0.02
-HANDOFF_EXPLORATION_STD_START = 0.02
+TEACHER_SOURCE = "gart_lmpc"
+TEACHER_CRITIC_WARMUP_EPISODES = 10
+BC_EXPLORATION_STD = 0.04
+HANDOFF_EXPLORATION_STD_START = 0.04
 HANDOFF_EXPLORATION_STD_END = 0.005
 HANDOFF_EPISODES = 10
 
@@ -91,6 +93,7 @@ def _build_args() -> Namespace:
         export_profile=str(EXPORT_PROFILE),
         agent_path=None if AGENT_PATH is None else str(AGENT_PATH),
         reset_pretrained_critic=bool(RESET_PRETRAINED_CRITIC),
+        training_phase_overrides=_training_phase_overrides(),
         phase1_episodes=int(PHASE1_EPISODES),
         phase2_episodes=int(PHASE2_EPISODES),
         set_points_len=int(SET_POINTS_LEN),
@@ -123,6 +126,27 @@ def _apply_td3_defaults() -> None:
     online_runner.PRETRAINED_HANDOFF_EXPLORATION_STD_START = float(HANDOFF_EXPLORATION_STD_START)
     online_runner.PRETRAINED_HANDOFF_EXPLORATION_STD_END = float(HANDOFF_EXPLORATION_STD_END)
     online_runner.PRETRAINED_HANDOFF_EPISODES = int(HANDOFF_EPISODES)
+
+
+def _training_phase_overrides() -> dict:
+    overrides = online_runner.noisy_teacher_critic_warmup_overrides(
+        teacher_source=TEACHER_SOURCE,
+        pretrained=True,
+        teacher_episodes=int(TEACHER_CRITIC_WARMUP_EPISODES),
+        handoff_episodes=int(HANDOFF_EPISODES),
+    )
+    overrides.update(
+        {
+            "bc_exploration_std": float(BC_EXPLORATION_STD),
+            "handoff_exploration_std_start": float(HANDOFF_EXPLORATION_STD_START),
+            "handoff_exploration_std_end": float(HANDOFF_EXPLORATION_STD_END),
+            "full_rl_exploration_std_start": float(EXPLORATION_STD_START),
+            "full_rl_exploration_std_end": float(EXPLORATION_STD_END),
+            "exploration_std_start": float(EXPLORATION_STD_START),
+            "exploration_std_end": float(EXPLORATION_STD_END),
+        }
+    )
+    return overrides
 
 
 def run_configured_study() -> dict:
