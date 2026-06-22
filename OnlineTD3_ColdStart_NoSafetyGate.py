@@ -4,10 +4,7 @@ from pprint import pprint
 
 from utils.gart_defaults import GART_FINAL_LYAP_EPS, GART_FINAL_RHO_LYAP
 from utils.direct_lyapunov_study import DIRECT_DISTURBANCE_N_TESTS
-from utils.online_disturbance_runner import (
-    default_noisy_teacher_critic_warmup_overrides,
-    run_online_td3_disturbance_preset,
-)
+from utils.online_disturbance_runner import run_online_td3_disturbance_preset
 
 # Cold-start online TD3 without active safety intervention.
 #
@@ -22,7 +19,7 @@ SAVE_PLOTS = True
 TIMESTAMP = None
 
 RL_OBSERVATION_MODE = "standard"
-PROJECTION_BACKEND = "mpc_only_diagnostic"
+PROJECTION_BACKEND = "no_diagnostic"
 
 RHO_LYAP = GART_FINAL_RHO_LYAP
 LYAP_EPS = GART_FINAL_LYAP_EPS
@@ -32,10 +29,17 @@ REWARD_FALLBACK_PENALTY_ENABLED = False
 GAMMA_FALLBACK = 0.0
 FALLBACK_EVENT_PENALTY = 0.0
 
-TRAINING_PHASE_OVERRIDES = default_noisy_teacher_critic_warmup_overrides(
-    teacher_source="gart_lmpc",
-    pretrained=False,
-)
+TRAINING_PHASE_OVERRIDES = {
+    "warmup_buffer_only_episodes": 0,
+    "warmup_behavior_source": "policy",
+    "behavior_clone_teacher_episodes": 0,
+    "bc_teacher_policy": "policy",
+    "bc_behavior_source": "policy",
+    "bc_behavior_noise": "none",
+    "handoff_episodes": 0,
+    "handoff_behavior_noise": "none",
+    "full_rl_exploration_space": "input_dev",
+}
 
 
 def run_configured_study() -> dict:

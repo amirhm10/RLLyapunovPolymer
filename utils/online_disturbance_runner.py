@@ -416,6 +416,10 @@ def _normalize_projection_backend_override(value: str | None, *, safety_gate: bo
         return DIRECT_GATE_PROJECTION_BACKEND if safety_gate else MPC_ONLY_DIAGNOSTIC_BACKEND
     backend = str(value).strip().lower()
     aliases = {
+        "legacy": "legacy_augstate",
+        "legacy_augstate": "legacy_augstate",
+        "none": "legacy_augstate",
+        "no_diagnostic": "legacy_augstate",
         "direct_accept_or_fallback": DIRECT_GATE_PROJECTION_BACKEND,
         "direct_gate": DIRECT_GATE_PROJECTION_BACKEND,
         "mpc_only": MPC_ONLY_DIAGNOSTIC_BACKEND,
@@ -426,6 +430,10 @@ def _normalize_projection_backend_override(value: str | None, *, safety_gate: bo
             "Online safety-gate presets no longer support Section-16 QCQP projection. "
             "Use PROJECTION_BACKEND='direct_accept_or_fallback' for GART-LMPC fallback "
             "or 'mpc_only_diagnostic' for no-gate diagnostics."
+        )
+    if aliases[backend] == "legacy_augstate" and safety_gate:
+        raise ValueError(
+            "PROJECTION_BACKEND='legacy_augstate'/'no_diagnostic' is only valid for no-safety-gate presets."
         )
     return aliases[backend]
 
