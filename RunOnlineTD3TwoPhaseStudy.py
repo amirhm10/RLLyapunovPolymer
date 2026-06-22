@@ -247,6 +247,7 @@ def _run_td3_method(
     save_plots: bool,
     export_profile: str,
     agent_path: str | None,
+    reset_pretrained_critic: bool = True,
 ) -> dict[str, Any]:
     pretrained = method.startswith("ofmpc_pretrained")
     overrides = {
@@ -261,7 +262,7 @@ def _run_td3_method(
         seed=int(seed),
         save_plots=bool(save_plots),
         agent_path=agent_path if pretrained else None,
-        reset_pretrained_critic=True,
+        reset_pretrained_critic=bool(reset_pretrained_critic),
         training_phase_overrides=overrides,
         setpoint_profile=profile["setpoint_profile_scaled_dev"],
         disturbance_profile=profile["disturbance_profile"],
@@ -428,14 +429,36 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
     study_root = output_root / STUDY_NAME / timestamp
     study_root.mkdir(parents=True, exist_ok=True)
 
-    spec = TwoPhaseExperimentSpec(
-        phase1_episodes=int(args.phase1_episodes),
-        phase2_episodes=int(args.phase2_episodes),
-        set_points_len=int(args.set_points_len),
-    )
+    spec_kwargs = {
+        "phase1_episodes": int(args.phase1_episodes),
+        "phase2_episodes": int(args.phase2_episodes),
+        "set_points_len": int(args.set_points_len),
+    }
+    for name in (
+        "phase1_setpoints_y_phys",
+        "phase2_setpoints_y_phys",
+        "nominal_qi",
+        "nominal_qs",
+        "nominal_ha",
+        "phase1_qi_multiplier",
+        "phase1_qs_multiplier",
+        "phase1_ha_multiplier",
+        "phase2_qi_multiplier",
+        "phase2_qs_multiplier",
+        "phase2_ha_multiplier",
+    ):
+        if hasattr(args, name):
+            value = getattr(args, name)
+            if value is not None:
+                spec_kwargs[name] = value
+    spec = TwoPhaseExperimentSpec(**spec_kwargs)
     profile = build_profiles_for_study(spec)
     profile_checks = validate_two_phase_profile(profile, spec)
-    pretrained_agent_path = _pretrained_agent_path(args.agent_path)
+    pretrained_agent_path = (
+        _pretrained_agent_path(args.agent_path)
+        if any(method.startswith("ofmpc_pretrained") for method in methods)
+        else (str(resolve_repo_path(args.agent_path)) if args.agent_path else None)
+    )
     profile_export = {
         "profile": jsonable_two_phase_profile(profile),
         "checks": profile_checks,
@@ -484,6 +507,7 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                         save_plots=bool(args.save_plots),
                         export_profile=str(args.export_profile),
                         agent_path=pretrained_agent_path,
+                        reset_pretrained_critic=bool(getattr(args, "reset_pretrained_critic", True)),
                     )
                 elapsed = time.perf_counter() - tic
                 record = _method_record(

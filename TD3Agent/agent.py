@@ -22,6 +22,16 @@ from datetime import datetime
 # ----------------
 # Utilities
 # ----------------
+def _windows_extended_path(path: str) -> str:
+    """Return a Windows long-path-safe version for filesystem calls."""
+    path = os.path.abspath(os.fspath(path))
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 def get_device() -> torch.device:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     return device
@@ -786,7 +796,7 @@ class TD3Agent(nn.Module):
 
 
     def load(self, path: str):
-        with open(path, 'rb') as f:
+        with open(_windows_extended_path(path), 'rb') as f:
             d = pickle.load(f)
 
         self.actor.load_state_dict(d['actor_state_dict'])
@@ -844,7 +854,8 @@ class TD3Agent(nn.Module):
           Extra keys saved here are harmless and simply ignored by that loader.
         - Set `include_optim=True` if you later add a loader that restores optimizers.
         """
-        os.makedirs(directory, exist_ok=True)
+        directory = os.fspath(directory)
+        os.makedirs(_windows_extended_path(directory), exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = os.path.join(directory, f"{prefix}_{timestamp}.pkl")
 
@@ -895,7 +906,7 @@ class TD3Agent(nn.Module):
             payload["actor_optimizer_state_dict"] = self.actor_optimizer.state_dict()
             payload["critic_optimizer_state_dict"] = self.critic_optimizer.state_dict()
 
-        with open(path, "wb") as f:
+        with open(_windows_extended_path(path), "wb") as f:
             pickle.dump(payload, f)
 
         print(f"Saved TD3 checkpoint to: {path}")
