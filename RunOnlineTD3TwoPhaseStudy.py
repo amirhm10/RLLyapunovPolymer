@@ -249,6 +249,14 @@ def _run_td3_method(
     agent_path: str | None,
     reset_pretrained_critic: bool = True,
     training_phase_overrides: dict[str, Any] | None = None,
+    rl_observation_mode: str = "standard",
+    projection_backend: str | None = None,
+    reward_fallback_penalty_enabled: bool = False,
+    gamma_fallback: float = 0.0,
+    fallback_event_penalty: float = 0.0,
+    rho_lyap: float | None = None,
+    lyap_eps: float | None = None,
+    lyap_tol: float | None = None,
 ) -> dict[str, Any]:
     pretrained = method.startswith("ofmpc_pretrained")
     overrides = dict(training_phase_overrides or {})
@@ -265,6 +273,14 @@ def _run_td3_method(
         save_plots=bool(save_plots),
         agent_path=agent_path if pretrained else None,
         reset_pretrained_critic=bool(reset_pretrained_critic),
+        rl_observation_mode=str(rl_observation_mode),
+        projection_backend=projection_backend,
+        reward_fallback_penalty_enabled=bool(reward_fallback_penalty_enabled),
+        gamma_fallback=float(gamma_fallback),
+        fallback_event_penalty=float(fallback_event_penalty),
+        rho_lyap=rho_lyap,
+        lyap_eps=lyap_eps,
+        lyap_tol=lyap_tol,
         training_phase_overrides=overrides,
         setpoint_profile=profile["setpoint_profile_scaled_dev"],
         disturbance_profile=profile["disturbance_profile"],
@@ -511,6 +527,16 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                         agent_path=pretrained_agent_path,
                         reset_pretrained_critic=bool(getattr(args, "reset_pretrained_critic", True)),
                         training_phase_overrides=getattr(args, "training_phase_overrides", None),
+                        rl_observation_mode=str(getattr(args, "rl_observation_mode", "standard")),
+                        projection_backend=getattr(args, "projection_backend", None),
+                        reward_fallback_penalty_enabled=bool(
+                            getattr(args, "reward_fallback_penalty_enabled", False)
+                        ),
+                        gamma_fallback=float(getattr(args, "gamma_fallback", 0.0)),
+                        fallback_event_penalty=float(getattr(args, "fallback_event_penalty", 0.0)),
+                        rho_lyap=getattr(args, "rho_lyap", None),
+                        lyap_eps=getattr(args, "lyap_eps", None),
+                        lyap_tol=getattr(args, "lyap_tol", None),
                     )
                 elapsed = time.perf_counter() - tic
                 record = _method_record(

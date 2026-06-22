@@ -28,6 +28,14 @@ EXPORT_PROFILE = "compact"  # "compact" or "debug"
 
 AGENT_PATH = Path("results") / "PretrainOFMPC" / "20260621_203346" / "of_mpc_pretrained_td3_20260622_030149.pkl"
 RESET_PRETRAINED_CRITIC = True
+RL_OBSERVATION_MODE = "standard"
+PROJECTION_BACKEND = "mpc_only_diagnostic"
+REWARD_FALLBACK_PENALTY_ENABLED = False
+GAMMA_FALLBACK = 0.0
+FALLBACK_EVENT_PENALTY = 0.0
+RHO_LYAP = online_runner.GART_FINAL_RHO_LYAP
+LYAP_EPS = online_runner.GART_FINAL_LYAP_EPS
+LYAP_TOL = None
 
 ACTOR_LAYER_SIZES = (256, 256, 256)
 CRITIC_LAYER_SIZES = (256, 256, 256)
@@ -38,12 +46,12 @@ CRITIC_LR = 5e-4
 
 TARGET_POLICY_SMOOTHING_NOISE_STD = 0.02
 TARGET_POLICY_NOISE_CLIP = 0.04
-EXPLORATION_STD_START = 0.04
+EXPLORATION_STD_START = 0.02
 EXPLORATION_STD_END = 0.005
 TEACHER_SOURCE = "gart_lmpc"
 TEACHER_CRITIC_WARMUP_EPISODES = 10
-BC_EXPLORATION_STD = 0.04
-HANDOFF_EXPLORATION_STD_START = 0.04
+BC_EXPLORATION_STD = 0.02
+HANDOFF_EXPLORATION_STD_START = 0.02
 HANDOFF_EXPLORATION_STD_END = 0.005
 HANDOFF_EPISODES = 10
 
@@ -93,6 +101,14 @@ def _build_args() -> Namespace:
         export_profile=str(EXPORT_PROFILE),
         agent_path=None if AGENT_PATH is None else str(AGENT_PATH),
         reset_pretrained_critic=bool(RESET_PRETRAINED_CRITIC),
+        rl_observation_mode=RL_OBSERVATION_MODE,
+        projection_backend=PROJECTION_BACKEND,
+        reward_fallback_penalty_enabled=bool(REWARD_FALLBACK_PENALTY_ENABLED),
+        gamma_fallback=float(GAMMA_FALLBACK),
+        fallback_event_penalty=float(FALLBACK_EVENT_PENALTY),
+        rho_lyap=float(RHO_LYAP),
+        lyap_eps=float(LYAP_EPS),
+        lyap_tol=LYAP_TOL,
         training_phase_overrides=_training_phase_overrides(),
         phase1_episodes=int(PHASE1_EPISODES),
         phase2_episodes=int(PHASE2_EPISODES),
