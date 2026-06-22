@@ -12,10 +12,11 @@ import utils.online_disturbance_runner as online_runner
 # Cold-start online TD3 without enforcing the safety gate.
 METHOD = "cold_start_no_safety_gate"
 
-# Use SEEDS=(0, 1, 2) to override N_SEEDS/SEED_START.
-N_SEEDS = 1
+# Paired paper seeds. Use SEEDS = None with N_SEEDS/SEED_START for quick sequential tests.
+PAPER_SEEDS = (42, 7, 19, 73, 101, 203, 307, 401, 557, 809)
+SEEDS: tuple[int, ...] | None = PAPER_SEEDS
+N_SEEDS = len(PAPER_SEEDS)
 SEED_START = 0
-SEEDS: tuple[int, ...] | None = None
 
 PHASE1_EPISODES = 200
 PHASE2_EPISODES = 50
