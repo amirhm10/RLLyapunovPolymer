@@ -170,6 +170,40 @@ def _expected_exploration_sigma(*, method: str, step_idx: int, profile: dict[str
     return float(start + (end - start) * frac)
 
 
+def _training_phase_learning_episode_multiplier(profile: dict[str, Any]) -> int:
+    reporting_window_steps = int(profile.get("reporting_window_steps", profile.get("episode_len", 1)))
+    learning_episode_steps = int(profile.get("phase1_episode_len", reporting_window_steps))
+    if reporting_window_steps <= 0 or learning_episode_steps <= 0:
+        return 1
+    if learning_episode_steps % reporting_window_steps != 0:
+        raise ValueError(
+            "phase1_episode_len must be an integer multiple of reporting_window_steps "
+            "to preserve training-phase episode units."
+        )
+    return max(1, learning_episode_steps // reporting_window_steps)
+
+
+def _scale_training_phase_episode_counts(
+    overrides: dict[str, Any],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    scaled = dict(overrides)
+    multiplier = _training_phase_learning_episode_multiplier(profile)
+    if multiplier <= 1:
+        return scaled
+    for key in (
+        "warmup_buffer_only_episodes",
+        "behavior_clone_teacher_episodes",
+        "handoff_episodes",
+    ):
+        if key in scaled and scaled[key] is not None:
+            scaled[key] = int(scaled[key]) * multiplier
+    scaled["configured_learning_episode_steps"] = int(profile.get("phase1_episode_len", 0))
+    scaled["rollout_reporting_window_steps"] = int(profile.get("reporting_window_steps", 0))
+    scaled["learning_episode_to_reporting_window_multiplier"] = int(multiplier)
+    return scaled
+
+
 def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperimentSpec) -> dict[str, Any]:
     phase1_episode_len = episode_len_from_spec(spec)
     phase1_steps = int(spec.phase1_episodes) * phase1_episode_len
@@ -287,7 +321,7 @@ def _run_td3_method(
     lyap_tol: float | None = None,
 ) -> dict[str, Any]:
     pretrained = method.startswith("ofmpc_pretrained")
-    overrides = dict(training_phase_overrides or {})
+    overrides = _scale_training_phase_episode_counts(dict(training_phase_overrides or {}), profile)
     overrides.update({
         "exploration_decay_end_step": int(profile["phase1_steps"]),
         "exploration_decay_mode": "linear",
