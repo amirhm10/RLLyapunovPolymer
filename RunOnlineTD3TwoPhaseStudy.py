@@ -163,7 +163,7 @@ def build_profiles_for_study(spec: TwoPhaseExperimentSpec) -> dict[str, Any]:
 
 def _expected_exploration_sigma(*, method: str, step_idx: int, profile: dict[str, Any]) -> float:
     start = 0.02 if method.startswith("ofmpc_pretrained") else 0.10
-    end = 0.005
+    end = 0.01
     decay_steps = max(1, int(profile["phase1_steps"]))
     if decay_steps <= 1:
         return end
@@ -286,13 +286,13 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
         raise AssertionError(f"phase1 disturbance end mismatch: {observed_d1} != {expected_d1}")
     if not np.allclose(observed_d2, expected_d2):
         raise AssertionError(f"phase2 disturbance end mismatch: {observed_d2} != {expected_d2}")
-    if not np.isclose(checks["pretrained_exploration_sigma_at_phase1_end"], 0.005):
-        raise AssertionError("pretrained exploration does not reach 0.005 at Phase-1 end.")
-    if not np.isclose(checks["pretrained_exploration_sigma_after_phase1"], 0.005):
+    if not np.isclose(checks["pretrained_exploration_sigma_at_phase1_end"], 0.01):
+        raise AssertionError("pretrained exploration does not reach 0.01 at Phase-1 end.")
+    if not np.isclose(checks["pretrained_exploration_sigma_after_phase1"], 0.01):
         raise AssertionError("pretrained exploration is not fixed after Phase 1.")
-    if not np.isclose(checks["cold_start_exploration_sigma_at_phase1_end"], 0.005):
-        raise AssertionError("cold-start exploration does not reach 0.005 at Phase-1 end.")
-    if not np.isclose(checks["cold_start_exploration_sigma_after_phase1"], 0.005):
+    if not np.isclose(checks["cold_start_exploration_sigma_at_phase1_end"], 0.01):
+        raise AssertionError("cold-start exploration does not reach 0.01 at Phase-1 end.")
+    if not np.isclose(checks["cold_start_exploration_sigma_after_phase1"], 0.01):
         raise AssertionError("cold-start exploration is not fixed after Phase 1.")
     return checks
 

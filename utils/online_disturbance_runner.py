@@ -129,7 +129,7 @@ MAX_ACTION = 1.0
 POLICY_DELAY = 2
 BATCH_SIZE = 256
 STD_START = 0.0
-STD_END = 0.005
+STD_END = 0.01
 STD_DECAY_RATE = 0.99992
 STD_DECAY_MODE = "exp"
 
@@ -139,13 +139,13 @@ PRETRAINED_NOISE_CLIP = 0.04
 COLD_START_NOISE_CLIP = 0.2
 PRETRAINED_EXPLORATION_STD_START = 0.02
 COLD_START_EXPLORATION_STD_START = 0.1
-GLOBAL_EXPLORATION_STD_END = 0.005
+GLOBAL_EXPLORATION_STD_END = 0.01
 PRETRAINED_BC_EXPLORATION_STD = 0.02
 COLD_START_BC_EXPLORATION_STD = 0.1
 PRETRAINED_HANDOFF_EXPLORATION_STD_START = 0.02
-PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.005
+PRETRAINED_HANDOFF_EXPLORATION_STD_END = 0.01
 COLD_START_HANDOFF_EXPLORATION_STD_START = 0.1
-COLD_START_HANDOFF_EXPLORATION_STD_END = 0.005
+COLD_START_HANDOFF_EXPLORATION_STD_END = 0.01
 DEFAULT_RESET_PRETRAINED_CRITIC = True
 
 WARMUP_EPISODES = 0
@@ -716,15 +716,15 @@ def _build_reward(
         data_max=data_max,
         n_inputs=n_inputs,
         k_rel=np.array([0.0015, 0.00015], dtype=float),
-        band_floor_phys=np.array([0.006, 0.08], dtype=float),
+        band_floor_phys=np.array([0.005, 0.07], dtype=float),
         Q_diag=QY_REWARD_DIAG,
         R_diag=RDU_REWARD_DIAG,
         tau_frac=0.5,
         gamma_out=1.0,
-        gamma_in=3.0,
+        gamma_in=5.0,
         beta=5.0,
         gate="geom",
-        lam_in=3.0,
+        lam_in=5.0,
         bonus_kind="quadratic",
         gamma_fallback=gamma_fallback,
         fallback_event_penalty=fallback_event_penalty,
