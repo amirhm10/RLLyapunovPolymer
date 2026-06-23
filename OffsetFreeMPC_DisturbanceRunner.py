@@ -13,23 +13,25 @@ from utils.two_phase_profiles import (
 )
 
 
-# Offset-free MPC feasibility probe for the proposed Phase-2 profile.
-# This runs only the Phase-2 setpoint schedule and disturbance ramp so you can
-# quickly check whether plain OF-MPC can handle the continuation scenario.
+# Offset-free MPC feasibility probe for the online Phase-2 profile.
+# This runs only the Phase-2 continuation disturbance ramp, but uses the same
+# two-setpoint cycle and 800-sample reporting episode as the online runners.
 
-PHASE2_STEPS = 10000
 PHASE1_SETPOINT_HOLD_STEPS = 400
-REPORTING_WINDOW_STEPS = 400
+REPORTING_WINDOW_STEPS = 800
+PHASE2_EPISODES = 50
+PHASE2_STEPS = PHASE2_EPISODES * REPORTING_WINDOW_STEPS
 SEED = 123
 SAVE_PLOTS = True
 
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 STUDY_NAME = "OffsetFreeMPC_Phase2Feasibility"
-CASE_NAME = "offset_free_mpc_phase2_single_setpoint"
+CASE_NAME = "offset_free_mpc_phase2_online_setpoint_cycle"
 TIMESTAMP = None
 
 PHASE2_SETPOINTS_Y_PHYS = (
-    (3.3, 323.),
+    (4.5, 324.0),
+    (3.4, 321.0),
 )
 
 NOMINAL_QI = 108.0
@@ -49,7 +51,8 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
     context = build_disturbance_context()
     spec = TwoPhaseExperimentSpec(
         phase1_episodes=1,
-        phase2_steps=int(PHASE2_STEPS),
+        phase2_episodes=int(PHASE2_EPISODES),
+        phase2_steps=None,
         set_points_len=int(PHASE1_SETPOINT_HOLD_STEPS),
         reporting_window_steps=int(REPORTING_WINDOW_STEPS),
         phase2_setpoints_y_phys=np.asarray(PHASE2_SETPOINTS_Y_PHYS, dtype=float),
@@ -87,6 +90,7 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
     rollout_set_points_len = int(REPORTING_WINDOW_STEPS // scenario_len)
     metadata = {
         "probe": "phase2_only_feasibility",
+        "phase2_episodes": int(PHASE2_EPISODES),
         "phase2_steps": int(PHASE2_STEPS),
         "reporting_window_steps": int(REPORTING_WINDOW_STEPS),
         "rollout_n_tests": int(rollout_n_tests),
@@ -103,6 +107,7 @@ def _phase2_probe_profiles() -> tuple[np.ndarray, dict[str, np.ndarray], dict]:
 def run_configured_study() -> dict:
     setpoint_profile, disturbance_profile, metadata = _phase2_probe_profiles()
     config = {
+        "phase2_episodes": int(PHASE2_EPISODES),
         "phase2_steps": int(PHASE2_STEPS),
         "reporting_window_steps": int(REPORTING_WINDOW_STEPS),
         "rollout_n_tests": int(metadata["rollout_n_tests"]),
