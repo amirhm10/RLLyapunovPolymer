@@ -19,16 +19,16 @@ N_SEEDS = 10
 SEED_START = 0
 
 PHASE1_EPISODES = 150
-PHASE2_STEPS = 10000
+PHASE2_EPISODES = 50
 PHASE1_SETPOINT_HOLD_STEPS = 400
-REPORTING_WINDOW_STEPS = 400
+REPORTING_WINDOW_STEPS = 800
 
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 TIMESTAMP = None
 SAVE_PLOTS = True
 EXPORT_PROFILE = "compact"  # "compact" or "debug"
 
-AGENT_PATH = Path("results") / "PretrainOFMPC" / "20260621_203346" / "of_mpc_pretrained_td3_20260622_030149.pkl"
+AGENT_PATH = Path("Data") / "agent_2507171027.pkl"
 RESET_PRETRAINED_CRITIC = True
 RL_OBSERVATION_MODE = "standard"
 PROJECTION_BACKEND = "direct_accept_or_fallback"
@@ -39,8 +39,8 @@ RHO_LYAP = online_runner.GART_FINAL_RHO_LYAP
 LYAP_EPS = online_runner.GART_FINAL_LYAP_EPS
 LYAP_TOL = None
 
-ACTOR_LAYER_SIZES = (256, 256, 256)
-CRITIC_LAYER_SIZES = (256, 256, 256)
+ACTOR_LAYER_SIZES = (512, 512, 512, 512, 512)
+CRITIC_LAYER_SIZES = (512, 512, 512, 512, 512)
 REPLAY_BUFFER_CAPACITY = 80000
 BATCH_SIZE = 256
 ACTOR_LR = 5e-5
@@ -62,7 +62,8 @@ PHASE1_SETPOINTS_Y_PHYS = (
     (3.4, 321.0),
 )
 PHASE2_SETPOINTS_Y_PHYS = (
-    (3.3, 323.0),
+    (4.5, 324.0),
+    (3.4, 321.0),
 )
 
 NOMINAL_QI = 108.0
@@ -112,7 +113,8 @@ def _build_args() -> Namespace:
         lyap_tol=LYAP_TOL,
         training_phase_overrides=_training_phase_overrides(),
         phase1_episodes=int(PHASE1_EPISODES),
-        phase2_steps=int(PHASE2_STEPS),
+        phase2_episodes=int(PHASE2_EPISODES),
+        phase2_steps=None,
         set_points_len=int(PHASE1_SETPOINT_HOLD_STEPS),
         reporting_window_steps=int(REPORTING_WINDOW_STEPS),
         phase1_setpoints_y_phys=PHASE1_SETPOINTS_Y_PHYS,

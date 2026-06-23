@@ -19,9 +19,9 @@ N_SEEDS = 1
 SEED_START = 0
 
 PHASE1_EPISODES = 150
-PHASE2_STEPS = 10000
+PHASE2_EPISODES = 50
 PHASE1_SETPOINT_HOLD_STEPS = 400
-REPORTING_WINDOW_STEPS = 400
+REPORTING_WINDOW_STEPS = 800
 
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
 TIMESTAMP = None
@@ -35,7 +35,8 @@ PHASE1_SETPOINTS_Y_PHYS = (
     (3.4, 321.0),
 )
 PHASE2_SETPOINTS_Y_PHYS = (
-    (3.3, 323.0),
+    (4.5, 324.0),
+    (3.4, 321.0),
 )
 
 NOMINAL_QI = 108.0
@@ -75,7 +76,8 @@ def _build_args() -> Namespace:
         export_profile=str(EXPORT_PROFILE),
         agent_path=None if AGENT_PATH is None else str(AGENT_PATH),
         phase1_episodes=int(PHASE1_EPISODES),
-        phase2_steps=int(PHASE2_STEPS),
+        phase2_episodes=int(PHASE2_EPISODES),
+        phase2_steps=None,
         set_points_len=int(PHASE1_SETPOINT_HOLD_STEPS),
         reporting_window_steps=int(REPORTING_WINDOW_STEPS),
         phase1_setpoints_y_phys=PHASE1_SETPOINTS_Y_PHYS,

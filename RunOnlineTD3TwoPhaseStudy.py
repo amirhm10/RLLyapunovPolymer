@@ -28,6 +28,7 @@ from utils.two_phase_profiles import (
     build_two_phase_profiles,
     episode_len_from_spec,
     jsonable_two_phase_profile,
+    phase2_steps_from_spec,
 )
 
 
@@ -47,7 +48,7 @@ EXPORT_PROFILE = "compact"
 SAVE_PLOTS = True
 DETERMINISTIC_BASELINE_METHODS = {"gart_lmpc"}
 
-AGENT_PATH = Path("results") / "PretrainOFMPC" / "20260621_203346" / "of_mpc_pretrained_td3_20260622_030149.pkl"
+AGENT_PATH = Path("Data") / "agent_2507171027.pkl"
 
 
 def _jsonable(value: Any) -> Any:
@@ -219,6 +220,8 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
         "rollout_set_points_len": int(profile["rollout_set_points_len"]),
         "phase1_steps": int(phase1_steps),
         "phase1_learning_episodes": int(spec.phase1_episodes),
+        "phase2_steps": int(phase2_steps_from_spec(spec)),
+        "phase2_episodes": None if spec.phase2_episodes is None else int(spec.phase2_episodes),
         "setpoint_switch_report_window": int(profile["phase1_reporting_windows"]) + 1,
         "setpoint_switch_step": int(phase1_steps),
         "pretrained_exploration_sigma_at_phase1_end": _expected_exploration_sigma(
@@ -512,14 +515,17 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
 
     spec_kwargs = {
         "phase1_episodes": int(args.phase1_episodes),
-        "phase2_steps": int(args.phase2_steps),
         "set_points_len": int(args.set_points_len),
         "reporting_window_steps": int(args.reporting_window_steps),
     }
+    if getattr(args, "phase2_steps", None) is not None:
+        spec_kwargs["phase2_steps"] = int(args.phase2_steps)
+        spec_kwargs["phase2_episodes"] = None
+    else:
+        spec_kwargs["phase2_episodes"] = int(args.phase2_episodes)
     for name in (
         "phase1_setpoints_y_phys",
         "phase2_setpoints_y_phys",
-        "phase2_steps",
         "reporting_window_steps",
         "nominal_qi",
         "nominal_qs",
@@ -668,9 +674,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export-profile", choices=("compact", "debug"), default=EXPORT_PROFILE)
     parser.add_argument("--agent-path", default=None)
     parser.add_argument("--phase1-episodes", type=int, default=150)
-    parser.add_argument("--phase2-steps", type=int, default=10000)
+    parser.add_argument("--phase2-episodes", type=int, default=50)
+    parser.add_argument(
+        "--phase2-steps",
+        type=int,
+        default=None,
+        help="Optional fixed Phase-2 duration; overrides --phase2-episodes.",
+    )
     parser.add_argument("--set-points-len", type=int, default=400, help="Phase-1 hold time per setpoint.")
-    parser.add_argument("--reporting-window-steps", type=int, default=400)
+    parser.add_argument("--reporting-window-steps", type=int, default=800)
     return parser
 
 
@@ -679,8 +691,12 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     args = parser.parse_args(argv)
     if args.n_seeds <= 0:
         raise ValueError("--n-seeds must be positive.")
-    if args.phase1_episodes <= 0 or args.phase2_steps <= 0:
-        raise ValueError("phase1_episodes and phase2_steps must be positive.")
+    if args.phase1_episodes <= 0:
+        raise ValueError("phase1_episodes must be positive.")
+    if args.phase2_steps is not None and args.phase2_steps <= 0:
+        raise ValueError("phase2_steps must be positive when provided.")
+    if args.phase2_steps is None and args.phase2_episodes <= 0:
+        raise ValueError("phase2_episodes must be positive when phase2_steps is not provided.")
     if args.set_points_len <= 0:
         raise ValueError("--set-points-len must be positive.")
     if args.reporting_window_steps <= 0:

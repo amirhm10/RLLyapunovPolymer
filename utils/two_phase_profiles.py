@@ -18,7 +18,8 @@ PHASE1_SETPOINT_Y_PHYS = np.array(
 
 PHASE2_SETPOINT_Y_PHYS = np.array(
     [
-        [3.3, 323.0],
+        [4.5, 324.0],
+        [3.4, 321.0],
     ],
     dtype=float,
 )
@@ -27,9 +28,10 @@ PHASE2_SETPOINT_Y_PHYS = np.array(
 @dataclass(frozen=True)
 class TwoPhaseExperimentSpec:
     phase1_episodes: int = 150
-    phase2_steps: int = 10000
+    phase2_episodes: int | None = 50
+    phase2_steps: int | None = None
     set_points_len: int = 400
-    reporting_window_steps: int = 400
+    reporting_window_steps: int = 800
     phase1_setpoints_y_phys: np.ndarray = field(default_factory=lambda: PHASE1_SETPOINT_Y_PHYS.copy())
     phase2_setpoints_y_phys: np.ndarray = field(default_factory=lambda: PHASE2_SETPOINT_Y_PHYS.copy())
     nominal_qi: float = 108.0
@@ -41,14 +43,19 @@ class TwoPhaseExperimentSpec:
     phase2_qi_multiplier: float = 1.05
     phase2_qs_multiplier: float = 0.95
     phase2_ha_multiplier: float = 0.88
-    phase2_episodes: int | None = None
 
 
 def _validate_spec(spec: TwoPhaseExperimentSpec) -> None:
     if int(spec.phase1_episodes) <= 0:
         raise ValueError("phase1_episodes must be positive.")
-    if int(spec.phase2_steps) <= 0:
-        raise ValueError("phase2_steps must be positive.")
+    if spec.phase2_episodes is None and spec.phase2_steps is None:
+        raise ValueError("Either phase2_episodes or phase2_steps must be provided.")
+    if spec.phase2_episodes is not None and spec.phase2_steps is not None:
+        raise ValueError("Use either phase2_episodes or phase2_steps, not both.")
+    if spec.phase2_episodes is not None and int(spec.phase2_episodes) <= 0:
+        raise ValueError("phase2_episodes must be positive when provided.")
+    if spec.phase2_steps is not None and int(spec.phase2_steps) <= 0:
+        raise ValueError("phase2_steps must be positive when provided.")
     if int(spec.set_points_len) <= 0:
         raise ValueError("set_points_len must be positive.")
     if int(spec.reporting_window_steps) <= 0:
@@ -72,7 +79,9 @@ def episode_len_from_spec(spec: TwoPhaseExperimentSpec) -> int:
 
 def phase2_steps_from_spec(spec: TwoPhaseExperimentSpec) -> int:
     _validate_spec(spec)
-    return int(spec.phase2_steps)
+    if spec.phase2_steps is not None:
+        return int(spec.phase2_steps)
+    return int(spec.phase2_episodes) * episode_len_from_spec(spec)
 
 
 def _phase_setpoint_steps(
@@ -205,7 +214,14 @@ def build_two_phase_profiles(
                 int(spec.set_points_len),
                 phase1_episode_len,
             ),
-            _fixed_duration_setpoint_steps(
+            _phase_setpoint_steps(
+                np.asarray(spec.phase2_setpoints_y_phys, dtype=float),
+                int(spec.phase2_episodes),
+                int(spec.set_points_len),
+                phase1_episode_len,
+            )
+            if spec.phase2_episodes is not None
+            else _fixed_duration_setpoint_steps(
                 np.asarray(spec.phase2_setpoints_y_phys, dtype=float),
                 int(phase2_steps),
                 int(spec.set_points_len),
@@ -278,6 +294,7 @@ def build_two_phase_profiles(
         "total_episodes": int(total_reporting_windows),
         "total_reporting_windows": int(total_reporting_windows),
         "phase1_episodes": int(spec.phase1_episodes),
+        "phase2_episodes": None if spec.phase2_episodes is None else int(spec.phase2_episodes),
         "phase1_episode_len": int(phase1_episode_len),
         "phase1_reporting_windows": int(phase1_reporting_windows),
         "phase2_steps": int(phase2_steps),
