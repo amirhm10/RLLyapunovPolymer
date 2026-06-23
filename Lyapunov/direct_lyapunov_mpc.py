@@ -3918,7 +3918,7 @@ def save_direct_lyapunov_debug_artifacts(
         plot_direct_lyapunov_bundle(
             bundle,
             os.path.join(out_dir, "plots"),
-            paper_style=(export_profile == "compact"),
+            paper_style=False,
         )
         if save_paper_plots:
             plot_direct_lyapunov_bundle(

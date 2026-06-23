@@ -3923,7 +3923,7 @@ def save_safety_filter_debug_artifacts(
         plot_safety_filter_bundle(
             bundle,
             os.path.join(out_dir, "plots"),
-            paper_style=(export_profile == "compact"),
+            paper_style=False,
         )
 
     return out_dir
