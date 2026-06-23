@@ -15,11 +15,12 @@ METHOD = "cold_start_no_safety_gate"
 # Sequential paired seeds. With N_SEEDS = 5 this runs seeds 0, 1, 2, 3, 4.
 # Set SEEDS = (123,) or another explicit tuple only for a targeted debug run.
 SEEDS: tuple[int, ...] | None = None
-N_SEEDS = 10
+N_SEEDS = 1
 SEED_START = 0
 
 PHASE1_EPISODES = 150
 PHASE2_EPISODES = 50
+# One reporting episode is the full two-setpoint cycle: 2 * 400 = 800 samples.
 PHASE1_SETPOINT_HOLD_STEPS = 400
 REPORTING_WINDOW_STEPS = 800
 
