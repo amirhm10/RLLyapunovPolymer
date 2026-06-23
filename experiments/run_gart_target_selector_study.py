@@ -222,13 +222,13 @@ def _build_context(
         data_max=data_max,
         n_inputs=n_inputs,
         k_rel=np.array([0.0015, 0.00015], dtype=float),
-        band_floor_phys=np.array([0.003, 0.035], dtype=float),
+        band_floor_phys=np.array([0.004, 0.06], dtype=float),
         Q_diag=QY_REWARD_DIAG,
         R_diag=RDU_REWARD_DIAG,
         tau_frac=0.5,
         gamma_out=1.0,
         gamma_in=3.0,
-        beta=1.0,
+        beta=5.0,
         gate="geom",
         lam_in=3.0,
         bonus_kind="quadratic",
@@ -559,7 +559,13 @@ def run_gart_closed_loop_case(
         xhatdhat[:, step_idx + 1] = xhat_next_openloop + observer_correction
 
         y_sp_phys = reverse_min_max(y_sp_k + y_ss_scaled, data_min[n_inputs:], data_max[n_inputs:])
-        reward = ctx["reward_fn"](delta_y, delta_u, y_sp_phys)
+        reward_components = ctx["reward_fn"](
+            delta_y,
+            delta_u,
+            y_sp_phys,
+            return_components=True,
+        )
+        reward = float(reward_components["reward"])
         rewards[step_idx] = reward
         delta_y_storage.append(delta_y.copy())
         delta_u_storage.append(delta_u.copy())
@@ -613,9 +619,13 @@ def run_gart_closed_loop_case(
                 "observer_correction": observer_correction.copy(),
                 "xhat_next": xhatdhat[:, step_idx + 1].copy(),
                 "reward": float(reward),
-                "reward_base": float(reward),
-                "reward_no_penalty": float(reward),
-                "reward_augmented": float(reward),
+                "reward_base": float(reward_components.get("reward_base", reward)),
+                "reward_no_penalty": float(reward_components.get("reward_no_penalty", reward)),
+                "reward_augmented": float(reward_components.get("reward", reward)),
+                "reward_tracking_cost": reward_components.get("tracking_cost"),
+                "reward_move_cost": reward_components.get("move_cost"),
+                "reward_bonus": reward_components.get("bonus"),
+                "reward_w_in": reward_components.get("w_in"),
                 "y_sp_scaled_0": float(y_sp_k[0]),
                 "y_sp_scaled_1": float(y_sp_k[1]) if y_sp_k.size > 1 else None,
                 "y_sp_phys_0": float(y_sp_phys[0]),
