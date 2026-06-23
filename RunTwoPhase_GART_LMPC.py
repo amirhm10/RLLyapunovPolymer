@@ -12,9 +12,8 @@ from RunOnlineTD3TwoPhaseStudy import run_two_phase_study
 METHOD = "gart_lmpc"
 
 # GART-LMPC is deterministic for a fixed profile, so run one reference seed by
-# default. TD3 runners keep the full paired paper seed list.
-PAPER_SEEDS = (42, 7, 19, 73, 101, 203, 307, 401, 557, 809)
-REFERENCE_SEED = PAPER_SEEDS[0]
+# default. TD3 runners use sequential paired seeds from SEED_START.
+REFERENCE_SEED = 0
 SEEDS: tuple[int, ...] | None = (REFERENCE_SEED,)
 N_SEEDS = 1
 SEED_START = 0

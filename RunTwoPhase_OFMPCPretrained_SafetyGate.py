@@ -12,10 +12,10 @@ import utils.online_disturbance_runner as online_runner
 # OF-MPC-pretrained online TD3 with active GART-LMPC safety gate.
 METHOD = "ofmpc_pretrained_safety_gate"
 
-# Paired paper seeds. Use SEEDS = None with N_SEEDS/SEED_START for quick sequential tests.
-PAPER_SEEDS = (42, 7, 19, 73, 101, 203, 307, 401, 557, 809)
-SEEDS: tuple[int, ...] | None = PAPER_SEEDS
-N_SEEDS = len(PAPER_SEEDS)
+# Sequential paired seeds. With N_SEEDS = 5 this runs seeds 0, 1, 2, 3, 4.
+# Set SEEDS = (123,) or another explicit tuple only for a targeted debug run.
+SEEDS: tuple[int, ...] | None = None
+N_SEEDS = 10
 SEED_START = 0
 
 PHASE1_EPISODES = 150
