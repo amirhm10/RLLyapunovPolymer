@@ -12,10 +12,10 @@ import utils.online_disturbance_runner as online_runner
 # OF-MPC-pretrained online TD3 without enforcing the safety gate.
 METHOD = "ofmpc_pretrained_no_safety_gate"
 
-# Sequential paired seeds. With N_SEEDS = 5 this runs seeds 0, 1, 2, 3, 4.
+# Sequential paired seeds. With N_SEEDS = 10 this runs seeds 0 through 9.
 # Set SEEDS = (123,) or another explicit tuple only for a targeted debug run.
 SEEDS: tuple[int, ...] | None = None
-N_SEEDS = 5
+N_SEEDS = 10
 SEED_START = 0
 
 PHASE1_EPISODES = 150
@@ -75,9 +75,9 @@ PHASE1_QI_MULTIPLIER = 0.95
 PHASE1_QS_MULTIPLIER = 1.05
 PHASE1_HA_MULTIPLIER = 0.92
 
-PHASE2_QI_MULTIPLIER = 1.05
-PHASE2_QS_MULTIPLIER = 0.95
-PHASE2_HA_MULTIPLIER = 0.88
+PHASE2_QI_MULTIPLIER = 1.02
+PHASE2_QS_MULTIPLIER = 0.97
+PHASE2_HA_MULTIPLIER = 0.90
 
 
 def _seed_arg() -> str | None:

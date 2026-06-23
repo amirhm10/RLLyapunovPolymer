@@ -40,9 +40,9 @@ class TwoPhaseExperimentSpec:
     phase1_qi_multiplier: float = 0.95
     phase1_qs_multiplier: float = 1.05
     phase1_ha_multiplier: float = 0.92
-    phase2_qi_multiplier: float = 1.05
-    phase2_qs_multiplier: float = 0.95
-    phase2_ha_multiplier: float = 0.88
+    phase2_qi_multiplier: float = 1.02
+    phase2_qs_multiplier: float = 0.97
+    phase2_ha_multiplier: float = 0.90
 
 
 def _validate_spec(spec: TwoPhaseExperimentSpec) -> None:
