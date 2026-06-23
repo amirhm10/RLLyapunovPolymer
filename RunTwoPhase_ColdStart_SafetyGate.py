@@ -15,7 +15,7 @@ METHOD = "cold_start_safety_gate"
 # Sequential paired seeds. With N_SEEDS = 5 this runs seeds 0, 1, 2, 3, 4.
 # Set SEEDS = (123,) or another explicit tuple only for a targeted debug run.
 SEEDS: tuple[int, ...] | None = None
-N_SEEDS = 1
+N_SEEDS = 5
 SEED_START = 0
 
 PHASE1_EPISODES = 150
