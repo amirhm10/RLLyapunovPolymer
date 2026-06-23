@@ -222,7 +222,7 @@ def _build_context(
         data_max=data_max,
         n_inputs=n_inputs,
         k_rel=np.array([0.0015, 0.00015], dtype=float),
-        band_floor_phys=np.array([0.004, 0.06], dtype=float),
+        band_floor_phys=np.array([0.006, 0.08], dtype=float),
         Q_diag=QY_REWARD_DIAG,
         R_diag=RDU_REWARD_DIAG,
         tau_frac=0.5,
