@@ -35,11 +35,26 @@ CASE_NAME = "offset_free_mpc_phase2_online_setpoint_cycle"
 TIMESTAMP = None
 
 SEARCH_OUTPUT_ROOT = Path("results")
-SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointSearch"
-SEARCH_CASE_PREFIX = "setpoint"
-SEARCH_EPISODES = 2
+SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointCycleSearch"
+SEARCH_CASE_PREFIX = "cycle"
+SEARCH_PROFILE_MODE = "cycle"  # "cycle" or "held"
+SEARCH_EPISODES = 3
 SEARCH_SAVE_PLOTS = False
 SEARCH_TAIL_STEPS = 400
+SETTLING_TAIL_STEPS = 100
+SETTLING_BAND_PHYS = np.array([0.05, 0.30], dtype=float)
+SEARCH_CYCLES_Y_PHYS = (
+    ((4.5, 324.0), (3.4, 321.0)),
+    ((4.5, 324.0), (3.35, 323.5)),
+    ((4.5, 324.0), (3.3, 324.5)),
+    ((4.6, 321.0), (3.35, 323.5)),
+    ((4.4, 321.5), (3.3, 324.5)),
+    ((4.0, 320.5), (3.35, 323.5)),
+    ((4.25, 322.5), (3.1, 323.0)),
+    ((4.6, 321.0), (3.2, 324.5)),
+    ((4.4, 321.5), (3.1, 323.0)),
+    ((4.0, 320.5), (3.3, 324.5)),
+)
 SEARCH_SETPOINTS_Y_PHYS = (
     (4.5, 324.0),
     (3.4, 321.0),
@@ -144,6 +159,15 @@ def _setpoint_case_name(index: int, y_phys: np.ndarray) -> str:
     )
 
 
+def _cycle_case_name(index: int, y_cycle_phys: np.ndarray) -> str:
+    y_cycle_phys = np.asarray(y_cycle_phys, dtype=float)
+    labels = [
+        f"eta{_slug_number(float(row[0]))}_T{_slug_number(float(row[1]))}"
+        for row in y_cycle_phys
+    ]
+    return f"{SEARCH_CASE_PREFIX}_{int(index):02d}_" + "_to_".join(labels)
+
+
 def _safe_nanmean(values) -> float:
     arr = np.asarray(values, dtype=float)
     if arr.size == 0 or not np.any(np.isfinite(arr)):
@@ -183,9 +207,14 @@ def _tail_step_motion(values) -> tuple[float, float]:
 
 def _sign_change_count(values, *, eps: float = 1.0e-8) -> int:
     tail = _tail_window(values)
-    if tail.ndim != 2 or tail.shape[0] <= 2:
+    return _sign_change_count_matrix(tail, eps=eps)
+
+
+def _sign_change_count_matrix(values, *, eps: float = 1.0e-8) -> int:
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] <= 2:
         return 0
-    du = np.diff(tail, axis=0)
+    du = np.diff(arr, axis=0)
     total = 0
     for col in range(du.shape[1]):
         signs = np.sign(du[:, col])
@@ -194,6 +223,75 @@ def _sign_change_count(values, *, eps: float = 1.0e-8) -> int:
         if nonzero.size > 1:
             total += int(np.sum(nonzero[1:] * nonzero[:-1] < 0.0))
     return total
+
+
+def _cycle_settling_metrics(
+    *,
+    y_err_phys: np.ndarray,
+    y_output_phys: np.ndarray,
+    u_apply_dev: np.ndarray,
+    block_steps: int,
+    tail_steps: int,
+    settling_band_phys: np.ndarray,
+) -> dict[str, float | int]:
+    y_err_phys = np.asarray(y_err_phys, dtype=float)
+    y_output_phys = np.asarray(y_output_phys, dtype=float)
+    u_apply_dev = np.asarray(u_apply_dev, dtype=float)
+    block_steps = int(block_steps)
+    tail_steps = int(tail_steps)
+    if y_err_phys.ndim != 2 or y_err_phys.shape[0] == 0 or block_steps <= 0:
+        return {
+            "cycle_blocks": 0,
+            "cycle_nonsettled_blocks": 0,
+            "cycle_tail_error_norm_mean": float("nan"),
+            "cycle_tail_error_norm_max": float("nan"),
+            "cycle_final_error_norm_mean": float("nan"),
+            "cycle_final_error_norm_max": float("nan"),
+            "cycle_output_sign_changes": 0,
+            "cycle_input_sign_changes": 0,
+            "cycle_tail_output_motion_mean": float("nan"),
+            "cycle_tail_output_motion_max": float("nan"),
+        }
+
+    band = np.asarray(settling_band_phys, dtype=float).reshape(1, -1)
+    band = np.maximum(band, 1.0e-12)
+    n_blocks = int(y_err_phys.shape[0] // block_steps)
+    tail_norms = []
+    final_norms = []
+    output_motion = []
+    output_sign_changes = 0
+    input_sign_changes = 0
+
+    for block_idx in range(n_blocks):
+        start = int(block_idx * block_steps)
+        stop = int(min((block_idx + 1) * block_steps, y_err_phys.shape[0]))
+        tail_start = max(start, stop - tail_steps)
+        err_tail = np.abs(y_err_phys[tail_start:stop, :]) / band
+        if err_tail.size:
+            tail_norms.append(float(np.nanmean(np.nanmax(err_tail, axis=1))))
+            final_norms.append(float(np.nanmax(err_tail[-1, :])))
+        y_tail = y_output_phys[tail_start:stop, :] if y_output_phys.ndim == 2 else np.empty((0, 2))
+        u_tail = u_apply_dev[tail_start:stop, :] if u_apply_dev.ndim == 2 else np.empty((0, 2))
+        output_sign_changes += _sign_change_count_matrix(y_tail)
+        input_sign_changes += _sign_change_count_matrix(u_tail)
+        if y_tail.shape[0] > 1:
+            output_motion.extend(_row_inf_norm(np.diff(y_tail, axis=0)).tolist())
+
+    tail_norms_arr = np.asarray(tail_norms, dtype=float)
+    final_norms_arr = np.asarray(final_norms, dtype=float)
+    output_motion_arr = np.asarray(output_motion, dtype=float)
+    return {
+        "cycle_blocks": int(n_blocks),
+        "cycle_nonsettled_blocks": int(np.nansum(tail_norms_arr > 1.0)),
+        "cycle_tail_error_norm_mean": _safe_nanmean(tail_norms_arr),
+        "cycle_tail_error_norm_max": _safe_nanmax(tail_norms_arr),
+        "cycle_final_error_norm_mean": _safe_nanmean(final_norms_arr),
+        "cycle_final_error_norm_max": _safe_nanmax(final_norms_arr),
+        "cycle_output_sign_changes": int(output_sign_changes),
+        "cycle_input_sign_changes": int(input_sign_changes),
+        "cycle_tail_output_motion_mean": _safe_nanmean(output_motion_arr),
+        "cycle_tail_output_motion_max": _safe_nanmax(output_motion_arr),
+    }
 
 
 def _load_json(path: Path) -> dict:
@@ -207,11 +305,14 @@ def _search_record_from_debug_dir(*, debug_dir: str | Path, case_name: str, y_ph
     with np.load(debug_path / "arrays.npz") as data:
         arrays = {name: data[name].copy() for name in data.files}
 
+    y_phys = np.asarray(y_phys, dtype=float)
     u_apply = arrays.get("u_apply_dev_store", np.empty((0, 2)))
     u_target = arrays.get("u_target_dev_store", np.empty((0, 2)))
     y_target = arrays.get("y_target_store", np.empty((0, 2)))
     y_err_phys = arrays.get("y_minus_y_sp_phys_store", np.empty((0, 2)))
     ys_err_phys = arrays.get("y_s_minus_y_sp_phys_store", np.empty((0, 2)))
+    y_system = arrays.get("y_system", np.empty((0, 2)))
+    y_output_phys = y_system[1:, :] if y_system.ndim == 2 and y_system.shape[0] > 1 else np.empty((0, 2))
     diagnostic_unsafe = arrays.get("diagnostic_unsafe_flags", np.array([], dtype=float))
     diagnostic_unstable = arrays.get("diagnostic_unstable_flags", np.array([], dtype=float))
     contraction_margin = arrays.get("contraction_margin", np.array([], dtype=float))
@@ -229,6 +330,16 @@ def _search_record_from_debug_dir(*, debug_dir: str | Path, case_name: str, y_ph
     contraction_margin_pos = max(0.0, contraction_margin_max) if np.isfinite(contraction_margin_max) else float("nan")
     sign_changes = _sign_change_count(u_apply)
     input_phys = arrays.get("u_applied_phys", np.empty((0, 2)))
+    cycle_metrics = {}
+    if y_phys.ndim == 2 and y_phys.shape[0] > 1:
+        cycle_metrics = _cycle_settling_metrics(
+            y_err_phys=y_err_phys,
+            y_output_phys=y_output_phys,
+            u_apply_dev=u_apply,
+            block_steps=PHASE1_SETPOINT_HOLD_STEPS,
+            tail_steps=SETTLING_TAIL_STEPS,
+            settling_band_phys=SETTLING_BAND_PHYS,
+        )
 
     oscillation_score = (
         20.0 * (0.0 if not np.isfinite(du_apply_mean) else du_apply_mean)
@@ -236,16 +347,31 @@ def _search_record_from_debug_dir(*, debug_dir: str | Path, case_name: str, y_ph
         + 10.0 * (0.0 if not np.isfinite(dy_target_mean) else dy_target_mean)
         + 0.05 * float(sign_changes)
     )
+    if cycle_metrics:
+        blocks = max(int(cycle_metrics["cycle_blocks"]), 1)
+        nonsettled_rate = float(cycle_metrics["cycle_nonsettled_blocks"]) / float(blocks)
+        cycle_tail_error = cycle_metrics["cycle_tail_error_norm_mean"]
+        cycle_output_sign_changes = cycle_metrics["cycle_output_sign_changes"]
+        cycle_input_sign_changes = cycle_metrics["cycle_input_sign_changes"]
+        cycle_motion = cycle_metrics["cycle_tail_output_motion_mean"]
+        oscillation_score = (
+            50.0 * nonsettled_rate
+            + 10.0 * (0.0 if not np.isfinite(cycle_tail_error) else float(cycle_tail_error))
+            + 0.50 * float(cycle_output_sign_changes)
+            + 0.20 * float(cycle_input_sign_changes)
+            + 2.0 * (0.0 if not np.isfinite(cycle_motion) else float(cycle_motion))
+        )
     safety_score = (
-        100.0 * (0.0 if not np.isfinite(unsafe_rate) else unsafe_rate)
-        + 100.0 * (0.0 if not np.isfinite(unstable_rate) else unstable_rate)
+        50.0 * (0.0 if not np.isfinite(unsafe_rate) else unsafe_rate)
+        + 50.0 * (0.0 if not np.isfinite(unstable_rate) else unstable_rate)
         + 10.0 * (0.0 if not np.isfinite(contraction_margin_pos) else contraction_margin_pos)
     )
 
-    return {
+    record = {
         "case_name": case_name,
-        "eta_sp": float(y_phys[0]),
-        "T_sp": float(y_phys[1]),
+        "eta_sp": float(y_phys.reshape(-1, 2)[0, 0]),
+        "T_sp": float(y_phys.reshape(-1, 2)[0, 1]),
+        "setpoint_cycle_y_phys": json.dumps(y_phys.tolist()),
         "search_score": float(oscillation_score + safety_score),
         "oscillation_score": float(oscillation_score),
         "safety_score": float(safety_score),
@@ -278,6 +404,8 @@ def _search_record_from_debug_dir(*, debug_dir: str | Path, case_name: str, y_ph
         "output_reference_error_inf_max": summary.get("output_reference_error_inf_max"),
         "debug_dir": str(debug_path),
     }
+    record.update(cycle_metrics)
+    return record
 
 
 def _safe_nanmin(values) -> float:
@@ -299,27 +427,268 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _float_from_record(record: dict, key: str, default: float = float("nan")) -> float:
+    value = record.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _int_from_record(record: dict, key: str, default: int = 0) -> int:
+    value = record.get(key, default)
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _load_search_records(summary_csv: str | Path) -> list[dict]:
+    summary_csv = Path(summary_csv)
+    with summary_csv.open("r", newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    return sorted(rows, key=lambda row: _float_from_record(row, "search_score", -np.inf), reverse=True)
+
+
+def _search_plot_arrays(debug_dir: str | Path) -> dict[str, np.ndarray]:
+    with np.load(Path(debug_dir) / "arrays.npz") as data:
+        arrays = {name: data[name].copy() for name in data.files}
+    y_system = np.asarray(arrays.get("y_system", np.empty((0, 2))), dtype=float)
+    y_output = y_system[1:, :] if y_system.ndim == 2 and y_system.shape[0] > 1 else np.empty((0, 2))
+    y_err = np.asarray(arrays.get("y_minus_y_sp_phys_store", np.empty((0, 2))), dtype=float)
+    ys_err = np.asarray(arrays.get("y_s_minus_y_sp_phys_store", np.empty((0, 2))), dtype=float)
+    n = min(y_output.shape[0], y_err.shape[0], ys_err.shape[0])
+    if n <= 0:
+        return {
+            "y_output": np.empty((0, 2)),
+            "y_sp": np.empty((0, 2)),
+            "y_s": np.empty((0, 2)),
+            "unsafe": np.array([], dtype=bool),
+        }
+    y_output = y_output[:n, :]
+    y_err = y_err[:n, :]
+    ys_err = ys_err[:n, :]
+    unsafe = np.asarray(arrays.get("diagnostic_unsafe_flags", np.zeros(n)), dtype=float).reshape(-1)
+    if unsafe.shape[0] < n:
+        unsafe = np.pad(unsafe, (0, n - unsafe.shape[0]), constant_values=0.0)
+    y_sp = y_output - y_err
+    y_s = y_sp + ys_err
+    return {
+        "y_output": y_output,
+        "y_sp": y_sp,
+        "y_s": y_s,
+        "unsafe": unsafe[:n] > 0.5,
+    }
+
+
+def _shade_unsafe_regions(ax, unsafe: np.ndarray) -> None:
+    unsafe = np.asarray(unsafe, dtype=bool).reshape(-1)
+    if unsafe.size == 0 or not np.any(unsafe):
+        return
+    padded = np.r_[False, unsafe, False]
+    changes = np.flatnonzero(padded[1:] != padded[:-1])
+    for start, stop in changes.reshape(-1, 2):
+        ax.axvspan(start, stop, color="tab:red", alpha=0.10, linewidth=0)
+
+
+def _draw_cycle_switches(ax, n_steps: int) -> None:
+    for step in range(PHASE1_SETPOINT_HOLD_STEPS, int(n_steps), PHASE1_SETPOINT_HOLD_STEPS):
+        ax.axvline(step, color="0.65", linewidth=0.8, linestyle=":", alpha=0.8)
+
+
+def _plot_record_tracking(record: dict, path: Path, *, show_legend: bool = True) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    arrays = _search_plot_arrays(record["debug_dir"])
+    y_output = arrays["y_output"]
+    if y_output.size == 0:
+        return ""
+    y_sp = arrays["y_sp"]
+    y_s = arrays["y_s"]
+    unsafe = arrays["unsafe"]
+    t = np.arange(y_output.shape[0])
+    labels = [r"$\eta$", r"$T$"]
+    units = ["", "K"]
+    bands = SETTLING_BAND_PHYS.reshape(-1)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 1, figsize=(12.0, 6.8), sharex=True)
+    for idx, ax in enumerate(axes):
+        _shade_unsafe_regions(ax, unsafe)
+        _draw_cycle_switches(ax, y_output.shape[0])
+        ax.plot(t, y_output[:, idx], color="tab:blue", linewidth=1.6, label="OF-MPC output")
+        ax.step(t, y_sp[:, idx], where="post", color="black", linestyle="--", linewidth=1.3, label="raw setpoint")
+        ax.step(t, y_s[:, idx], where="post", color="tab:orange", linestyle="-.", linewidth=1.2, label="governed target")
+        if idx < bands.shape[0]:
+            ax.fill_between(
+                t,
+                y_sp[:, idx] - bands[idx],
+                y_sp[:, idx] + bands[idx],
+                step="post",
+                color="0.75",
+                alpha=0.18,
+                label="settling band" if idx == 0 else None,
+            )
+        ylabel = labels[idx] if units[idx] == "" else f"{labels[idx]} ({units[idx]})"
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.25)
+    title = (
+        f"{record['case_name']} | score={_float_from_record(record, 'search_score'):.1f}, "
+        f"nonsettled={_int_from_record(record, 'cycle_nonsettled_blocks')}, "
+        f"unsafe={_int_from_record(record, 'diagnostic_unsafe_count')}, "
+        f"y sign changes={_int_from_record(record, 'cycle_output_sign_changes')}"
+    )
+    axes[0].set_title(title)
+    axes[-1].set_xlabel("sample")
+    if show_legend:
+        handles, labels_seen = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels_seen, loc="lower center", ncol=4, frameon=False)
+        fig.subplots_adjust(bottom=0.16, hspace=0.14)
+    else:
+        fig.subplots_adjust(bottom=0.10, hspace=0.14)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path)
+
+
+def _plot_records_grid(records: list[dict], path: Path, *, title: str) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    rows = []
+    for record in records:
+        arrays = _search_plot_arrays(record["debug_dir"])
+        if arrays["y_output"].size:
+            rows.append((record, arrays))
+    if not rows:
+        return ""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(len(rows), 2, figsize=(14.0, max(3.0 * len(rows), 3.4)), sharex=True)
+    axes = np.atleast_2d(axes)
+    for row_idx, (record, arrays) in enumerate(rows):
+        y_output = arrays["y_output"]
+        y_sp = arrays["y_sp"]
+        y_s = arrays["y_s"]
+        unsafe = arrays["unsafe"]
+        t = np.arange(y_output.shape[0])
+        for col_idx, name in enumerate((r"$\eta$", r"$T$")):
+            ax = axes[row_idx, col_idx]
+            _shade_unsafe_regions(ax, unsafe)
+            _draw_cycle_switches(ax, y_output.shape[0])
+            ax.plot(t, y_output[:, col_idx], color="tab:blue", linewidth=1.1)
+            ax.step(t, y_sp[:, col_idx], where="post", color="black", linestyle="--", linewidth=1.0)
+            ax.step(t, y_s[:, col_idx], where="post", color="tab:orange", linestyle="-.", linewidth=0.95)
+            ax.grid(True, alpha=0.20)
+            ax.set_ylabel(name)
+            if row_idx == 0:
+                ax.set_title("viscosity-like output" if col_idx == 0 else "reactor temperature")
+            if col_idx == 0:
+                label = (
+                    f"{record['case_name']}\n"
+                    f"score={_float_from_record(record, 'search_score'):.1f}, "
+                    f"nonsettled={_int_from_record(record, 'cycle_nonsettled_blocks')}, "
+                    f"unsafe={_int_from_record(record, 'diagnostic_unsafe_count')}"
+                )
+                ax.text(
+                    0.01,
+                    0.96,
+                    label,
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=8.5,
+                    bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "0.8", "alpha": 0.85},
+                )
+    for ax in axes[-1, :]:
+        ax.set_xlabel("sample")
+    fig.suptitle(title, y=0.995)
+    fig.subplots_adjust(top=0.96, hspace=0.26, wspace=0.16)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path)
+
+
+def plot_setpoint_search_tracking(
+    summary_csv: str | Path,
+    *,
+    top_n: int = 5,
+    output_dir: str | Path | None = None,
+) -> dict[str, str]:
+    summary_csv = Path(summary_csv)
+    records = _load_search_records(summary_csv)
+    plot_dir = Path(output_dir) if output_dir is not None else summary_csv.parent / "tracking_plots"
+    plot_paths: dict[str, str] = {}
+    top_records = records[: int(top_n)]
+    for record in top_records:
+        plot_path = plot_dir / f"tracking_{record['case_name']}.png"
+        saved = _plot_record_tracking(record, plot_path)
+        if saved:
+            plot_paths[f"individual_{record['case_name']}"] = saved
+    saved = _plot_records_grid(
+        top_records,
+        plot_dir / "tracking_top_cycle_candidates.png",
+        title=f"Top {len(top_records)} setpoint-cycle candidates",
+    )
+    if saved:
+        plot_paths["top_candidates_grid"] = saved
+    saved = _plot_records_grid(
+        records,
+        plot_dir / "tracking_all_cycle_candidates_grid.png",
+        title="All screened setpoint-cycle candidates",
+    )
+    if saved:
+        plot_paths["all_candidates_grid"] = saved
+    note = {
+        "source_summary_csv": str(summary_csv),
+        "settling_band_phys": SETTLING_BAND_PHYS.tolist(),
+        "cycle_switch_samples": int(PHASE1_SETPOINT_HOLD_STEPS),
+        "diagnostic_unsafe_shading": "red spans mark diagnostic unsafe OF-MPC actions",
+        "raw_setpoint": "black dashed",
+        "governed_target": "orange dash-dot",
+        "plant_output": "blue solid",
+    }
+    (plot_dir / "tracking_plot_notes.json").write_text(json.dumps(note, indent=2), encoding="utf-8")
+    plot_paths["notes"] = str(plot_dir / "tracking_plot_notes.json")
+    return plot_paths
+
+
 def run_setpoint_search() -> dict:
     timestamp = str(TIMESTAMP) if TIMESTAMP is not None else datetime.now().strftime("%Y%m%d_%H%M%S_setpoint_search")
     search_root = Path(SEARCH_OUTPUT_ROOT) / SEARCH_STUDY_NAME / timestamp
     search_root.mkdir(parents=True, exist_ok=True)
+    if SEARCH_PROFILE_MODE not in {"cycle", "held"}:
+        raise ValueError("SEARCH_PROFILE_MODE must be 'cycle' or 'held'.")
+    search_items = SEARCH_CYCLES_Y_PHYS if SEARCH_PROFILE_MODE == "cycle" else SEARCH_SETPOINTS_Y_PHYS
     records = []
-    for idx, setpoint in enumerate(SEARCH_SETPOINTS_Y_PHYS):
-        y_phys = np.asarray(setpoint, dtype=float).reshape(2)
-        case_name = _setpoint_case_name(idx, y_phys)
+    for idx, setpoint in enumerate(search_items):
+        y_phys = np.asarray(setpoint, dtype=float)
+        if SEARCH_PROFILE_MODE == "cycle":
+            y_profile_phys = y_phys.reshape(-1, 2)
+            case_name = _cycle_case_name(idx, y_profile_phys)
+        else:
+            y_profile_phys = y_phys.reshape(1, 2)
+            case_name = _setpoint_case_name(idx, y_phys.reshape(2))
         candidate_timestamp = f"{timestamp}_{case_name}"
         setpoint_profile, disturbance_profile, metadata = _phase2_probe_profiles(
-            phase2_setpoints_y_phys=y_phys.reshape(1, 2),
+            phase2_setpoints_y_phys=y_profile_phys,
             phase2_episodes=int(SEARCH_EPISODES),
         )
         metadata = {
             **metadata,
-            "probe": "held_setpoint_search",
+            "probe": f"{SEARCH_PROFILE_MODE}_setpoint_search",
             "candidate_index": int(idx),
-            "candidate_setpoint_y_phys": y_phys.tolist(),
+            "candidate_setpoint_y_phys": y_profile_phys.tolist(),
             "search_tail_steps": int(SEARCH_TAIL_STEPS),
+            "settling_tail_steps": int(SETTLING_TAIL_STEPS),
+            "settling_band_phys": SETTLING_BAND_PHYS.tolist(),
         }
-        print(f"\n[{idx + 1}/{len(SEARCH_SETPOINTS_Y_PHYS)}] Screening setpoint {tuple(y_phys)}")
+        print(f"\n[{idx + 1}/{len(search_items)}] Screening {SEARCH_PROFILE_MODE} setpoint {y_profile_phys.tolist()}")
         result = run_offset_free_mpc_disturbance(
             episodes=int(metadata["rollout_n_tests"]),
             set_points_len=int(metadata["rollout_set_points_len"]),
@@ -336,7 +705,7 @@ def run_setpoint_search() -> dict:
         record = _search_record_from_debug_dir(
             debug_dir=result["debug_dir"],
             case_name=case_name,
-            y_phys=y_phys,
+            y_phys=y_profile_phys,
         )
         record["result_root"] = result["result_root"]
         records.append(record)
@@ -345,10 +714,10 @@ def run_setpoint_search() -> dict:
             f"{record['search_score']:.3g}",
             "| unsafe:",
             record["diagnostic_unsafe_count"],
-            "| tail du:",
-            f"{record['tail_du_apply_scaled_mean']:.3g}",
-            "| sign changes:",
-            record["tail_input_sign_changes"],
+            "| nonsettled:",
+            record.get("cycle_nonsettled_blocks"),
+            "| output sign changes:",
+            record.get("cycle_output_sign_changes"),
         )
 
     records = sorted(records, key=lambda row: row["search_score"], reverse=True)
@@ -356,20 +725,24 @@ def run_setpoint_search() -> dict:
     summary_json = search_root / "setpoint_search_summary.json"
     _write_csv(summary_csv, records)
     summary_json.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    plot_paths = plot_setpoint_search_tracking(summary_csv)
     print("\nTop setpoint-search candidates:")
     for row in records[:5]:
         print(
             f"{row['case_name']}: score={row['search_score']:.3g}, "
             f"unsafe={row['diagnostic_unsafe_count']}, "
-            f"tail_du={row['tail_du_apply_scaled_mean']:.3g}, "
-            f"sign_changes={row['tail_input_sign_changes']}"
+            f"nonsettled={row.get('cycle_nonsettled_blocks')}, "
+            f"output_sign_changes={row.get('cycle_output_sign_changes')}"
         )
     print(f"\nSetpoint-search summary: {summary_csv}")
+    if plot_paths:
+        print(f"Tracking plots: {Path(plot_paths.get('top_candidates_grid', next(iter(plot_paths.values())))).parent}")
     return {
         "study_name": SEARCH_STUDY_NAME,
         "result_root": str(search_root),
         "summary_csv": str(summary_csv),
         "summary_json": str(summary_json),
+        "plot_paths": plot_paths,
         "records": records,
     }
 
