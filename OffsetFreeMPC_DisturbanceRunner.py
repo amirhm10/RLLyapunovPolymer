@@ -35,26 +35,14 @@ CASE_NAME = "offset_free_mpc_phase2_online_setpoint_cycle"
 TIMESTAMP = None
 
 SEARCH_OUTPUT_ROOT = Path("results")
-SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointCycleSearch"
-SEARCH_CASE_PREFIX = "cycle"
-SEARCH_PROFILE_MODE = "cycle"  # "cycle" or "held"
-SEARCH_EPISODES = 3
+SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointSearch"
+SEARCH_CASE_PREFIX = "setpoint"
+SEARCH_PROFILE_MODE = "held"  # "held" uses SEARCH_SETPOINTS_Y_PHYS; "cycle" uses SEARCH_CYCLES_Y_PHYS.
+SEARCH_EPISODES = 2
 SEARCH_SAVE_PLOTS = False
 SEARCH_TAIL_STEPS = 400
 SETTLING_TAIL_STEPS = 100
 SETTLING_BAND_PHYS = np.array([0.05, 0.30], dtype=float)
-SEARCH_CYCLES_Y_PHYS = (
-    ((4.5, 324.0), (3.4, 321.0)),
-    ((4.5, 324.0), (3.35, 323.5)),
-    ((4.5, 324.0), (3.3, 324.5)),
-    ((4.6, 321.0), (3.35, 323.5)),
-    ((4.4, 321.5), (3.3, 324.5)),
-    ((4.0, 320.5), (3.35, 323.5)),
-    ((4.25, 322.5), (3.1, 323.0)),
-    ((4.6, 321.0), (3.2, 324.5)),
-    ((4.4, 321.5), (3.1, 323.0)),
-    ((4.0, 320.5), (3.3, 324.5)),
-)
 SEARCH_SETPOINTS_Y_PHYS = (
     (4.5, 324.0),
     (3.4, 321.0),
@@ -66,6 +54,20 @@ SEARCH_SETPOINTS_Y_PHYS = (
     (3.2, 324.5),
     (4.0, 320.5),
     (3.1, 323.0),
+)
+
+# Optional cycle-search candidates. These are ignored while SEARCH_PROFILE_MODE = "held".
+SEARCH_CYCLES_Y_PHYS = (
+    ((4.5, 324.0), (3.4, 321.0)),
+    ((4.5, 324.0), (3.35, 323.5)),
+    ((4.5, 324.0), (3.3, 324.5)),
+    ((4.6, 321.0), (3.35, 323.5)),
+    ((4.4, 321.5), (3.3, 324.5)),
+    ((4.0, 320.5), (3.35, 323.5)),
+    ((4.25, 322.5), (3.1, 323.0)),
+    ((4.6, 321.0), (3.2, 324.5)),
+    ((4.4, 321.5), (3.1, 323.0)),
+    ((4.0, 320.5), (3.3, 324.5)),
 )
 
 PHASE2_SETPOINTS_Y_PHYS = (
@@ -625,6 +627,9 @@ def plot_setpoint_search_tracking(
     plot_dir = Path(output_dir) if output_dir is not None else summary_csv.parent / "tracking_plots"
     plot_paths: dict[str, str] = {}
     top_records = records[: int(top_n)]
+    has_cycle_records = any(_int_from_record(record, "cycle_blocks", 0) > 0 for record in records)
+    profile_label = "setpoint-cycle" if has_cycle_records else "setpoint"
+    profile_slug = "cycle" if has_cycle_records else "setpoint"
     for record in top_records:
         plot_path = plot_dir / f"tracking_{record['case_name']}.png"
         saved = _plot_record_tracking(record, plot_path)
@@ -632,15 +637,15 @@ def plot_setpoint_search_tracking(
             plot_paths[f"individual_{record['case_name']}"] = saved
     saved = _plot_records_grid(
         top_records,
-        plot_dir / "tracking_top_cycle_candidates.png",
-        title=f"Top {len(top_records)} setpoint-cycle candidates",
+        plot_dir / f"tracking_top_{profile_slug}_candidates.png",
+        title=f"Top {len(top_records)} {profile_label} candidates",
     )
     if saved:
         plot_paths["top_candidates_grid"] = saved
     saved = _plot_records_grid(
         records,
-        plot_dir / "tracking_all_cycle_candidates_grid.png",
-        title="All screened setpoint-cycle candidates",
+        plot_dir / f"tracking_all_{profile_slug}_candidates_grid.png",
+        title=f"All screened {profile_label} candidates",
     )
     if saved:
         plot_paths["all_candidates_grid"] = saved

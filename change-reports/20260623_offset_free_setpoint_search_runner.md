@@ -192,3 +192,20 @@ C:\Users\HAMEDI\miniconda3\envs\rl\python.exe -X pycache_prefix="$env:TEMP\codex
 
 - Generated tracking plots from the saved cycle-search bundles without
   rerunning the simulations.
+
+## Default Reverted to Manual Held-Setpoint Search
+
+The runner default was switched back to the earlier held-setpoint workflow so
+new manual setpoint edits can be made directly in `SEARCH_SETPOINTS_Y_PHYS`.
+The cycle-search constants remain in the file as an optional mode, but they are
+ignored unless `SEARCH_PROFILE_MODE` is changed from `"held"` to `"cycle"`.
+
+Current manual-search defaults:
+
+- `SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointSearch"`
+- `SEARCH_CASE_PREFIX = "setpoint"`
+- `SEARCH_PROFILE_MODE = "held"`
+- `SEARCH_EPISODES = 2`
+
+The tracking plot helper now labels outputs as either setpoint candidates or
+setpoint-cycle candidates depending on the summary file contents.
