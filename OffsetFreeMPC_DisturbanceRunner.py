@@ -35,39 +35,29 @@ CASE_NAME = "offset_free_mpc_phase2_online_setpoint_cycle"
 TIMESTAMP = None
 
 SEARCH_OUTPUT_ROOT = Path("results")
-SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointSearch"
-SEARCH_CASE_PREFIX = "setpoint"
-SEARCH_PROFILE_MODE = "held"  # "held" uses SEARCH_SETPOINTS_Y_PHYS; "cycle" uses SEARCH_CYCLES_Y_PHYS.
-SEARCH_EPISODES = 2
+SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointCycleSearch"
+SEARCH_CASE_PREFIX = "cycle"
+SEARCH_PROFILE_MODE = "cycle"  # Edit SEARCH_CYCLE_Y_PHYS below. Use "held" for SEARCH_SETPOINTS_Y_PHYS.
+SEARCH_EPISODES = 3
 SEARCH_SAVE_PLOTS = False
 SEARCH_TAIL_STEPS = 400
 SETTLING_TAIL_STEPS = 100
 SETTLING_BAND_PHYS = np.array([0.05, 0.30], dtype=float)
-SEARCH_SETPOINTS_Y_PHYS = (
-    (4.5, 324.0),
-    (3.4, 321.0),
-    (4.25, 322.5),
-    (3.35, 323.5),
+
+# Main editable cycle for cycle-search mode. Each row is held for 400 samples.
+SEARCH_CYCLE_Y_PHYS = (
     (4.4, 321.5),
     (3.3, 324.5),
-    (4.6, 321.0),
-    (3.2, 324.5),
-    (4.0, 320.5),
-    (3.1, 323.0),
 )
 
-# Optional cycle-search candidates. These are ignored while SEARCH_PROFILE_MODE = "held".
+# Internal list of cycle candidates. Keep this as a one-item tuple for manual cycle tests.
 SEARCH_CYCLES_Y_PHYS = (
-    ((4.5, 324.0), (3.4, 321.0)),
-    ((4.5, 324.0), (3.35, 323.5)),
-    ((4.5, 324.0), (3.3, 324.5)),
-    ((4.6, 321.0), (3.35, 323.5)),
-    ((4.4, 321.5), (3.3, 324.5)),
-    ((4.0, 320.5), (3.35, 323.5)),
-    ((4.25, 322.5), (3.1, 323.0)),
-    ((4.6, 321.0), (3.2, 324.5)),
-    ((4.4, 321.5), (3.1, 323.0)),
-    ((4.0, 320.5), (3.3, 324.5)),
+    SEARCH_CYCLE_Y_PHYS,
+)
+
+# Optional held-setpoint search candidates. These are ignored while SEARCH_PROFILE_MODE = "cycle".
+SEARCH_SETPOINTS_Y_PHYS = (
+    (4.6, 321.0),
 )
 
 PHASE2_SETPOINTS_Y_PHYS = (
@@ -675,6 +665,8 @@ def run_setpoint_search() -> dict:
         y_phys = np.asarray(setpoint, dtype=float)
         if SEARCH_PROFILE_MODE == "cycle":
             y_profile_phys = y_phys.reshape(-1, 2)
+            if y_profile_phys.shape[0] < 2:
+                raise ValueError("SEARCH_CYCLE_Y_PHYS must contain at least two (eta, T) setpoints.")
             case_name = _cycle_case_name(idx, y_profile_phys)
         else:
             y_profile_phys = y_phys.reshape(1, 2)

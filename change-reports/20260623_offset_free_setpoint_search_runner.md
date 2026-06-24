@@ -209,3 +209,30 @@ Current manual-search defaults:
 
 The tracking plot helper now labels outputs as either setpoint candidates or
 setpoint-cycle candidates depending on the summary file contents.
+
+## Single Editable Cycle Workflow
+
+The runner was then changed back to cycle mode, but with a simpler manual
+interface. Instead of editing a long list of cycle candidates, the active cycle
+is now defined by one block:
+
+```python
+SEARCH_CYCLE_Y_PHYS = (
+    (4.4, 321.5),
+    (3.3, 324.5),
+)
+```
+
+The internal `SEARCH_CYCLES_Y_PHYS` variable wraps that one cycle as a
+single-candidate tuple. This keeps the existing cycle-search implementation but
+prevents accidental screening of many old candidates.
+
+Current cycle-search defaults:
+
+- `SEARCH_STUDY_NAME = "OffsetFreeMPC_SetpointCycleSearch"`
+- `SEARCH_CASE_PREFIX = "cycle"`
+- `SEARCH_PROFILE_MODE = "cycle"`
+- `SEARCH_EPISODES = 3`
+
+A validation check now raises a clear error if `SEARCH_CYCLE_Y_PHYS` contains
+fewer than two `(eta, T)` setpoints.
