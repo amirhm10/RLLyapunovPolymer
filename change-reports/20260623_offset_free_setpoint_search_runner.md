@@ -236,3 +236,30 @@ Current cycle-search defaults:
 
 A validation check now raises a clear error if `SEARCH_CYCLE_Y_PHYS` contains
 fewer than two `(eta, T)` setpoints.
+
+## Tracking and Input Plots for Manual Analysis
+
+The cycle-search plotting helper now saves both output-tracking and
+manipulated-input behavior plots automatically after each search.
+
+For each top candidate, the runner saves:
+
+- summary-folder output tracking:
+  `tracking_plots/tracking_<case_name>.png`
+- summary-folder input behavior:
+  `tracking_plots/inputs_<case_name>.png`
+- candidate-folder output tracking:
+  `analysis_plots/tracking_outputs.png`
+- candidate-folder input behavior:
+  `analysis_plots/input_behavior.png`
+
+The input plots show applied `Qc` and `Qm`, optional target inputs when saved in
+the debug bundle, physical actuator bounds, 400-sample switch markers, and
+diagnostic unsafe-action shading.
+
+Generated for the latest single-cycle run:
+
+- `results/OffsetFreeMPC_SetpointCycleSearch/20260623_235232_setpoint_search/tracking_plots/tracking_cycle_00_eta4p4_T321p5_to_eta3p3_T324p5.png`
+- `results/OffsetFreeMPC_SetpointCycleSearch/20260623_235232_setpoint_search/tracking_plots/inputs_cycle_00_eta4p4_T321p5_to_eta3p3_T324p5.png`
+- `results/OffsetFreeMPC_SetpointCycleSearch/20260623_235232_setpoint_search_cycle_00_eta4p4_T321p5_to_eta3p3_T324p5/analysis_plots/tracking_outputs.png`
+- `results/OffsetFreeMPC_SetpointCycleSearch/20260623_235232_setpoint_search_cycle_00_eta4p4_T321p5_to_eta3p3_T324p5/analysis_plots/input_behavior.png`

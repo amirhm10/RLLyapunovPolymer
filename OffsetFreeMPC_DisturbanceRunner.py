@@ -9,6 +9,7 @@ from pprint import pprint
 import numpy as np
 
 from utils.online_disturbance_runner import build_disturbance_context, run_offset_free_mpc_disturbance
+from utils.of_mpc_td3_workflow import U_MAX_PHYS, U_MIN_PHYS
 from utils.two_phase_profiles import (
     TwoPhaseExperimentSpec,
     build_two_phase_profiles,
@@ -473,6 +474,29 @@ def _search_plot_arrays(debug_dir: str | Path) -> dict[str, np.ndarray]:
     }
 
 
+def _search_input_plot_arrays(debug_dir: str | Path) -> dict[str, np.ndarray]:
+    with np.load(Path(debug_dir) / "arrays.npz") as data:
+        u_apply = np.asarray(data.get("u_applied_phys", np.empty((0, 2))), dtype=float)
+        u_target = np.asarray(data.get("u_target_phys_store", np.empty((0, 2))), dtype=float)
+        unsafe = np.asarray(data.get("diagnostic_unsafe_flags", np.zeros(u_apply.shape[0])), dtype=float).reshape(-1)
+    n = u_apply.shape[0] if u_apply.ndim == 2 else 0
+    if n <= 0:
+        return {
+            "u_apply": np.empty((0, 2)),
+            "u_target": np.empty((0, 2)),
+            "unsafe": np.array([], dtype=bool),
+        }
+    if u_target.ndim != 2 or u_target.shape[0] < n:
+        u_target = np.full_like(u_apply, np.nan, dtype=float)
+    if unsafe.shape[0] < n:
+        unsafe = np.pad(unsafe, (0, n - unsafe.shape[0]), constant_values=0.0)
+    return {
+        "u_apply": u_apply[:n, :],
+        "u_target": u_target[:n, :],
+        "unsafe": unsafe[:n] > 0.5,
+    }
+
+
 def _shade_unsafe_regions(ax, unsafe: np.ndarray) -> None:
     unsafe = np.asarray(unsafe, dtype=bool).reshape(-1)
     if unsafe.size == 0 or not np.any(unsafe):
@@ -546,6 +570,69 @@ def _plot_record_tracking(record: dict, path: Path, *, show_legend: bool = True)
     return str(path)
 
 
+def _plot_record_inputs(record: dict, path: Path, *, show_legend: bool = True) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    arrays = _search_input_plot_arrays(record["debug_dir"])
+    u_apply = arrays["u_apply"]
+    if u_apply.size == 0:
+        return ""
+    u_target = arrays["u_target"]
+    unsafe = arrays["unsafe"]
+    t = np.arange(u_apply.shape[0])
+    labels = ["Qc", "Qm"]
+    colors = ["tab:green", "tab:purple"]
+    u_min = np.asarray(U_MIN_PHYS, dtype=float).reshape(-1)
+    u_max = np.asarray(U_MAX_PHYS, dtype=float).reshape(-1)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 1, figsize=(12.0, 6.8), sharex=True)
+    for idx, ax in enumerate(axes):
+        _shade_unsafe_regions(ax, unsafe)
+        _draw_cycle_switches(ax, u_apply.shape[0])
+        ax.step(t, u_apply[:, idx], where="post", color=colors[idx], linewidth=1.5, label="applied input")
+        if u_target.shape == u_apply.shape and np.any(np.isfinite(u_target[:, idx])):
+            ax.step(
+                t,
+                u_target[:, idx],
+                where="post",
+                color="tab:orange",
+                linestyle="-.",
+                linewidth=1.1,
+                label="target input",
+            )
+        ax.axhline(
+            u_min[idx],
+            color="black",
+            linestyle="--",
+            linewidth=1.0,
+            label="physical bounds" if idx == 0 else None,
+        )
+        ax.axhline(u_max[idx], color="black", linestyle="--", linewidth=1.0)
+        ax.set_ylabel(labels[idx])
+        ax.grid(True, alpha=0.25)
+    title = (
+        f"{record['case_name']} inputs | "
+        f"unsafe={_int_from_record(record, 'diagnostic_unsafe_count')}, "
+        f"Qc max={_float_from_record(record, 'input_Qc_max'):.1f}, "
+        f"Qm max={_float_from_record(record, 'input_Qm_max'):.1f}"
+    )
+    axes[0].set_title(title)
+    axes[-1].set_xlabel("sample")
+    if show_legend:
+        handles, labels_seen = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels_seen, loc="lower center", ncol=3, frameon=False)
+        fig.subplots_adjust(bottom=0.16, hspace=0.14)
+    else:
+        fig.subplots_adjust(bottom=0.10, hspace=0.14)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path)
+
+
 def _plot_records_grid(records: list[dict], path: Path, *, title: str) -> str:
     import matplotlib
 
@@ -606,6 +693,74 @@ def _plot_records_grid(records: list[dict], path: Path, *, title: str) -> str:
     return str(path)
 
 
+def _plot_input_records_grid(records: list[dict], path: Path, *, title: str) -> str:
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    rows = []
+    for record in records:
+        arrays = _search_input_plot_arrays(record["debug_dir"])
+        if arrays["u_apply"].size:
+            rows.append((record, arrays))
+    if not rows:
+        return ""
+
+    u_min = np.asarray(U_MIN_PHYS, dtype=float).reshape(-1)
+    u_max = np.asarray(U_MAX_PHYS, dtype=float).reshape(-1)
+    fig, axes = plt.subplots(len(rows), 2, figsize=(14.0, max(3.0 * len(rows), 3.4)), sharex=True)
+    axes = np.atleast_2d(axes)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for row_idx, (record, arrays) in enumerate(rows):
+        u_apply = arrays["u_apply"]
+        u_target = arrays["u_target"]
+        unsafe = arrays["unsafe"]
+        t = np.arange(u_apply.shape[0])
+        for col_idx, name in enumerate(("Qc", "Qm")):
+            ax = axes[row_idx, col_idx]
+            _shade_unsafe_regions(ax, unsafe)
+            _draw_cycle_switches(ax, u_apply.shape[0])
+            ax.step(
+                t,
+                u_apply[:, col_idx],
+                where="post",
+                linewidth=1.1,
+                color="tab:green" if col_idx == 0 else "tab:purple",
+            )
+            if u_target.shape == u_apply.shape and np.any(np.isfinite(u_target[:, col_idx])):
+                ax.step(t, u_target[:, col_idx], where="post", linewidth=0.9, color="tab:orange", linestyle="-.")
+            ax.axhline(u_min[col_idx], color="black", linestyle="--", linewidth=0.9)
+            ax.axhline(u_max[col_idx], color="black", linestyle="--", linewidth=0.9)
+            ax.set_ylabel(name)
+            ax.grid(True, alpha=0.20)
+            if row_idx == 0:
+                ax.set_title(f"{name} with physical bounds")
+            if col_idx == 0:
+                label = (
+                    f"{record['case_name']}\n"
+                    f"unsafe={_int_from_record(record, 'diagnostic_unsafe_count')}, "
+                    f"nonsettled={_int_from_record(record, 'cycle_nonsettled_blocks')}"
+                )
+                ax.text(
+                    0.01,
+                    0.96,
+                    label,
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=8.5,
+                    bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "edgecolor": "0.8", "alpha": 0.85},
+                )
+    for ax in axes[-1, :]:
+        ax.set_xlabel("sample")
+    fig.suptitle(title, y=0.995)
+    fig.subplots_adjust(top=0.96, hspace=0.26, wspace=0.16)
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    return str(path)
+
+
 def plot_setpoint_search_tracking(
     summary_csv: str | Path,
     *,
@@ -625,6 +780,18 @@ def plot_setpoint_search_tracking(
         saved = _plot_record_tracking(record, plot_path)
         if saved:
             plot_paths[f"individual_{record['case_name']}"] = saved
+        case_root = Path(record.get("result_root") or Path(record["debug_dir"]).parent)
+        case_plot_dir = case_root / "analysis_plots"
+        saved = _plot_record_tracking(record, case_plot_dir / "tracking_outputs.png")
+        if saved:
+            plot_paths[f"case_tracking_{record['case_name']}"] = saved
+        input_plot_path = plot_dir / f"inputs_{record['case_name']}.png"
+        saved = _plot_record_inputs(record, input_plot_path)
+        if saved:
+            plot_paths[f"inputs_individual_{record['case_name']}"] = saved
+        saved = _plot_record_inputs(record, case_plot_dir / "input_behavior.png")
+        if saved:
+            plot_paths[f"case_inputs_{record['case_name']}"] = saved
     saved = _plot_records_grid(
         top_records,
         plot_dir / f"tracking_top_{profile_slug}_candidates.png",
@@ -639,6 +806,20 @@ def plot_setpoint_search_tracking(
     )
     if saved:
         plot_paths["all_candidates_grid"] = saved
+    saved = _plot_input_records_grid(
+        top_records,
+        plot_dir / f"inputs_top_{profile_slug}_candidates.png",
+        title=f"Top {len(top_records)} {profile_label} candidates: input behavior",
+    )
+    if saved:
+        plot_paths["top_input_candidates_grid"] = saved
+    saved = _plot_input_records_grid(
+        records,
+        plot_dir / f"inputs_all_{profile_slug}_candidates_grid.png",
+        title=f"All screened {profile_label} candidates: input behavior",
+    )
+    if saved:
+        plot_paths["all_input_candidates_grid"] = saved
     note = {
         "source_summary_csv": str(summary_csv),
         "settling_band_phys": SETTLING_BAND_PHYS.tolist(),
@@ -647,6 +828,11 @@ def plot_setpoint_search_tracking(
         "raw_setpoint": "black dashed",
         "governed_target": "orange dash-dot",
         "plant_output": "blue solid",
+        "input_behavior": "applied inputs are solid green/purple, target inputs are orange dash-dot when available",
+        "input_bounds": {
+            "u_min_phys": np.asarray(U_MIN_PHYS, dtype=float).tolist(),
+            "u_max_phys": np.asarray(U_MAX_PHYS, dtype=float).tolist(),
+        },
     }
     (plot_dir / "tracking_plot_notes.json").write_text(json.dumps(note, indent=2), encoding="utf-8")
     plot_paths["notes"] = str(plot_dir / "tracking_plot_notes.json")
