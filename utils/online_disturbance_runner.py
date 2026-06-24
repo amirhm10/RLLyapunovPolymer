@@ -253,6 +253,26 @@ ONLINE_TD3_PRESETS: dict[str, OnlineTD3Preset] = {
         direct_target_mode="gart",
         fallback_controller="none",
     ),
+    "saved_agent_safety_gate": OnlineTD3Preset(
+        key="saved_agent_safety_gate",
+        study_name="OnlineTD3_SavedAgent_SafetyGate",
+        label="Saved-agent online TD3 with GART-LMPC safety gate",
+        safety_gate=True,
+        pretrain_source="saved_agent",
+        teacher_source="gart_lmpc",
+        direct_target_mode="gart",
+        fallback_controller="gart_lmpc",
+    ),
+    "saved_agent_no_safety_gate": OnlineTD3Preset(
+        key="saved_agent_no_safety_gate",
+        study_name="OnlineTD3_SavedAgent_NoSafetyGate",
+        label="Saved-agent online TD3 without safety intervention",
+        safety_gate=False,
+        pretrain_source="saved_agent",
+        teacher_source="gart_lmpc",
+        direct_target_mode="gart",
+        fallback_controller="none",
+    ),
 }
 
 
@@ -784,6 +804,11 @@ def _pretrained_selector_note(pretrain_source: str | None, target_mode: str) -> 
     target_label = str(target_mode).strip().lower()
     if pretrain_source is None:
         return f"cold-start run; no pretrained checkpoint was loaded; online target selector is {target_label}"
+    if pretrain_source == "saved_agent":
+        return (
+            "saved online TD3 checkpoint loading is unchanged; no MPC-pretraining checkpoint is implied; "
+            f"online target selector is {target_label}"
+        )
     if target_label == "gart":
         return (
             f"{pretrain_source} checkpoint loading is unchanged; online teacher/fallback "
@@ -880,13 +905,26 @@ def build_disturbance_context(target_mode: str = TARGET_MODE) -> DisturbanceCont
 
 
 def _resolve_pretrained_checkpoint(source: str, agent_path: str | None) -> Path:
-    if source not in {"lmpc", "of_mpc"}:
+    if source not in {"lmpc", "of_mpc", "saved_agent"}:
         raise ValueError(f"Unsupported pretrained source: {source!r}")
     if agent_path:
         candidate = resolve_repo_path(agent_path)
         if not candidate.exists():
             raise FileNotFoundError(f"TD3 checkpoint not found: {candidate}")
         return candidate
+
+    if source == "saved_agent":
+        env_name = "SAVED_ONLINE_TD3_AGENT_PATH"
+        requested = os.environ.get(env_name)
+        if requested:
+            candidate = resolve_repo_path(requested)
+            if not candidate.exists():
+                raise FileNotFoundError(f"{env_name} points to a missing TD3 checkpoint: {candidate}")
+            return candidate
+        raise FileNotFoundError(
+            "saved_agent runs require an explicit TD3 checkpoint. "
+            "Pass agent_path from a previous seed folder or set SAVED_ONLINE_TD3_AGENT_PATH."
+        )
 
     env_names = (
         ("LMPC_PRETRAINED_TD3_AGENT_PATH", "PRETRAINED_TD3_AGENT_PATH")

@@ -40,6 +40,8 @@ METHODS = (
     "ofmpc_pretrained_no_safety_gate",
     "cold_start_safety_gate",
     "cold_start_no_safety_gate",
+    "saved_agent_safety_gate",
+    "saved_agent_no_safety_gate",
     "gart_lmpc",
 )
 OUTPUT_ROOT = Path.home() / "Desktop" / "Lyapunov_polymer_results"
@@ -133,6 +135,15 @@ def _pretrained_agent_path(agent_path: str | None) -> str:
             "Pass --agent-path to override it."
         )
     return str(resolved)
+
+
+def _method_loads_agent_checkpoint(method: str) -> bool:
+    method = str(method)
+    return method.startswith("ofmpc_pretrained") or method.startswith("lmpc_pretrained") or method.startswith("saved_agent")
+
+
+def _method_requires_explicit_agent_checkpoint(method: str) -> bool:
+    return str(method).startswith("saved_agent")
 
 
 def _profile_context():
@@ -323,7 +334,7 @@ def _run_td3_method(
     lyap_eps: float | None = None,
     lyap_tol: float | None = None,
 ) -> dict[str, Any]:
-    pretrained = method.startswith("ofmpc_pretrained")
+    pretrained = _method_loads_agent_checkpoint(method)
     overrides = _scale_training_phase_episode_counts(dict(training_phase_overrides or {}), profile)
     overrides.update({
         "exploration_decay_end_step": int(profile["phase1_steps"]),
@@ -544,11 +555,14 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
     spec = TwoPhaseExperimentSpec(**spec_kwargs)
     profile = build_profiles_for_study(spec)
     profile_checks = validate_two_phase_profile(profile, spec)
-    pretrained_agent_path = (
-        _pretrained_agent_path(args.agent_path)
-        if any(method.startswith("ofmpc_pretrained") for method in methods)
-        else (str(resolve_repo_path(args.agent_path)) if args.agent_path else None)
-    )
+    if any(_method_requires_explicit_agent_checkpoint(method) for method in methods):
+        if not args.agent_path:
+            raise ValueError("saved_agent methods require --agent-path pointing to a trained TD3 checkpoint.")
+        pretrained_agent_path = str(resolve_repo_path(args.agent_path))
+    elif any(method.startswith("ofmpc_pretrained") for method in methods):
+        pretrained_agent_path = _pretrained_agent_path(args.agent_path)
+    else:
+        pretrained_agent_path = str(resolve_repo_path(args.agent_path)) if args.agent_path else None
     profile_export = {
         "profile": jsonable_two_phase_profile(profile),
         "checks": profile_checks,
