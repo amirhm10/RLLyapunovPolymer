@@ -81,6 +81,18 @@ online rollout uses the no-safety-gate preset. The two saved-agent runners use
 different timestamp labels, so they can be launched at the same time and will
 write into separate result folders.
 
+For the saved-agent comparison, the online rollout exploration noise is held
+constant:
+
+```python
+SAVED_EXPLORATION_STD_START = 0.01
+EXPLORATION_STD_END = 0.01
+```
+
+Because the wrappers remove warm-up, behavior-cloning, and handoff phases, this
+constant noise applies directly to the full online TD3 phase. The TD3 target
+policy smoothing noise remains separate at `0.02` with clip `0.04`.
+
 Default saved-agent checkpoint:
 
 ```text
