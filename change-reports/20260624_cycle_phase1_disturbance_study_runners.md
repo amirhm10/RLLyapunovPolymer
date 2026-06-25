@@ -22,11 +22,14 @@ and safe action selection near an input-constrained reference cycle.
 - `RunCyclePhase1Disturbance_Common.py`
 - `RunCyclePhase1Disturbance_ColdStartStudy.py`
 - `RunCyclePhase1Disturbance_SavedAgentGART.py`
+- `RunCyclePhase1Disturbance_SavedAgentSafetyGate.py`
+- `RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py`
 
 ## Files Updated
 
 - `RunOnlineTD3TwoPhaseStudy.py`
 - `utils/online_disturbance_runner.py`
+- `RunCyclePhase1Disturbance_SavedAgentGART.py`
 
 ## Study Entrypoints
 
@@ -46,17 +49,37 @@ Methods:
 The two methods share the same setpoint and disturbance profiles. Neither
 loads an OF-MPC/LMPC pretrained checkpoint.
 
-### Saved-agent GART safety-gate continuation
+### Saved-agent safety-gate continuation
 
 Run:
 
 ```powershell
-C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_SavedAgentGART.py
+C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_SavedAgentSafetyGate.py
 ```
 
 Method:
 
 - `saved_agent_safety_gate`
+
+`RunCyclePhase1Disturbance_SavedAgentGART.py` is kept as a compatibility
+alias for this gated saved-agent runner.
+
+### Saved-agent no-safety-gate continuation
+
+Run:
+
+```powershell
+C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py
+```
+
+Method:
+
+- `saved_agent_no_safety_gate`
+
+This runner loads the same saved TD3 checkpoint as the gated runner, but the
+online rollout uses the no-safety-gate preset. The two saved-agent runners use
+different timestamp labels, so they can be launched at the same time and will
+write into separate result folders.
 
 Default saved-agent checkpoint:
 
@@ -163,3 +186,8 @@ under:
 ```text
 results/OnlineTD3_TwoPhaseStudy/
 ```
+
+For the manuscript-facing third scenario, the saved-agent safety/no-safety pair
+is the intended comparison. The cold-start pair remains available for auxiliary
+checks, but it is not required if the previous manuscript section already
+establishes that pretrained/initialized online agents are preferable.
