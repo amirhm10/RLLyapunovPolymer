@@ -6,18 +6,17 @@ from RunCyclePhase1Disturbance_Common import (
 )
 
 
-# Cold-start online TD3 pair on the 400-sample cycle scenario.
-# No OF-MPC/LMPC pretrained checkpoint is loaded.
+# Deterministic GART-LMPC baseline on the same 400-sample cycle and Phase-1
+# disturbance profile used by the saved-agent gate/no-gate comparison.
 METHODS = (
-    "cold_start_safety_gate",
-    "cold_start_no_safety_gate",
+    "gart_lmpc",
 )
 
 
 def run_configured_study() -> dict:
     return run_configured_cycle_study(
         methods=METHODS,
-        timestamp_label="cycle_phase1dist_cold_start_pair",
+        timestamp_label="cycle_phase1dist_gart_lmpc",
         setpoint_cycle_y_phys=SETPOINT_CYCLE_Y_PHYS,
     )
 

@@ -203,6 +203,6 @@ def run_configured_cycle_study(
         saved_agent_path=saved_agent_path,
         setpoint_cycle_y_phys=setpoint_cycle_y_phys,
     )
-    print("Cycle/Phase-1-disturbance TD3 configuration:")
+    print("Cycle/Phase-1-disturbance study configuration:")
     pprint(vars(args))
     return run_two_phase_study(args)

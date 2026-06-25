@@ -20,34 +20,22 @@ and safe action selection near an input-constrained reference cycle.
 ## Files Added
 
 - `RunCyclePhase1Disturbance_Common.py`
-- `RunCyclePhase1Disturbance_ColdStartStudy.py`
-- `RunCyclePhase1Disturbance_SavedAgentGART.py`
 - `RunCyclePhase1Disturbance_SavedAgentSafetyGate.py`
 - `RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py`
+- `RunCyclePhase1Disturbance_GARTLMPC.py`
 
 ## Files Updated
 
 - `RunOnlineTD3TwoPhaseStudy.py`
 - `utils/online_disturbance_runner.py`
+- `change-reports/20260624_cycle_phase1_disturbance_study_runners.md`
+
+## Files Removed
+
+- `RunCyclePhase1Disturbance_ColdStartStudy.py`
 - `RunCyclePhase1Disturbance_SavedAgentGART.py`
 
 ## Study Entrypoints
-
-### Cold-start safety/no-safety pair
-
-Run:
-
-```powershell
-C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_ColdStartStudy.py
-```
-
-Methods:
-
-- `cold_start_safety_gate`
-- `cold_start_no_safety_gate`
-
-The two methods share the same setpoint and disturbance profiles. Neither
-loads an OF-MPC/LMPC pretrained checkpoint.
 
 ### Saved-agent safety-gate continuation
 
@@ -60,9 +48,6 @@ C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_SavedA
 Method:
 
 - `saved_agent_safety_gate`
-
-`RunCyclePhase1Disturbance_SavedAgentGART.py` is kept as a compatibility
-alias for this gated saved-agent runner.
 
 ### Saved-agent no-safety-gate continuation
 
@@ -80,6 +65,21 @@ This runner loads the same saved TD3 checkpoint as the gated runner, but the
 online rollout uses the no-safety-gate preset. The two saved-agent runners use
 different timestamp labels, so they can be launched at the same time and will
 write into separate result folders.
+
+### Deterministic GART-LMPC baseline
+
+Run:
+
+```powershell
+C:\Users\HAMEDI\miniconda3\envs\rl\python.exe .\RunCyclePhase1Disturbance_GARTLMPC.py
+```
+
+Method:
+
+- `gart_lmpc`
+
+This wrapper runs the deterministic GART-LMPC controller on the same setpoint
+cycle and disturbance profile. It does not load or train a TD3 agent.
 
 For the saved-agent comparison, the online rollout exploration noise is held
 constant:
@@ -174,7 +174,7 @@ passes the checkpoint path through to the online TD3 runner.
 Compiled:
 
 ```powershell
-C:\Users\HAMEDI\miniconda3\envs\rl\python.exe -X pycache_prefix="$env:TEMP\codex_pycache" -m py_compile RunOnlineTD3TwoPhaseStudy.py utils\online_disturbance_runner.py RunCyclePhase1Disturbance_Common.py RunCyclePhase1Disturbance_ColdStartStudy.py RunCyclePhase1Disturbance_SavedAgentGART.py
+C:\Users\HAMEDI\miniconda3\envs\rl\python.exe -X pycache_prefix="$env:TEMP\codex_pycache" -m py_compile RunCyclePhase1Disturbance_Common.py RunCyclePhase1Disturbance_SavedAgentSafetyGate.py RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py RunCyclePhase1Disturbance_GARTLMPC.py RunOnlineTD3TwoPhaseStudy.py
 ```
 
 Profile-only validation was run without launching training. It confirmed:
@@ -199,7 +199,8 @@ under:
 results/OnlineTD3_TwoPhaseStudy/
 ```
 
-For the manuscript-facing third scenario, the saved-agent safety/no-safety pair
-is the intended comparison. The cold-start pair remains available for auxiliary
-checks, but it is not required if the previous manuscript section already
-establishes that pretrained/initialized online agents are preferable.
+For the manuscript-facing third scenario, the intended comparison is:
+
+- saved-agent online TD3 with safety gate
+- saved-agent online TD3 without safety gate
+- deterministic GART-LMPC baseline
