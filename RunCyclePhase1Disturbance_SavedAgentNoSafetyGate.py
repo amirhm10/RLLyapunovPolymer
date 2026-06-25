@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from RunCyclePhase1Disturbance_Common import (
     DEFAULT_SAVED_AGENT_PATH,
+    SAVED_AGENT_PATHS,
     SETPOINT_CYCLE_Y_PHYS,
     run_configured_cycle_study,
 )
@@ -14,6 +15,7 @@ METHODS = (
 )
 
 SAVED_AGENT_PATH = DEFAULT_SAVED_AGENT_PATH
+SAVED_AGENT_PATHS_FOR_STATISTICS = SAVED_AGENT_PATHS
 
 
 def run_configured_study() -> dict:
@@ -21,6 +23,7 @@ def run_configured_study() -> dict:
         methods=METHODS,
         timestamp_label="cycle_phase1dist_saved_agent_no_safety_gate",
         saved_agent_path=SAVED_AGENT_PATH,
+        saved_agent_paths=SAVED_AGENT_PATHS_FOR_STATISTICS,
         setpoint_cycle_y_phys=SETPOINT_CYCLE_Y_PHYS,
     )
 

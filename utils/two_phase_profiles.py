@@ -52,10 +52,10 @@ def _validate_spec(spec: TwoPhaseExperimentSpec) -> None:
         raise ValueError("Either phase2_episodes or phase2_steps must be provided.")
     if spec.phase2_episodes is not None and spec.phase2_steps is not None:
         raise ValueError("Use either phase2_episodes or phase2_steps, not both.")
-    if spec.phase2_episodes is not None and int(spec.phase2_episodes) <= 0:
-        raise ValueError("phase2_episodes must be positive when provided.")
-    if spec.phase2_steps is not None and int(spec.phase2_steps) <= 0:
-        raise ValueError("phase2_steps must be positive when provided.")
+    if spec.phase2_episodes is not None and int(spec.phase2_episodes) < 0:
+        raise ValueError("phase2_episodes must be nonnegative when provided.")
+    if spec.phase2_steps is not None and int(spec.phase2_steps) < 0:
+        raise ValueError("phase2_steps must be nonnegative when provided.")
     if int(spec.set_points_len) <= 0:
         raise ValueError("set_points_len must be positive.")
     if int(spec.reporting_window_steps) <= 0:
@@ -90,6 +90,8 @@ def _phase_setpoint_steps(
     set_points_len: int,
     episode_len: int,
 ) -> np.ndarray:
+    if int(episodes) <= 0:
+        return np.empty((0, int(setpoints_y_phys.shape[1])), dtype=float)
     blocks = [np.repeat(row.reshape(1, -1), int(set_points_len), axis=0) for row in setpoints_y_phys]
     cycle = np.concatenate(blocks, axis=0)
     if cycle.shape[0] == int(episode_len):
@@ -109,6 +111,8 @@ def _fixed_duration_setpoint_steps(
     total_steps: int,
     set_points_len: int,
 ) -> np.ndarray:
+    if int(total_steps) <= 0:
+        return np.empty((0, int(setpoints_y_phys.shape[1])), dtype=float)
     blocks = [np.repeat(row.reshape(1, -1), int(set_points_len), axis=0) for row in setpoints_y_phys]
     cycle = np.concatenate(blocks, axis=0)
     repeats = int(np.ceil(int(total_steps) / float(cycle.shape[0])))
@@ -252,43 +256,48 @@ def build_two_phase_profiles(
             "step_start": 0,
             "step_end_exclusive": phase1_steps,
         },
-        {
-            "name": "phase2_immediate",
-            "phase_id": 2,
-            "episode_start": int(phase1_reporting_windows) + 1,
-            "episode_end": min(int(phase1_reporting_windows) + 5, int(total_reporting_windows)),
-            "report_window_start": int(phase1_reporting_windows) + 1,
-            "report_window_end": min(int(phase1_reporting_windows) + 5, int(total_reporting_windows)),
-            "phase2_report_window_start": 1,
-            "phase2_report_window_end": min(5, int(phase2_reporting_windows)),
-            "step_start": phase1_steps,
-            "step_end_exclusive": min(phase1_steps + 5 * reporting_window_steps, total_steps),
-        },
-        {
-            "name": "phase2_full",
-            "phase_id": 2,
-            "episode_start": int(phase1_reporting_windows) + 1,
-            "episode_end": int(total_reporting_windows),
-            "report_window_start": int(phase1_reporting_windows) + 1,
-            "report_window_end": int(total_reporting_windows),
-            "phase2_report_window_start": 1,
-            "phase2_report_window_end": int(phase2_reporting_windows),
-            "step_start": phase1_steps,
-            "step_end_exclusive": total_steps,
-        },
-        {
-            "name": "phase2_final",
-            "phase_id": 2,
-            "episode_start": max(int(phase1_reporting_windows) + 1, int(total_reporting_windows) - 9),
-            "episode_end": int(total_reporting_windows),
-            "report_window_start": max(int(phase1_reporting_windows) + 1, int(total_reporting_windows) - 9),
-            "report_window_end": int(total_reporting_windows),
-            "phase2_report_window_start": max(1, int(phase2_reporting_windows) - 9),
-            "phase2_report_window_end": int(phase2_reporting_windows),
-            "step_start": max(phase1_steps, total_steps - 10 * reporting_window_steps),
-            "step_end_exclusive": total_steps,
-        },
     ]
+    if phase2_steps > 0:
+        phase_windows.extend(
+            [
+                {
+                    "name": "phase2_immediate",
+                    "phase_id": 2,
+                    "episode_start": int(phase1_reporting_windows) + 1,
+                    "episode_end": min(int(phase1_reporting_windows) + 5, int(total_reporting_windows)),
+                    "report_window_start": int(phase1_reporting_windows) + 1,
+                    "report_window_end": min(int(phase1_reporting_windows) + 5, int(total_reporting_windows)),
+                    "phase2_report_window_start": 1,
+                    "phase2_report_window_end": min(5, int(phase2_reporting_windows)),
+                    "step_start": phase1_steps,
+                    "step_end_exclusive": min(phase1_steps + 5 * reporting_window_steps, total_steps),
+                },
+                {
+                    "name": "phase2_full",
+                    "phase_id": 2,
+                    "episode_start": int(phase1_reporting_windows) + 1,
+                    "episode_end": int(total_reporting_windows),
+                    "report_window_start": int(phase1_reporting_windows) + 1,
+                    "report_window_end": int(total_reporting_windows),
+                    "phase2_report_window_start": 1,
+                    "phase2_report_window_end": int(phase2_reporting_windows),
+                    "step_start": phase1_steps,
+                    "step_end_exclusive": total_steps,
+                },
+                {
+                    "name": "phase2_final",
+                    "phase_id": 2,
+                    "episode_start": max(int(phase1_reporting_windows) + 1, int(total_reporting_windows) - 9),
+                    "episode_end": int(total_reporting_windows),
+                    "report_window_start": max(int(phase1_reporting_windows) + 1, int(total_reporting_windows) - 9),
+                    "report_window_end": int(total_reporting_windows),
+                    "phase2_report_window_start": max(1, int(phase2_reporting_windows) - 9),
+                    "phase2_report_window_end": int(phase2_reporting_windows),
+                    "step_start": max(phase1_steps, total_steps - 10 * reporting_window_steps),
+                    "step_end_exclusive": total_steps,
+                },
+            ]
+        )
     return {
         "spec": spec,
         "total_episodes": int(total_reporting_windows),
@@ -317,7 +326,7 @@ def build_two_phase_profiles(
         "phase1_episode": idx["phase1_episode"],
         "phase2_report_window": idx["phase2_report_window"],
         "phase_windows": phase_windows,
-        "phase_boundary_steps": [int(phase1_steps)],
+        "phase_boundary_steps": [int(phase1_steps)] if phase2_steps > 0 else [],
     }
 
 
@@ -362,11 +371,15 @@ def jsonable_two_phase_profile(profile: dict[str, Any]) -> dict[str, Any]:
             "qs": float(spec.nominal_qs * spec.phase1_qs_multiplier),
             "ha": float(spec.nominal_ha * spec.phase1_ha_multiplier),
         },
-        "phase2_final": {
-            "qi": float(spec.nominal_qi * spec.phase2_qi_multiplier),
-            "qs": float(spec.nominal_qs * spec.phase2_qs_multiplier),
-            "ha": float(spec.nominal_ha * spec.phase2_ha_multiplier),
-        },
+        "phase2_final": (
+            None
+            if int(profile.get("phase2_steps", 0)) <= 0
+            else {
+                "qi": float(spec.nominal_qi * spec.phase2_qi_multiplier),
+                "qs": float(spec.nominal_qs * spec.phase2_qs_multiplier),
+                "ha": float(spec.nominal_ha * spec.phase2_ha_multiplier),
+            }
+        ),
         "episode_len": int(profile["episode_len"]),
         "phase1_episode_len": int(profile["phase1_episode_len"]),
         "total_reporting_windows": int(profile["total_reporting_windows"]),

@@ -12,7 +12,7 @@ tracking scenario:
 - no behavior-cloning/critic-only teacher phase
 - no handoff phase
 - disturbance profile held to the Phase-1 disturbance family, with Phase 2
-  staying at the Phase-1 final disturbance value
+  disabled for this cycle-only scenario
 
 This is intended as a third discussion scenario focused on online adaptation
 and safe action selection near an input-constrained reference cycle.
@@ -27,7 +27,11 @@ and safe action selection near an input-constrained reference cycle.
 ## Files Updated
 
 - `RunOnlineTD3TwoPhaseStudy.py`
+- `utils/two_phase_profiles.py`
 - `utils/online_disturbance_runner.py`
+- `RunCyclePhase1Disturbance_Common.py`
+- `RunCyclePhase1Disturbance_SavedAgentSafetyGate.py`
+- `RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py`
 - `change-reports/20260624_cycle_phase1_disturbance_study_runners.md`
 
 ## Files Removed
@@ -66,6 +70,10 @@ online rollout uses the no-safety-gate preset. The two saved-agent runners use
 different timestamp labels, so they can be launched at the same time and will
 write into separate result folders.
 
+Both saved-agent runners use the same five checkpoint initializations from the
+previous online TD3 seed folders, allowing the safety/no-safety comparison to
+be reported with seed statistics.
+
 ### Deterministic GART-LMPC baseline
 
 Run:
@@ -93,15 +101,19 @@ Because the wrappers remove warm-up, behavior-cloning, and handoff phases, this
 constant noise applies directly to the full online TD3 phase. The TD3 target
 policy smoothing noise remains separate at `0.02` with clip `0.04`.
 
-Default saved-agent checkpoint:
+Saved-agent checkpoints used for RL statistics:
 
 ```text
-results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_009/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260624_093558.pkl
+results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_000/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260623_114239.pkl
+results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_001/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260623_140148.pkl
+results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_002/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260623_162250.pkl
+results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_003/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260623_184509.pkl
+results/OnlineTD3_TwoPhaseStudy/20260623_092655_cold_start_safety_gate/seed_004/cold_start_safety_gate/onlinetd3_coldstart_safetygate/trained_agent_20260623_210748.pkl
 ```
 
-The checkpoint is a previously online-trained TD3 agent from a seed folder.
-It is not treated as an OF-MPC pretrained checkpoint, and its critic is not
-reset by default.
+The checkpoints are previously online-trained TD3 agents from seed folders.
+They are not treated as OF-MPC pretrained checkpoints, and their critics are
+not reset by default.
 
 ## Scenario Definition
 
@@ -114,7 +126,7 @@ SETPOINT_CYCLE_Y_PHYS = (
 )
 
 PHASE1_EPISODES = 100
-PHASE2_EPISODES = 1
+PHASE2_EPISODES = 0
 PHASE1_SETPOINT_HOLD_STEPS = 400
 REPORTING_WINDOW_STEPS = 800
 ```
@@ -122,8 +134,8 @@ REPORTING_WINDOW_STEPS = 800
 This gives:
 
 - Phase-1 online training: `100 * 800 = 80000` samples
-- Phase-2 continuation/evaluation: `1 * 800 = 800` samples
-- Total profile length: `80800` samples
+- Phase-2 continuation/evaluation: `0` samples
+- Total profile length: `80000` samples
 
 The disturbance multipliers are:
 
@@ -137,11 +149,15 @@ PHASE2_QS_MULTIPLIER = PHASE1_QS_MULTIPLIER
 PHASE2_HA_MULTIPLIER = PHASE1_HA_MULTIPLIER
 ```
 
-Thus Phase 2 remains at:
+Because Phase 2 is disabled, the generated profile ends at the Phase-1 final
+disturbance:
 
 - `qi = 102.6`
 - `qs = 481.95`
 - `ha = 966000.0`
+
+The profile metadata has `phase2_steps = 0`, no phase boundary, and only the
+`phase1_learning` window.
 
 ## No-Teacher Online Training
 
@@ -169,22 +185,34 @@ selector family but do not imply an OF-MPC/LMPC pretrained checkpoint.
 `RunOnlineTD3TwoPhaseStudy.py` now recognizes the saved-agent methods and
 passes the checkpoint path through to the online TD3 runner.
 
+For seed statistics, it also accepts `agent_paths`, one checkpoint per
+effective seed. The cycle wrappers set:
+
+```python
+SEEDS = (0, 1, 2, 3, 4)
+```
+
+Both saved-agent runners use the same `SAVED_AGENT_PATHS` tuple, while the
+deterministic GART-LMPC runner still collapses to one seed because it has no
+random saved-agent initialization.
+
 ## Validation
 
 Compiled:
 
 ```powershell
-C:\Users\HAMEDI\miniconda3\envs\rl\python.exe -X pycache_prefix="$env:TEMP\codex_pycache" -m py_compile RunCyclePhase1Disturbance_Common.py RunCyclePhase1Disturbance_SavedAgentSafetyGate.py RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py RunCyclePhase1Disturbance_GARTLMPC.py RunOnlineTD3TwoPhaseStudy.py
+C:\Users\HAMEDI\miniconda3\envs\rl\python.exe -X pycache_prefix="$env:TEMP\codex_pycache" -m py_compile utils\two_phase_profiles.py RunOnlineTD3TwoPhaseStudy.py RunCyclePhase1Disturbance_Common.py RunCyclePhase1Disturbance_SavedAgentSafetyGate.py RunCyclePhase1Disturbance_SavedAgentNoSafetyGate.py RunCyclePhase1Disturbance_GARTLMPC.py
 ```
 
 Profile-only validation was run without launching training. It confirmed:
 
 - setpoints: `((4.0, 321.5), (3.3, 324.5))`
-- total steps: `80800`
+- total steps: `80000`
 - Phase-1 steps: `80000`
-- Phase-2 steps: `800`
-- Phase-1 final disturbance equals final disturbance
-- default saved-agent checkpoint exists
+- Phase-2 steps: `0`
+- phase boundary steps: `[]`
+- all five saved-agent checkpoints exist
+- each saved-agent runner receives one checkpoint per effective seed
 
 The profile check emitted the existing observer pole-placement convergence
 warning from `Simulation/mpc.py`, but it completed successfully.

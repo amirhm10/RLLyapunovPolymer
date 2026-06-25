@@ -15,7 +15,7 @@ SETPOINT_CYCLE_Y_PHYS = (
 )
 
 PHASE1_EPISODES = 100
-PHASE2_EPISODES = 1
+PHASE2_EPISODES = 0
 PHASE1_SETPOINT_HOLD_STEPS = 400
 REPORTING_WINDOW_STEPS = 800
 
@@ -23,9 +23,9 @@ OUTPUT_ROOT = Path("results")
 SAVE_PLOTS = True
 EXPORT_PROFILE = "compact"
 
-N_SEEDS = 1
+N_SEEDS = 5
 SEED_START = 0
-SEEDS: tuple[int, ...] | None = (0,)
+SEEDS: tuple[int, ...] | None = (0, 1, 2, 3, 4)
 
 NOMINAL_QI = 108.0
 NOMINAL_QS = 459.0
@@ -40,15 +40,20 @@ PHASE2_QI_MULTIPLIER = PHASE1_QI_MULTIPLIER
 PHASE2_QS_MULTIPLIER = PHASE1_QS_MULTIPLIER
 PHASE2_HA_MULTIPLIER = PHASE1_HA_MULTIPLIER
 
-DEFAULT_SAVED_AGENT_PATH = (
+SAVED_AGENT_BASE_DIR = (
     Path("results")
     / "OnlineTD3_TwoPhaseStudy"
     / "20260623_092655_cold_start_safety_gate"
-    / "seed_009"
-    / "cold_start_safety_gate"
-    / "onlinetd3_coldstart_safetygate"
-    / "trained_agent_20260624_093558.pkl"
 )
+
+SAVED_AGENT_PATHS = (
+    SAVED_AGENT_BASE_DIR / "seed_000" / "cold_start_safety_gate" / "onlinetd3_coldstart_safetygate" / "trained_agent_20260623_114239.pkl",
+    SAVED_AGENT_BASE_DIR / "seed_001" / "cold_start_safety_gate" / "onlinetd3_coldstart_safetygate" / "trained_agent_20260623_140148.pkl",
+    SAVED_AGENT_BASE_DIR / "seed_002" / "cold_start_safety_gate" / "onlinetd3_coldstart_safetygate" / "trained_agent_20260623_162250.pkl",
+    SAVED_AGENT_BASE_DIR / "seed_003" / "cold_start_safety_gate" / "onlinetd3_coldstart_safetygate" / "trained_agent_20260623_184509.pkl",
+    SAVED_AGENT_BASE_DIR / "seed_004" / "cold_start_safety_gate" / "onlinetd3_coldstart_safetygate" / "trained_agent_20260623_210748.pkl",
+)
+DEFAULT_SAVED_AGENT_PATH = SAVED_AGENT_PATHS[0]
 
 ACTOR_LAYER_SIZES = (512, 512, 512, 512, 512)
 CRITIC_LAYER_SIZES = (512, 512, 512, 512, 512)
@@ -142,6 +147,7 @@ def build_args(
     methods: tuple[str, ...],
     timestamp_label: str,
     saved_agent_path: str | Path | None = None,
+    saved_agent_paths: tuple[str | Path, ...] | None = None,
     setpoint_cycle_y_phys=SETPOINT_CYCLE_Y_PHYS,
     n_seeds: int = N_SEEDS,
     seed_start: int = SEED_START,
@@ -160,6 +166,7 @@ def build_args(
         save_plots=bool(SAVE_PLOTS),
         export_profile=str(EXPORT_PROFILE),
         agent_path=None if saved_agent_path is None else str(saved_agent_path),
+        agent_paths=None if saved_agent_paths is None else tuple(str(path) for path in saved_agent_paths),
         reset_pretrained_critic=False,
         rl_observation_mode=RL_OBSERVATION_MODE,
         projection_backend=None,
@@ -194,6 +201,7 @@ def run_configured_cycle_study(
     methods: tuple[str, ...],
     timestamp_label: str,
     saved_agent_path: str | Path | None = None,
+    saved_agent_paths: tuple[str | Path, ...] | None = None,
     setpoint_cycle_y_phys=SETPOINT_CYCLE_Y_PHYS,
 ) -> dict:
     apply_td3_defaults()
@@ -201,6 +209,7 @@ def run_configured_cycle_study(
         methods=methods,
         timestamp_label=timestamp_label,
         saved_agent_path=saved_agent_path,
+        saved_agent_paths=saved_agent_paths,
         setpoint_cycle_y_phys=setpoint_cycle_y_phys,
     )
     print("Cycle/Phase-1-disturbance study configuration:")

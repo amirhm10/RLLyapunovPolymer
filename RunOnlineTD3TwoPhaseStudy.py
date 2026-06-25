@@ -103,6 +103,14 @@ def _parse_csv_list(value: str | None) -> tuple[str, ...]:
     return tuple(part.strip() for part in str(value).split(",") if part.strip())
 
 
+def _parse_path_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return _parse_csv_list(value)
+    return tuple(str(part) for part in value if str(part).strip())
+
+
 def _parse_seed_list(value: str | None, *, n_seeds: int, seed_start: int) -> tuple[int, ...]:
     if value:
         return tuple(int(part) for part in _parse_csv_list(value))
@@ -222,6 +230,7 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
     total_steps = int(profile["total_steps"])
     y_phys = np.asarray(profile["setpoint_profile_phys"], dtype=float)
     disturbance = profile["disturbance_profile"]
+    phase2_steps = int(phase2_steps_from_spec(spec))
     checks = {
         "total_steps": int(total_steps),
         "phase1_episode_len": int(phase1_episode_len),
@@ -231,10 +240,12 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
         "rollout_set_points_len": int(profile["rollout_set_points_len"]),
         "phase1_steps": int(phase1_steps),
         "phase1_learning_episodes": int(spec.phase1_episodes),
-        "phase2_steps": int(phase2_steps_from_spec(spec)),
+        "phase2_steps": int(phase2_steps),
         "phase2_episodes": None if spec.phase2_episodes is None else int(spec.phase2_episodes),
-        "setpoint_switch_report_window": int(profile["phase1_reporting_windows"]) + 1,
-        "setpoint_switch_step": int(phase1_steps),
+        "setpoint_switch_report_window": (
+            int(profile["phase1_reporting_windows"]) + 1 if phase2_steps > 0 else None
+        ),
+        "setpoint_switch_step": int(phase1_steps) if phase2_steps > 0 else None,
         "pretrained_exploration_sigma_at_phase1_end": _expected_exploration_sigma(
             method="ofmpc_pretrained_safety_gate",
             step_idx=phase1_steps - 1,
@@ -273,13 +284,17 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
         ],
         dtype=float,
     )
-    expected_d2 = np.array(
-        [
-            spec.nominal_qi * spec.phase2_qi_multiplier,
-            spec.nominal_qs * spec.phase2_qs_multiplier,
-            spec.nominal_ha * spec.phase2_ha_multiplier,
-        ],
-        dtype=float,
+    expected_d2 = (
+        np.array(
+            [
+                spec.nominal_qi * spec.phase2_qi_multiplier,
+                spec.nominal_qs * spec.phase2_qs_multiplier,
+                spec.nominal_ha * spec.phase2_ha_multiplier,
+            ],
+            dtype=float,
+        )
+        if phase2_steps > 0
+        else expected_d1
     )
     observed_d0 = np.array([disturbance["qi"][0], disturbance["qs"][0], disturbance["ha"][0]], dtype=float)
     observed_d1 = np.array(
@@ -296,7 +311,8 @@ def validate_two_phase_profile(profile: dict[str, Any], spec: TwoPhaseExperiment
     if not np.allclose(observed_d1, expected_d1):
         raise AssertionError(f"phase1 disturbance end mismatch: {observed_d1} != {expected_d1}")
     if not np.allclose(observed_d2, expected_d2):
-        raise AssertionError(f"phase2 disturbance end mismatch: {observed_d2} != {expected_d2}")
+        label = "phase2 disturbance end" if phase2_steps > 0 else "phase1-only disturbance end"
+        raise AssertionError(f"{label} mismatch: {observed_d2} != {expected_d2}")
     if not np.isclose(checks["pretrained_exploration_sigma_at_phase1_end"], 0.01):
         raise AssertionError("pretrained exploration does not reach 0.01 at Phase-1 end.")
     if not np.isclose(checks["pretrained_exploration_sigma_after_phase1"], 0.01):
@@ -365,6 +381,24 @@ def _run_td3_method(
         export_profile=export_profile,
         mirror_large_artifacts=False,
     )
+
+
+def _resolve_agent_paths_by_seed(agent_paths: Any, seeds: tuple[int, ...]) -> dict[int, str]:
+    paths = _parse_path_list(agent_paths)
+    if not paths:
+        return {}
+    if len(paths) != len(seeds):
+        raise ValueError(
+            "agent_paths must provide one checkpoint per effective seed/agent; "
+            f"got {len(paths)} path(s) for {len(seeds)} seed(s)."
+        )
+    resolved: dict[int, str] = {}
+    for seed, path in zip(seeds, paths):
+        candidate = resolve_repo_path(path)
+        if not candidate.exists():
+            raise FileNotFoundError(f"Saved-agent checkpoint not found for seed {seed}: {candidate}")
+        resolved[int(seed)] = str(candidate)
+    return resolved
 
 
 def _run_gart_method(
@@ -555,10 +589,13 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
     spec = TwoPhaseExperimentSpec(**spec_kwargs)
     profile = build_profiles_for_study(spec)
     profile_checks = validate_two_phase_profile(profile, spec)
+    agent_paths_by_seed = _resolve_agent_paths_by_seed(getattr(args, "agent_paths", None), seeds)
     if any(_method_requires_explicit_agent_checkpoint(method) for method in methods):
-        if not args.agent_path:
+        if not args.agent_path and not agent_paths_by_seed:
             raise ValueError("saved_agent methods require --agent-path pointing to a trained TD3 checkpoint.")
-        pretrained_agent_path = str(resolve_repo_path(args.agent_path))
+        pretrained_agent_path = (
+            None if agent_paths_by_seed else str(resolve_repo_path(args.agent_path))
+        )
     elif any(method.startswith("ofmpc_pretrained") for method in methods):
         pretrained_agent_path = _pretrained_agent_path(args.agent_path)
     else:
@@ -579,12 +616,14 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
         "save_plots": bool(args.save_plots),
         "export_profile": str(args.export_profile),
         "pretrained_agent_path": pretrained_agent_path,
+        "pretrained_agent_paths_by_seed": agent_paths_by_seed,
         "profile_checks": profile_checks,
         "runs": [],
     }
     _write_json(study_root / "batch_manifest.json", manifest)
 
     for seed in seeds:
+        seed_agent_path = agent_paths_by_seed.get(int(seed), pretrained_agent_path)
         seed_root = study_root / f"seed_{int(seed):03d}"
         seed_root.mkdir(parents=True, exist_ok=True)
         seed_records: list[dict[str, Any]] = []
@@ -611,7 +650,7 @@ def run_two_phase_study(args: argparse.Namespace) -> dict[str, Any]:
                         profile=profile,
                         save_plots=bool(args.save_plots),
                         export_profile=str(args.export_profile),
-                        agent_path=pretrained_agent_path,
+                        agent_path=seed_agent_path,
                         reset_pretrained_critic=bool(getattr(args, "reset_pretrained_critic", True)),
                         training_phase_overrides=getattr(args, "training_phase_overrides", None),
                         rl_observation_mode=str(getattr(args, "rl_observation_mode", "standard")),
@@ -687,6 +726,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-save-plots", dest="save_plots", action="store_false")
     parser.add_argument("--export-profile", choices=("compact", "debug"), default=EXPORT_PROFILE)
     parser.add_argument("--agent-path", default=None)
+    parser.add_argument(
+        "--agent-paths",
+        default=None,
+        help="Comma-separated saved-agent checkpoints, one per effective seed/agent.",
+    )
     parser.add_argument("--phase1-episodes", type=int, default=150)
     parser.add_argument("--phase2-episodes", type=int, default=50)
     parser.add_argument(
@@ -707,10 +751,10 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         raise ValueError("--n-seeds must be positive.")
     if args.phase1_episodes <= 0:
         raise ValueError("phase1_episodes must be positive.")
-    if args.phase2_steps is not None and args.phase2_steps <= 0:
-        raise ValueError("phase2_steps must be positive when provided.")
-    if args.phase2_steps is None and args.phase2_episodes <= 0:
-        raise ValueError("phase2_episodes must be positive when phase2_steps is not provided.")
+    if args.phase2_steps is not None and args.phase2_steps < 0:
+        raise ValueError("phase2_steps must be nonnegative when provided.")
+    if args.phase2_steps is None and args.phase2_episodes < 0:
+        raise ValueError("phase2_episodes must be nonnegative when phase2_steps is not provided.")
     if args.set_points_len <= 0:
         raise ValueError("--set-points-len must be positive.")
     if args.reporting_window_steps <= 0:
