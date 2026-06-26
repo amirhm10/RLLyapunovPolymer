@@ -13,6 +13,68 @@ observer, a GART target selector, and a one-step Lyapunov contraction check. If
 the TD3 proposal is not certified, the applied input is replaced by a
 GART-LMPC move tied to the requested setpoint.
 
+## Method Summary
+
+Most calculations are performed in scaled-deviation coordinates. Let
+$\bar{x}_k = [\Delta x_k^T, d_k^T]^T$ denote the augmented observer state,
+where $d_k$ is the output-disturbance estimate, and let $\Delta u_k$ be the
+input deviation from the nominal steady input. The identified model used by the
+offset-free MPC and GART-LMPC layers has the form
+
+```math
+\bar{x}_{k+1}=A_a\bar{x}_k+B_a\Delta u_k,\qquad
+\Delta y_k=C_a\bar{x}_k .
+```
+
+At each sampling instant, the requested setpoint $y_{sp,k}$ remains the
+tracking objective, but the Lyapunov certificate is centered on an accepted
+GART equilibrium target $(x_{s,k}, u_{s,k}, y_{s,k})$. For a certified
+disturbance value $d^c_k$, the target selector searches for a reachable target
+that is close to the requested setpoint while satisfying steady-state,
+input-bound, target-motion, and contraction-probe checks:
+
+```math
+x_{s,k}=Ax_{s,k}+Bu_{s,k},\qquad
+y_{s,k}=Cx_{s,k}+d^c_k .
+```
+
+If the requested setpoint is not immediately certifiable, the command governor
+searches between the previous accepted command and the requested setpoint. This
+keeps the safety layer tied to the tracking objective without claiming that the
+raw setpoint is always reachable or certifiable.
+
+The safety gate uses a target-centered Lyapunov function
+
+```math
+V_k=(\hat{x}_k-x_{s,k})^T P(\hat{x}_k-x_{s,k})
+```
+
+and accepts a TD3 candidate input $\tilde{u}_k$ only if the model-predicted next
+state satisfies the one-step decrease condition
+
+```math
+V(\hat{x}_{k+1|k}(\tilde{u}_k)-x_{s,k})
+\le \rho V(\hat{x}_k-x_{s,k})+\epsilon .
+```
+
+When this test fails, the applied input is replaced by the first move from the
+GART-LMPC fallback problem when that move is certified. In compact form,
+
+```math
+u_k =
+\begin{cases}
+\tilde{u}_k, & \text{if the TD3 proposal is certified},\\
+u^{\mathrm{GART}}_{0|k}, & \text{if fallback GART-LMPC is certified},\\
+\operatorname{clip}(u_{k-1}), & \text{otherwise}.
+\end{cases}
+```
+
+TD3 is therefore used as a candidate-action generator, not as the final
+authority on the plant input. Offline pretraining initializes the actor with
+offset-free MPC first-move labels. During online operation, reward evaluation
+and replay storage use the executed plant transition and the applied input, so
+the learning signal reflects the controller that the plant actually saw.
+
 ## Repository Scope
 
 The public repository is focused on code needed to inspect or reproduce the
