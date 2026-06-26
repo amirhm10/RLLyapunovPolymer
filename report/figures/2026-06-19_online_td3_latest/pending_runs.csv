@@ -1,5 +1,0 @@
-case,run_dir,mtime
-Cold start + gate,results\OnlineTD3_ColdStart_SafetyGate\20260619_131645,2026-06-19T13:16:47.354137
-Cold start no gate,results\OnlineTD3_ColdStart_NoSafetyGate\20260619_131640,2026-06-19T13:16:43.487320
-OF-MPC pretrained + gate,results\OnlineTD3_OFMPCPretrained_SafetyGate\20260619_131652,2026-06-19T13:16:54.348247
-OF-MPC pretrained no gate,results\OnlineTD3_OFMPCPretrained_NoSafetyGate\20260619_131649,2026-06-19T13:16:51.120084

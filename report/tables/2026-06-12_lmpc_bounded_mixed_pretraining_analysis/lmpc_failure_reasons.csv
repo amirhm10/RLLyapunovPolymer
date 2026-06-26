@@ -1,9 +1,0 @@
-reason,count,share_of_failures
-tracking:optimal:dyn_residual,317185,0.8617448169249035
-tracking:infeasible:solver_status,40302,0.10949458395481332
-tracking:optimal_inaccurate:first_step_contraction,6028,0.016377186047333
-tracking:optimal_inaccurate:dyn_residual,2359,0.006409054725557159
-tracking:optimal:bound_violation,1555,0.004224705425282485
-tracking:optimal_inaccurate:bound_violation,423,0.0011492285497713768
-tracking:optimal_inaccurate:terminal_constraint,192,0.0005216356537969371
-tracking:optimal:first_step_contraction,21,5.7053899634039984e-05

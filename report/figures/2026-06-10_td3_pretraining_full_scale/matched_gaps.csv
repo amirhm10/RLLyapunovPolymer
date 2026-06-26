@@ -1,9 +1,0 @@
-mode,comparison,metric,percent_gap
-nominal,OF-TD3 vs OF-MPC,mean_rmse,0.2298328820393747
-nominal,OF-TD3 vs OF-MPC,mean_abs_du,1.1543965087307722
-nominal,LMPC-TD3 vs Direct LMPC,mean_rmse,27.032983131998837
-nominal,LMPC-TD3 vs Direct LMPC,mean_abs_du,153.81321543151978
-disturb,OF-TD3 vs OF-MPC,mean_rmse,0.7035555661935887
-disturb,OF-TD3 vs OF-MPC,mean_abs_du,-1.4276407018540724
-disturb,LMPC-TD3 vs Direct LMPC,mean_rmse,44.03106263218176
-disturb,LMPC-TD3 vs Direct LMPC,mean_abs_du,164.4055796180662

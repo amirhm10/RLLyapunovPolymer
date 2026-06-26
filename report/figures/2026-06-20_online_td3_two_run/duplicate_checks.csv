@@ -1,5 +1,0 @@
-case_key,case,run_id_1,run_id_2,seed_1,seed_2,same_seed,episode_tables_equal,selected_arrays_equal,selected_arrays_max_abs_diff,record_metric_diff_count_excluding_paths_and_wallclock,record_metric_diff_keys
-cold_gate,Cold start + gate,20260619_131645,20260619_174127,123,123,True,True,True,0.0,0,
-cold_nogate,Cold start no gate,20260619_131640,20260619_174127,123,123,True,True,True,0.0,0,
-of_gate,OF-MPC pretrained + gate,20260619_131652,20260619_174130,123,123,True,True,True,0.0,0,
-of_nogate,OF-MPC pretrained no gate,20260619_131649,20260619_174127,123,123,True,True,True,0.0,0,

@@ -6,6 +6,20 @@ __pycache__/
 .idea/
 .vscode/
 .jupyter-config/
+.agents/
+.codex/
+AGENTS.md
+
+# Public repository exclusions: manuscript workflow, reports, slides, archives
+analysis/
+archive/
+change-reports/
+report/
+MACC2026/
+StatsControl2026/
+csche/
+CSCHE2026/
+temp_notebook_snapshot.json
 
 Data/debug_exports/
 Data/agent_2507171027.pkl
