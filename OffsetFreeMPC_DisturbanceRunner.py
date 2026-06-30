@@ -47,7 +47,7 @@ SETTLING_BAND_PHYS = np.array([0.05, 0.30], dtype=float)
 
 # Main editable cycle for cycle-search mode. Each row is held for 400 samples.
 SEARCH_CYCLE_Y_PHYS = (
-    (4.4, 321.5),
+    (4., 321.5),
     (3.3, 324.5),
 )
 
@@ -62,7 +62,7 @@ SEARCH_SETPOINTS_Y_PHYS = (
 )
 
 PHASE2_SETPOINTS_Y_PHYS = (
-    (4.5, 324.0),
+    (4., 324.0),
     (3.4, 321.0),
 )
 
